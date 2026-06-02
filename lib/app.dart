@@ -1,0 +1,153 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+import 'core/models/user_model.dart';
+import 'core/theme/app_theme.dart';
+import 'features/auth/providers/auth_provider.dart';
+import 'features/auth/screens/login_screen.dart';
+import 'features/auth/screens/register_screen.dart';
+import 'features/admin/screens/admin_home_screen.dart';
+import 'features/admin/screens/create_event_screen.dart';
+import 'features/admin/screens/event_management_screen.dart';
+import 'features/admin/screens/registrations_screen.dart';
+import 'features/admin/screens/live_tracking_screen.dart';
+import 'features/pilot/screens/pilot_home_screen.dart';
+import 'features/pilot/screens/event_detail_screen.dart';
+import 'features/pilot/screens/team_screen.dart';
+import 'features/pilot/screens/gps_recording_screen.dart';
+
+final _routerProvider = Provider<GoRouter>((ref) {
+  return GoRouter(
+    initialLocation: '/login',
+    redirect: (context, state) async {
+      final authState = ref.read(authStateProvider);
+      final isLoggedIn = authState.valueOrNull != null;
+      final isAuthRoute = state.matchedLocation == '/login' ||
+          state.matchedLocation == '/register';
+
+      if (!isLoggedIn && !isAuthRoute) return '/login';
+      if (isLoggedIn && isAuthRoute) {
+        // Check role and redirect
+        final userModel = await ref.read(currentUserModelProvider.future);
+        if (userModel?.role == UserRole.admin) return '/admin';
+        return '/pilot';
+      }
+      return null;
+    },
+    routes: [
+      GoRoute(
+        path: '/login',
+        builder: (context, state) => const LoginScreen(),
+      ),
+      GoRoute(
+        path: '/register',
+        builder: (context, state) => const RegisterScreen(),
+      ),
+      // Admin routes
+      GoRoute(
+        path: '/admin',
+        builder: (context, state) => const AdminHomeScreen(),
+        routes: [
+          GoRoute(
+            path: 'create-event',
+            builder: (context, state) => const CreateEventScreen(),
+          ),
+          GoRoute(
+            path: 'event/:id',
+            builder: (context, state) {
+              final eventId = state.pathParameters['id']!;
+              return EventManagementScreen(eventId: eventId);
+            },
+            routes: [
+              GoRoute(
+                path: 'registrations',
+                builder: (context, state) {
+                  final eventId = state.pathParameters['id']!;
+                  return Scaffold(
+                    appBar: AppBar(title: const Text('Iscrizioni')),
+                    body: RegistrationsScreen(eventId: eventId),
+                  );
+                },
+              ),
+              GoRoute(
+                path: 'live',
+                builder: (context, state) {
+                  final eventId = state.pathParameters['id']!;
+                  return Scaffold(
+                    appBar: AppBar(title: const Text('Live Tracking')),
+                    body: LiveTrackingScreen(eventId: eventId),
+                  );
+                },
+              ),
+            ],
+          ),
+        ],
+      ),
+      // Pilot routes
+      GoRoute(
+        path: '/pilot',
+        builder: (context, state) => const PilotHomeScreen(),
+        routes: [
+          GoRoute(
+            path: 'event/:id',
+            builder: (context, state) {
+              final eventId = state.pathParameters['id']!;
+              return EventDetailScreen(eventId: eventId);
+            },
+            routes: [
+              GoRoute(
+                path: 'team',
+                builder: (context, state) {
+                  final eventId = state.pathParameters['id']!;
+                  return TeamScreen(eventId: eventId);
+                },
+              ),
+            ],
+          ),
+          GoRoute(
+            path: 'gps',
+            builder: (context, state) {
+              final eventId = state.uri.queryParameters['eventId'];
+              return GpsRecordingScreen(eventId: eventId);
+            },
+          ),
+        ],
+      ),
+    ],
+    errorBuilder: (context, state) => Scaffold(
+      backgroundColor: const Color(0xFF0a0c12),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text(
+              'Pagina non trovata',
+              style: TextStyle(color: Colors.white, fontSize: 20),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: () => context.go('/login'),
+              child: const Text('Torna al login'),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+});
+
+class CcrApp extends ConsumerWidget {
+  const CcrApp({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final router = ref.watch(_routerProvider);
+
+    return MaterialApp.router(
+      title: 'CCR - Coppa Canta Rally',
+      debugShowCheckedModeBanner: false,
+      theme: AppTheme.darkTheme,
+      routerConfig: router,
+    );
+  }
+}
