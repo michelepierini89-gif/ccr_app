@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'dart:convert';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -91,22 +91,23 @@ class _EventManagementScreenState
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['gpx', 'kml'],
+      withData: true,
     );
     if (result == null || result.files.isEmpty) return;
-    final path = result.files.single.path;
-    if (path == null) return;
+    final picked = result.files.single;
+    final bytes = picked.bytes;
+    if (bytes == null) return;
 
     setState(() => _uploadingTrack = true);
     try {
-      final file = File(path);
-      final content = await file.readAsString();
-      final ext = path.split('.').last.toLowerCase();
+      final content = utf8.decode(bytes);
+      final ext = (picked.extension ?? 'gpx').toLowerCase();
       final parsed = ext == 'gpx'
           ? GpxParser.parseGpx(content)
           : GpxParser.parseKml(content);
 
       // Upload to storage
-      final url = await StorageService().uploadTrack(event.id, file);
+      final url = await StorageService().uploadTrack(event.id, bytes, ext);
       await ref.read(firestoreServiceProvider).updateEvent(
             event.copyWith(trackUrl: url),
           );
