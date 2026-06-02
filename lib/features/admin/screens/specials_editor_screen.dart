@@ -12,6 +12,8 @@ import '../../../core/theme/app_colors.dart';
 import '../providers/admin_provider.dart';
 import '../widgets/special_tile.dart';
 
+enum _SelectionMode { none, inizio, fine }
+
 class SpecialsEditorScreen extends ConsumerStatefulWidget {
   final String eventId;
   final ParsedTrack parsedTrack;
@@ -34,48 +36,135 @@ class _SpecialsEditorScreenState
   late List<SpecialModel> _specials;
   bool _isSaving = false;
 
+  // Inline editing state
+  bool _isEditing = false;
+  int _editingIndex = -1;
+  final _nomeCtrl = TextEditingController();
+  int _editingColorIndex = 0;
+  WaypointModel? _editingInizio;
+  WaypointModel? _editingFine;
+  _SelectionMode _selectionMode = _SelectionMode.none;
+
   @override
   void initState() {
     super.initState();
     _specials = List.from(widget.event.speciali);
   }
 
-  Future<void> _addSpeciale() async {
-    final result = await showDialog<SpecialModel>(
-      context: context,
-      builder: (ctx) => _AddSpecialDialog(
-        waypoints: widget.parsedTrack.waypoints,
-        ordine: _specials.length,
-        existingSpecials: _specials,
-      ),
-    );
-    if (result != null) {
-      setState(() => _specials.add(result));
-    }
+  @override
+  void dispose() {
+    _nomeCtrl.dispose();
+    super.dispose();
   }
 
-  Future<void> _editSpeciale(int index) async {
-    final result = await showDialog<SpecialModel>(
-      context: context,
-      builder: (ctx) => _AddSpecialDialog(
-        waypoints: widget.parsedTrack.waypoints,
-        ordine: _specials[index].ordine,
-        existingSpecials: _specials,
-        editing: _specials[index],
-      ),
-    );
-    if (result != null) {
-      setState(() => _specials[index] = result);
+  // --- Nearest track point (squared Euclidean — fast for 5000+ pts) ---
+  WaypointModel _nearestTrackPoint(LatLng tapped) {
+    final pts = widget.parsedTrack.points;
+    var minDist = double.infinity;
+    var minIdx = 0;
+    for (var i = 0; i < pts.length; i++) {
+      final dlat = tapped.latitude - pts[i].latitude;
+      final dlng = tapped.longitude - pts[i].longitude;
+      final d = dlat * dlat + dlng * dlng;
+      if (d < minDist) {
+        minDist = d;
+        minIdx = i;
+      }
     }
+    final pt = pts[minIdx];
+    return WaypointModel(
+      id: 'track_pt_$minIdx',
+      nome:
+          '${pt.latitude.toStringAsFixed(5)}, ${pt.longitude.toStringAsFixed(5)}',
+      lat: pt.latitude,
+      lng: pt.longitude,
+      type: WaypointType.intermedio,
+    );
+  }
+
+  void _onMapTap(LatLng latlng) {
+    if (_selectionMode == _SelectionMode.none) return;
+    if (widget.parsedTrack.points.isEmpty) return;
+    final wp = _nearestTrackPoint(latlng);
+    setState(() {
+      if (_selectionMode == _SelectionMode.inizio) {
+        _editingInizio = wp;
+      } else {
+        _editingFine = wp;
+      }
+      _selectionMode = _SelectionMode.none;
+    });
+  }
+
+  // --- Editing lifecycle ---
+  void _startAdd() {
+    setState(() {
+      _isEditing = true;
+      _editingIndex = -1;
+      _editingColorIndex = _specials.length % AppColors.specialColors.length;
+      _nomeCtrl.text = 'PS${_specials.length + 1}';
+      _editingInizio = null;
+      _editingFine = null;
+      _selectionMode = _SelectionMode.none;
+    });
+  }
+
+  void _startEdit(int index) {
+    final s = _specials[index];
+    setState(() {
+      _isEditing = true;
+      _editingIndex = index;
+      _editingColorIndex = s.colorIndex;
+      _nomeCtrl.text = s.nome;
+      _editingInizio = s.waypointInizio;
+      _editingFine = s.waypointFine;
+      _selectionMode = _SelectionMode.none;
+    });
+  }
+
+  void _cancelEditing() {
+    setState(() {
+      _isEditing = false;
+      _editingIndex = -1;
+      _editingInizio = null;
+      _editingFine = null;
+      _selectionMode = _SelectionMode.none;
+      _nomeCtrl.clear();
+    });
+  }
+
+  void _confirmEditing() {
+    final nome = _nomeCtrl.text.trim();
+    if (nome.isEmpty || _editingInizio == null || _editingFine == null) return;
+    final special = SpecialModel(
+      id: _editingIndex >= 0
+          ? _specials[_editingIndex].id
+          : const Uuid().v4(),
+      nome: nome,
+      colorIndex: _editingColorIndex,
+      waypointInizio: _editingInizio!,
+      waypointFine: _editingFine!,
+      ordine: _editingIndex >= 0
+          ? _specials[_editingIndex].ordine
+          : _specials.length,
+    );
+    setState(() {
+      if (_editingIndex >= 0) {
+        _specials[_editingIndex] = special;
+      } else {
+        _specials.add(special);
+      }
+    });
+    _cancelEditing();
   }
 
   void _deleteSpeciale(int index) {
-    setState(() => _specials.removeAt(index));
-    // Re-number ordine
     setState(() {
-      for (int i = 0; i < _specials.length; i++) {
+      _specials.removeAt(index);
+      for (var i = 0; i < _specials.length; i++) {
         _specials[i] = _specials[i].copyWith(ordine: i);
       }
+      if (_editingIndex == index) _cancelEditing();
     });
   }
 
@@ -105,80 +194,132 @@ class _SpecialsEditorScreenState
     }
   }
 
-  LatLng get _mapCenter {
-    final pts = widget.parsedTrack.points;
-    if (pts.isNotEmpty) {
-      final avgLat =
-          pts.map((p) => p.latitude).reduce((a, b) => a + b) / pts.length;
-      final avgLng =
-          pts.map((p) => p.longitude).reduce((a, b) => a + b) / pts.length;
-      return LatLng(avgLat, avgLng);
+  // --- Map options ---
+  MapOptions get _mapOptions {
+    final hasPts = widget.parsedTrack.points.isNotEmpty;
+    final tapHandler = _selectionMode != _SelectionMode.none
+        ? (TapPosition _, LatLng ll) => _onMapTap(ll)
+        : null;
+
+    if (hasPts) {
+      return MapOptions(
+        initialCameraFit: CameraFit.bounds(
+          bounds: LatLngBounds.fromPoints(widget.parsedTrack.points),
+          padding: const EdgeInsets.all(32),
+        ),
+        onTap: tapHandler,
+      );
     }
-    final wpts = widget.parsedTrack.waypoints;
-    if (wpts.isNotEmpty) {
-      return wpts.first.latLng;
-    }
-    return const LatLng(44.0, 11.0);
+    return MapOptions(
+      initialCenter: const LatLng(44.0, 11.0),
+      initialZoom: 13,
+      onTap: tapHandler,
+    );
   }
 
-  @override
-  Widget build(BuildContext context) {
+  // --- Build map markers ---
+  List<Marker> _buildMarkers() {
     final markers = <Marker>[];
-    for (final wp in widget.parsedTrack.waypoints) {
-      Color color = AppColors.textSecondary;
-      for (final s in _specials) {
-        if (s.waypointInizio.id == wp.id) {
-          color = AppColors.success;
-          break;
-        }
-        if (s.waypointFine.id == wp.id) {
-          color = AppColors.error;
-          break;
-        }
-      }
-      markers.add(Marker(
-        point: wp.latLng,
-        width: 44,
-        height: 44,
-        child: Column(
-          children: [
-            Container(
-              width: 26,
-              height: 26,
-              decoration: BoxDecoration(
-                color: color,
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.white, width: 2),
-              ),
-              child: const Icon(Icons.flag, color: Colors.white, size: 14),
+
+    // Existing specials (excluding the one being edited)
+    for (var i = 0; i < _specials.length; i++) {
+      if (i == _editingIndex) continue;
+      final s = _specials[i];
+      markers.add(_markerAt(s.waypointInizio.latLng, s.color, s.nome,
+          icon: Icons.play_arrow));
+      markers.add(
+          _markerAt(s.waypointFine.latLng, s.color, '', icon: Icons.stop));
+    }
+
+    // Current editing markers
+    final editColor = _isEditing
+        ? AppColors.specialColors[
+            _editingColorIndex % AppColors.specialColors.length]
+        : null;
+    if (_editingInizio != null && editColor != null) {
+      markers.add(_markerAt(
+          _editingInizio!.latLng, editColor, 'Inizio',
+          icon: Icons.play_arrow, large: true));
+    }
+    if (_editingFine != null && editColor != null) {
+      markers.add(_markerAt(
+          _editingFine!.latLng, editColor, 'Fine',
+          icon: Icons.stop, large: true));
+    }
+
+    return markers;
+  }
+
+  Marker _markerAt(LatLng point, Color color, String label,
+      {IconData icon = Icons.circle, bool large = false}) {
+    final size = large ? 32.0 : 22.0;
+    return Marker(
+      point: point,
+      width: size + 8,
+      height: size + 20,
+      child: Column(
+        children: [
+          Container(
+            width: size,
+            height: size,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 2),
+              boxShadow: [
+                BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.4), blurRadius: 4)
+              ],
             ),
+            child: Icon(icon, color: Colors.white, size: size * 0.5),
+          ),
+          if (label.isNotEmpty)
             Text(
-              wp.nome,
+              label,
               style: const TextStyle(
                   color: Colors.white,
                   fontSize: 8,
                   shadows: [Shadow(color: Colors.black, blurRadius: 2)]),
-              overflow: TextOverflow.ellipsis,
             ),
-          ],
-        ),
-      ));
-    }
+        ],
+      ),
+    );
+  }
 
+  // --- Polylines ---
+  List<Polyline> _buildPolylines() {
     final polylines = <Polyline>[];
     if (widget.parsedTrack.points.isNotEmpty) {
       polylines.add(Polyline(
           points: widget.parsedTrack.points,
-          color: Colors.white38,
-          strokeWidth: 2));
+          color: AppColors.accent,
+          strokeWidth: 3));
     }
-    for (final s in _specials) {
+    for (var i = 0; i < _specials.length; i++) {
+      if (i == _editingIndex) continue;
+      final s = _specials[i];
       polylines.add(Polyline(
         points: [s.waypointInizio.latLng, s.waypointFine.latLng],
         color: s.color,
         strokeWidth: 4,
       ));
     }
+    // Current editing special polyline
+    if (_editingInizio != null && _editingFine != null) {
+      final c = AppColors.specialColors[
+          _editingColorIndex % AppColors.specialColors.length];
+      polylines.add(Polyline(
+        points: [_editingInizio!.latLng, _editingFine!.latLng],
+        color: c,
+        strokeWidth: 4,
+      ));
+    }
+    return polylines;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isSelecting = _selectionMode != _SelectionMode.none;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -209,49 +350,85 @@ class _SpecialsEditorScreenState
       ),
       body: Column(
         children: [
-          // Map
+          // --- Map ---
           SizedBox(
-            height: 260,
-            child: FlutterMap(
-              options: MapOptions(
-                initialCenter: _mapCenter,
-                initialZoom: 13,
+            height: 280,
+            child: Stack(
+              children: [
+                MouseRegion(
+                  cursor: isSelecting
+                      ? SystemMouseCursors.precise
+                      : MouseCursor.defer,
+                  child: FlutterMap(
+                    options: _mapOptions,
+                    children: [
+                      TileLayer(
+                        urlTemplate:
+                            'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                        userAgentPackageName: 'com.ccr.ccr_app',
+                      ),
+                      PolylineLayer(polylines: _buildPolylines()),
+                      MarkerLayer(markers: _buildMarkers()),
+                    ],
+                  ),
+                ),
+                // Selection mode banner
+                if (isSelecting)
+                  Positioned(
+                    top: 8,
+                    left: 8,
+                    right: 8,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: AppColors.cardBackground.withValues(alpha: 0.92),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppColors.accent),
+                      ),
+                      child: Text(
+                        'Clicca sulla traccia per selezionare il punto di '
+                        '${_selectionMode == _SelectionMode.inizio ? "inizio" : "fine"}',
+                        style: const TextStyle(
+                            color: AppColors.textPrimary, fontSize: 13),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+
+          // --- Inline editing panel ---
+          if (_isEditing) _buildEditingPanel(),
+
+          // --- Specials list header ---
+          if (!_isEditing)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+              child: Row(
+                children: [
+                  const Text(
+                    'Speciali',
+                    style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold),
+                  ),
+                  const Spacer(),
+                  TextButton.icon(
+                    onPressed: _startAdd,
+                    icon: const Icon(Icons.add, color: AppColors.accent),
+                    label: const Text('Aggiungi',
+                        style: TextStyle(color: AppColors.accent)),
+                  ),
+                ],
               ),
-              children: [
-                TileLayer(
-                  urlTemplate:
-                      'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                  userAgentPackageName: 'com.ccr.ccr_app',
-                ),
-                PolylineLayer(polylines: polylines),
-                MarkerLayer(markers: markers),
-              ],
             ),
-          ),
-          // Specials list
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-            child: Row(
-              children: [
-                const Text(
-                  'Speciali',
-                  style: TextStyle(
-                      color: AppColors.textPrimary,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold),
-                ),
-                const Spacer(),
-                TextButton.icon(
-                  onPressed: _addSpeciale,
-                  icon: const Icon(Icons.add, color: AppColors.accent),
-                  label: const Text('Aggiungi',
-                      style: TextStyle(color: AppColors.accent)),
-                ),
-              ],
-            ),
-          ),
+
+          // --- Specials list ---
           Expanded(
-            child: _specials.isEmpty
+            child: _specials.isEmpty && !_isEditing
                 ? const Center(
                     child: Text(
                       'Nessuna speciale.\nPremi "Aggiungi" per crearne una.',
@@ -264,7 +441,7 @@ class _SpecialsEditorScreenState
                     itemCount: _specials.length,
                     itemBuilder: (ctx, i) => SpecialTile(
                       special: _specials[i],
-                      onEdit: () => _editSpeciale(i),
+                      onEdit: () => _startEdit(i),
                       onDelete: () => _deleteSpeciale(i),
                     ),
                   ),
@@ -273,223 +450,180 @@ class _SpecialsEditorScreenState
       ),
     );
   }
-}
 
-// Dialog to add or edit a special
-class _AddSpecialDialog extends StatefulWidget {
-  final List<WaypointModel> waypoints;
-  final int ordine;
-  final List<SpecialModel> existingSpecials;
-  final SpecialModel? editing;
-
-  const _AddSpecialDialog({
-    required this.waypoints,
-    required this.ordine,
-    required this.existingSpecials,
-    this.editing,
-  });
-
-  @override
-  State<_AddSpecialDialog> createState() => _AddSpecialDialogState();
-}
-
-class _AddSpecialDialogState extends State<_AddSpecialDialog> {
-  final _nomeCtrl = TextEditingController();
-  int _colorIndex = 0;
-  WaypointModel? _inizio;
-  WaypointModel? _fine;
-
-  @override
-  void initState() {
-    super.initState();
-    if (widget.editing != null) {
-      final e = widget.editing!;
-      _nomeCtrl.text = e.nome;
-      _colorIndex = e.colorIndex;
-      try {
-        _inizio = widget.waypoints
-            .firstWhere((w) => w.id == e.waypointInizio.id);
-      } catch (_) {
-        _inizio = e.waypointInizio;
-      }
-      try {
-        _fine = widget.waypoints
-            .firstWhere((w) => w.id == e.waypointFine.id);
-      } catch (_) {
-        _fine = e.waypointFine;
-      }
-    } else {
-      _colorIndex = widget.ordine % AppColors.specialColors.length;
-    }
-  }
-
-  @override
-  void dispose() {
-    _nomeCtrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      backgroundColor: AppColors.cardBackground,
-      title: Text(
-        widget.editing != null ? 'Modifica Speciale' : 'Aggiungi Speciale',
-        style: const TextStyle(color: AppColors.textPrimary),
-      ),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            TextFormField(
-              controller: _nomeCtrl,
-              style: const TextStyle(color: AppColors.textPrimary),
-              decoration: const InputDecoration(
-                labelText: 'Nome speciale',
-                labelStyle: TextStyle(color: AppColors.textSecondary),
+  Widget _buildEditingPanel() {
+    final hasPts = widget.parsedTrack.points.isNotEmpty;
+    return Container(
+      color: AppColors.cardBackground,
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Nome + colori
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _nomeCtrl,
+                  style: const TextStyle(
+                      color: AppColors.textPrimary, fontSize: 15),
+                  decoration: InputDecoration(
+                    labelText: 'Nome speciale',
+                    labelStyle:
+                        const TextStyle(color: AppColors.textSecondary),
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 8),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide:
+                          const BorderSide(color: AppColors.border),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide:
+                          const BorderSide(color: AppColors.accent, width: 2),
+                    ),
+                  ),
+                ),
               ),
-            ),
-            const SizedBox(height: 16),
-            const Text('Colore',
-                style: TextStyle(
-                    color: AppColors.textSecondary, fontSize: 13)),
-            const SizedBox(height: 8),
-            Row(
-              children: List.generate(
-                AppColors.specialColors.length,
-                (i) => GestureDetector(
-                  onTap: () => setState(() => _colorIndex = i),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    width: 32,
-                    height: 32,
-                    margin: const EdgeInsets.only(right: 8),
-                    decoration: BoxDecoration(
-                      color: AppColors.specialColors[i],
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: _colorIndex == i
-                            ? Colors.white
-                            : Colors.transparent,
-                        width: 3,
+              const SizedBox(width: 12),
+              // Color picker
+              Row(
+                children: List.generate(
+                  AppColors.specialColors.length,
+                  (i) => GestureDetector(
+                    onTap: () => setState(() => _editingColorIndex = i),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 150),
+                      width: 28,
+                      height: 28,
+                      margin: const EdgeInsets.only(left: 6),
+                      decoration: BoxDecoration(
+                        color: AppColors.specialColors[i],
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: _editingColorIndex == i
+                              ? Colors.white
+                              : Colors.transparent,
+                          width: 3,
+                        ),
                       ),
                     ),
                   ),
                 ),
               ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          // Inizio selector
+          _buildPointSelector(
+            label: 'Inizio',
+            waypoint: _editingInizio,
+            mode: _SelectionMode.inizio,
+            color: AppColors.success,
+            enabled: hasPts,
+          ),
+          const SizedBox(height: 8),
+          // Fine selector
+          _buildPointSelector(
+            label: 'Fine',
+            waypoint: _editingFine,
+            mode: _SelectionMode.fine,
+            color: AppColors.warning,
+            enabled: hasPts,
+          ),
+          if (!hasPts)
+            const Padding(
+              padding: EdgeInsets.only(top: 6),
+              child: Text(
+                'Carica un file GPX per selezionare i punti sulla traccia.',
+                style:
+                    TextStyle(color: AppColors.textSecondary, fontSize: 11),
+              ),
             ),
-            const SizedBox(height: 16),
-            const Text('Waypoint Inizio',
-                style: TextStyle(
-                    color: AppColors.textSecondary, fontSize: 13)),
-            const SizedBox(height: 4),
-            _WaypointDropdown(
-              waypoints: widget.waypoints,
-              selected: _inizio,
-              hint: 'Seleziona inizio',
-              onChanged: (w) => setState(() => _inizio = w),
-              accentColor: AppColors.success,
-            ),
-            const SizedBox(height: 12),
-            const Text('Waypoint Fine',
-                style: TextStyle(
-                    color: AppColors.textSecondary, fontSize: 13)),
-            const SizedBox(height: 4),
-            _WaypointDropdown(
-              waypoints: widget.waypoints,
-              selected: _fine,
-              hint: 'Seleziona fine',
-              onChanged: (w) => setState(() => _fine = w),
-              accentColor: AppColors.error,
-            ),
-          ],
-        ),
+          const SizedBox(height: 12),
+          // Actions
+          Row(
+            children: [
+              TextButton(
+                onPressed: _cancelEditing,
+                child: const Text('Annulla',
+                    style: TextStyle(color: AppColors.textSecondary)),
+              ),
+              const Spacer(),
+              ElevatedButton(
+                onPressed: (_editingInizio != null &&
+                        _editingFine != null &&
+                        _nomeCtrl.text.trim().isNotEmpty)
+                    ? _confirmEditing
+                    : null,
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.accent),
+                child: Text(
+                    _editingIndex >= 0 ? 'Salva modifiche' : 'Aggiungi'),
+              ),
+            ],
+          ),
+        ],
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Annulla',
-              style: TextStyle(color: AppColors.textSecondary)),
-        ),
-        ElevatedButton(
-          onPressed: () {
-            if (_nomeCtrl.text.trim().isEmpty) return;
-            if (_inizio == null || _fine == null) return;
-            final result = SpecialModel(
-              id: widget.editing?.id ?? const Uuid().v4(),
-              nome: _nomeCtrl.text.trim(),
-              colorIndex: _colorIndex,
-              waypointInizio: _inizio!,
-              waypointFine: _fine!,
-              ordine: widget.ordine,
-            );
-            Navigator.pop(context, result);
-          },
-          style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.accent),
-          child: Text(widget.editing != null ? 'Salva' : 'Aggiungi'),
-        ),
-      ],
     );
   }
-}
 
-class _WaypointDropdown extends StatelessWidget {
-  final List<WaypointModel> waypoints;
-  final WaypointModel? selected;
-  final String hint;
-  final void Function(WaypointModel?) onChanged;
-  final Color accentColor;
-
-  const _WaypointDropdown({
-    required this.waypoints,
-    required this.selected,
-    required this.hint,
-    required this.onChanged,
-    required this.accentColor,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    if (waypoints.isEmpty) {
-      return const Text(
-        'Nessun waypoint disponibile. Carica un file GPX.',
-        style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
-      );
-    }
-    return DropdownButtonFormField<WaypointModel>(
-      initialValue: selected,
-      hint: Text(hint,
-          style: const TextStyle(color: AppColors.textSecondary)),
-      dropdownColor: AppColors.cardBackground,
-      style: const TextStyle(color: AppColors.textPrimary),
-      decoration: InputDecoration(
-        filled: true,
-        fillColor: AppColors.background,
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: BorderSide(color: accentColor),
+  Widget _buildPointSelector({
+    required String label,
+    required WaypointModel? waypoint,
+    required _SelectionMode mode,
+    required Color color,
+    required bool enabled,
+  }) {
+    final isActive = _selectionMode == mode;
+    return Row(
+      children: [
+        Expanded(
+          flex: 2,
+          child: OutlinedButton.icon(
+            onPressed: enabled
+                ? () => setState(() {
+                      _selectionMode =
+                          isActive ? _SelectionMode.none : mode;
+                    })
+                : null,
+            icon: Icon(
+              isActive ? Icons.my_location : Icons.add_location_alt,
+              size: 16,
+              color: isActive ? AppColors.accent : color,
+            ),
+            label: Text(
+              isActive ? 'Clicca sulla mappa...' : 'Seleziona $label',
+              style: TextStyle(
+                  fontSize: 13,
+                  color: isActive ? AppColors.accent : color),
+            ),
+            style: OutlinedButton.styleFrom(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              side: BorderSide(
+                  color: isActive ? AppColors.accent : color, width: 1.5),
+            ),
+          ),
         ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: BorderSide(color: accentColor.withValues(alpha: 0.5)),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: BorderSide(color: accentColor, width: 2),
-        ),
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      ),
-      items: waypoints
-          .map((w) => DropdownMenuItem(
-                value: w,
-                child: Text(w.nome,
-                    style: const TextStyle(color: AppColors.textPrimary)),
-              ))
-          .toList(),
-      onChanged: onChanged,
+        if (waypoint != null) ...[
+          const SizedBox(width: 8),
+          Expanded(
+            flex: 3,
+            child: Text(
+              '${waypoint.lat.toStringAsFixed(5)}, ${waypoint.lng.toStringAsFixed(5)}',
+              style: const TextStyle(
+                  color: AppColors.textSecondary, fontSize: 11),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ],
     );
   }
 }

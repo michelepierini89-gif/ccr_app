@@ -42,21 +42,38 @@ class _TrackMapScreenState extends State<TrackMapScreen> {
     return LatLng(avgLat, avgLng);
   }
 
+  MapOptions get _mapOptions {
+    if (widget.trackPoints.isNotEmpty) {
+      return MapOptions(
+        initialCameraFit: CameraFit.bounds(
+          bounds: LatLngBounds.fromPoints(widget.trackPoints),
+          padding: const EdgeInsets.all(32),
+        ),
+        interactionOptions: InteractionOptions(
+          flags: widget.interactive
+              ? InteractiveFlag.all
+              : InteractiveFlag.none,
+        ),
+      );
+    }
+    return MapOptions(
+      initialCenter: _center,
+      initialZoom: 13,
+      interactionOptions: InteractionOptions(
+        flags: widget.interactive
+            ? InteractiveFlag.all
+            : InteractiveFlag.none,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
         Expanded(
           child: FlutterMap(
-            options: MapOptions(
-              initialCenter: _center,
-              initialZoom: 13,
-              interactionOptions: InteractionOptions(
-                flags: widget.interactive
-                    ? InteractiveFlag.all
-                    : InteractiveFlag.none,
-              ),
-            ),
+            options: _mapOptions,
             children: [
               TileLayer(
                 urlTemplate:

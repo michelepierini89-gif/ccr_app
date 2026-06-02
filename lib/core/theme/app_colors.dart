@@ -15,15 +15,15 @@ class AppColors {
   static const Color divider = Color(0xFF1e2230);
 
   static const List<Color> specialColors = [
-    Color(0xFFe53e1e),
     Color(0xFF3498db),
     Color(0xFF2ecc71),
     Color(0xFFf39c12),
     Color(0xFF9b59b6),
     Color(0xFF1abc9c),
+    Color(0xFFe67e22),
   ];
 
   static const List<String> specialColorNames = [
-    'Rosso', 'Blu', 'Verde', 'Arancio', 'Viola', 'Turchese',
+    'Blu', 'Verde', 'Arancio', 'Viola', 'Turchese', 'Arancio scuro',
   ];
 }

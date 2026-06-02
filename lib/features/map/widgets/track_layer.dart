@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import '../../../core/models/special_model.dart';
+import '../../../core/theme/app_colors.dart';
 
 class TrackLayer extends StatelessWidget {
   final List<LatLng> trackPoints;
@@ -16,8 +17,8 @@ class TrackLayer extends StatelessWidget {
     if (trackPoints.isNotEmpty) {
       polylines.add(Polyline(
         points: trackPoints,
-        color: Colors.white54,
-        strokeWidth: 2,
+        color: AppColors.accent,
+        strokeWidth: 3,
       ));
     }
     for (final s in specials) {

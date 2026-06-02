@@ -28,8 +28,9 @@ class _EventManagementScreenState
     extends ConsumerState<EventManagementScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
-  bool _uploadingTrack = false;
+  bool _isTrackLoading = false;
   ParsedTrack? _parsedTrack;
+  String? _loadedTrackUrl;
 
   @override
   void initState() {
@@ -86,6 +87,39 @@ class _EventManagementScreenState
     }
   }
 
+  Future<void> _autoLoadTrack(String url) async {
+    if (_isTrackLoading) return;
+    setState(() {
+      _isTrackLoading = true;
+      _loadedTrackUrl = url;
+    });
+    try {
+      final bytes = await StorageService().downloadTrack(url);
+      final content = utf8.decode(bytes);
+      final ext = url.contains('track.kml') ? 'kml' : 'gpx';
+      final parsed = ext == 'gpx'
+          ? GpxParser.parseGpx(content)
+          : GpxParser.parseKml(content);
+      if (mounted) setState(() => _parsedTrack = parsed);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _loadedTrackUrl = null);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Errore caricamento tracciato: $e'),
+          backgroundColor: AppColors.error,
+          duration: const Duration(seconds: 8),
+          action: SnackBarAction(
+            label: 'Riprova',
+            textColor: Colors.white,
+            onPressed: () => _autoLoadTrack(url),
+          ),
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _isTrackLoading = false);
+    }
+  }
+
   Future<void> _pickAndUploadTrack(
       BuildContext context, EventModel event) async {
     final result = await FilePicker.platform.pickFiles(
@@ -98,7 +132,7 @@ class _EventManagementScreenState
     final bytes = picked.bytes;
     if (bytes == null) return;
 
-    setState(() => _uploadingTrack = true);
+    setState(() => _isTrackLoading = true);
     try {
       final content = utf8.decode(bytes);
       final ext = (picked.extension ?? 'gpx').toLowerCase();
@@ -106,12 +140,16 @@ class _EventManagementScreenState
           ? GpxParser.parseGpx(content)
           : GpxParser.parseKml(content);
 
-      // Upload to storage
       final url = await StorageService().uploadTrack(event.id, bytes, ext);
       await ref.read(firestoreServiceProvider).updateEvent(
             event.copyWith(trackUrl: url),
           );
-      setState(() => _parsedTrack = parsed);
+      if (mounted) {
+        setState(() {
+          _parsedTrack = parsed;
+          _loadedTrackUrl = url;
+        });
+      }
 
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -129,7 +167,7 @@ class _EventManagementScreenState
         ),
       );
     } finally {
-      if (mounted) setState(() => _uploadingTrack = false);
+      if (mounted) setState(() => _isTrackLoading = false);
     }
   }
 
@@ -166,6 +204,15 @@ class _EventManagementScreenState
                   style: TextStyle(color: AppColors.textSecondary)),
             ),
           );
+        }
+
+        // Auto-load track from Storage when URL is available but track not yet parsed
+        if (event.trackUrl != null &&
+            _parsedTrack == null &&
+            _loadedTrackUrl != event.trackUrl &&
+            !_isTrackLoading) {
+          WidgetsBinding.instance.addPostFrameCallback(
+              (_) => _autoLoadTrack(event.trackUrl!));
         }
 
         final statusColor = _statusColor(event.stato);
@@ -279,7 +326,7 @@ class _EventManagementScreenState
                       event: event,
                       parsedTrack: _parsedTrack,
                       trackAvailable: trackAvailable,
-                      uploadingTrack: _uploadingTrack,
+                      uploadingTrack: _isTrackLoading,
                       onPickTrack: () =>
                           _pickAndUploadTrack(context, event),
                       onManageSpecials: () {
@@ -338,98 +385,91 @@ class _TracciatoTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      child: Column(
+    if (!trackAvailable) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.map_outlined,
+                color: AppColors.textSecondary, size: 64),
+            const SizedBox(height: 16),
+            const Text(
+              'Nessun tracciato caricato',
+              style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            const Text('Carica un file GPX o KML',
+                style: TextStyle(color: AppColors.textSecondary)),
+            const SizedBox(height: 24),
+            if (uploadingTrack)
+              const CircularProgressIndicator(color: AppColors.accent)
+            else
+              ElevatedButton.icon(
+                onPressed: onPickTrack,
+                icon: const Icon(Icons.upload_file),
+                label: const Text('Carica tracciato GPX/KML'),
+              ),
+          ],
+        ),
+      );
+    }
+
+    // Side-by-side layout: controls left 40%, square map right 60%
+    return LayoutBuilder(builder: (ctx, constraints) {
+      final mapSide = (constraints.maxWidth * 0.6).clamp(200.0, 700.0);
+      final controlsWidth = constraints.maxWidth - mapSide;
+
+      return Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (!trackAvailable) ...[
-            const SizedBox(height: 48),
-            Center(
-              child: Column(
-                children: [
-                  const Icon(Icons.map_outlined,
-                      color: AppColors.textSecondary, size: 64),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'Nessun tracciato caricato',
-                    style: TextStyle(
-                        color: AppColors.textPrimary,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Carica un file GPX o KML',
-                    style:
-                        TextStyle(color: AppColors.textSecondary),
-                  ),
-                  const SizedBox(height: 24),
-                  if (uploadingTrack)
-                    const CircularProgressIndicator(
-                        color: AppColors.accent)
-                  else
-                    ElevatedButton.icon(
-                      onPressed: onPickTrack,
-                      icon: const Icon(Icons.upload_file),
-                      label: const Text('Carica tracciato GPX/KML'),
-                    ),
-                ],
-              ),
-            ),
-          ] else ...[
-            if (parsedTrack != null) ...[
-              SizedBox(
-                height: 300,
-                child: TrackMapScreen(
-                  trackPoints: parsedTrack!.points,
-                  specials: event.speciali,
-                  waypoints: parsedTrack!.waypoints,
-                  interactive: true,
-                ),
-              ),
-            ] else ...[
-              Container(
-                height: 200,
-                color: AppColors.cardBackground,
-                child: const Center(
-                  child: Text(
-                    'Tracciato caricato su server.\nRicarica il file per visualizzarlo.',
-                    style: TextStyle(
-                        color: AppColors.textSecondary),
-                    textAlign: TextAlign.center,
-                  ),
-                ),
-              ),
-            ],
-            Padding(
+          // ── LEFT: controls ──
+          SizedBox(
+            width: controlsWidth,
+            child: SingleChildScrollView(
               padding: const EdgeInsets.all(16),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: onManageSpecials,
-                          icon: const Icon(Icons.edit_location_alt),
-                          label: const Text('Gestisci Speciali'),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      OutlinedButton.icon(
-                        onPressed: uploadingTrack ? null : onPickTrack,
-                        icon: const Icon(Icons.upload_file),
-                        label: const Text('Sostituisci'),
-                      ),
-                    ],
+                  ElevatedButton.icon(
+                    onPressed: parsedTrack != null ? onManageSpecials : null,
+                    icon: const Icon(Icons.edit_location_alt),
+                    label: const Text('Gestisci Speciali'),
+                    style: ElevatedButton.styleFrom(
+                        minimumSize: const Size(0, 48)),
                   ),
-                  if (event.speciali.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  OutlinedButton.icon(
+                    onPressed: uploadingTrack ? null : onPickTrack,
+                    icon: const Icon(Icons.upload_file),
+                    label: const Text('Sostituisci tracciato'),
+                    style: OutlinedButton.styleFrom(
+                        minimumSize: const Size(0, 48)),
+                  ),
+                  if (parsedTrack != null) ...[
                     const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: AppColors.cardBackground,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        '${parsedTrack!.points.length} punti GPS',
+                        style: const TextStyle(
+                            color: AppColors.textSecondary, fontSize: 12),
+                      ),
+                    ),
+                  ],
+                  if (event.speciali.isNotEmpty) ...[
+                    const SizedBox(height: 20),
                     const Text(
                       'Speciali',
                       style: TextStyle(
                           color: AppColors.textPrimary,
-                          fontSize: 16,
+                          fontSize: 15,
                           fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 8),
@@ -438,9 +478,56 @@ class _TracciatoTab extends StatelessWidget {
                 ],
               ),
             ),
-          ],
+          ),
+          // ── RIGHT: square map ──
+          SizedBox(
+            width: mapSide,
+            height: mapSide,
+            child: parsedTrack != null
+                ? TrackMapScreen(
+                    trackPoints: parsedTrack!.points,
+                    specials: event.speciali,
+                    waypoints: parsedTrack!.waypoints,
+                    interactive: true,
+                  )
+                : Container(
+                    color: AppColors.cardBackground,
+                    child: Center(
+                      child: uploadingTrack
+                          ? const Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                CircularProgressIndicator(
+                                    color: AppColors.accent),
+                                SizedBox(height: 12),
+                                Text('Caricamento tracciato...',
+                                    style: TextStyle(
+                                        color: AppColors.textSecondary)),
+                              ],
+                            )
+                          : Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(Icons.error_outline,
+                                    color: AppColors.error, size: 40),
+                                const SizedBox(height: 12),
+                                const Text('Errore caricamento',
+                                    style: TextStyle(
+                                        color: AppColors.textSecondary)),
+                                const SizedBox(height: 8),
+                                TextButton(
+                                  onPressed: onPickTrack,
+                                  child: const Text('Carica manualmente',
+                                      style:
+                                          TextStyle(color: AppColors.accent)),
+                                ),
+                              ],
+                            ),
+                    ),
+                  ),
+          ),
         ],
-      ),
-    );
+      );
+    });
   }
 }
