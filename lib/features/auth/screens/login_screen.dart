@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/models/user_model.dart';
 import '../providers/auth_provider.dart';
@@ -21,6 +22,22 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   bool _isLoading = false;
   bool _obscurePassword = true;
 
+  static const _savedEmailKey = 'ccr_saved_email';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedEmail();
+  }
+
+  Future<void> _loadSavedEmail() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString(_savedEmailKey);
+    if (saved != null && mounted) {
+      setState(() => _emailCtrl.text = saved);
+    }
+  }
+
   @override
   void dispose() {
     _emailCtrl.dispose();
@@ -32,9 +49,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isLoading = true);
     try {
+      final email = _emailCtrl.text;
       final userModel = await ref
           .read(authServiceProvider)
-          .signIn(_emailCtrl.text, _passwordCtrl.text);
+          .signIn(email, _passwordCtrl.text);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_savedEmailKey, email.trim());
       if (!mounted) return;
       if (userModel.role == UserRole.admin) {
         context.go('/admin');

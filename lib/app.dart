@@ -20,14 +20,13 @@ final _routerProvider = Provider<GoRouter>((ref) {
   return GoRouter(
     initialLocation: '/login',
     redirect: (context, state) async {
-      final authState = ref.read(authStateProvider);
-      final isLoggedIn = authState.valueOrNull != null;
+      final user = await ref.read(authStateProvider.future);
+      final isLoggedIn = user != null;
       final isAuthRoute = state.matchedLocation == '/login' ||
           state.matchedLocation == '/register';
 
       if (!isLoggedIn && !isAuthRoute) return '/login';
       if (isLoggedIn && isAuthRoute) {
-        // Check role and redirect
         final userModel = await ref.read(currentUserModelProvider.future);
         if (userModel?.role == UserRole.admin) return '/admin';
         return '/pilot';

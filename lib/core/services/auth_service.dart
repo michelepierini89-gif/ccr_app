@@ -1,5 +1,6 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import '../constants/firebase_constants.dart';
 import '../models/user_model.dart';
 
@@ -11,6 +12,9 @@ class AuthService {
   User? get currentUser => _auth.currentUser;
 
   Future<UserModel> signIn(String email, String password) async {
+    if (kIsWeb) {
+      await _auth.setPersistence(Persistence.LOCAL);
+    }
     final cred = await _auth.signInWithEmailAndPassword(
       email: email.trim(),
       password: password,
