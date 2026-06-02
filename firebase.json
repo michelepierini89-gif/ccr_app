@@ -1,0 +1,24 @@
+{
+  "firestore": {
+    "indexes": "firestore.indexes.json"
+  },
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "ccr-enduro",
+          "appId": "1:688005570976:android:a7ec569d78cdfbf72b84c5",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "ccr-enduro",
+          "configurations": {
+            "android": "1:688005570976:android:a7ec569d78cdfbf72b84c5"
+          }
+        }
+      }
+    }
+  }
+}
