@@ -786,8 +786,29 @@ class _PilotRegistrationSectionState
               );
             },
           ),
-        ],
-      ),
-    );
+        // Classifica button — always visible
+        const SizedBox(height: 8),
+        const Divider(color: AppColors.border),
+        const SizedBox(height: 8),
+        SizedBox(
+          width: double.infinity,
+          height: 46,
+          child: OutlinedButton.icon(
+            onPressed: () =>
+                context.push('/pilot/event/${widget.eventId}/classifica'),
+            style: OutlinedButton.styleFrom(
+              side: BorderSide(
+                  color: AppColors.accent.withValues(alpha: 0.6)),
+              foregroundColor: AppColors.accent,
+            ),
+            icon: const Icon(Icons.leaderboard, size: 18),
+            label: const Text('CLASSIFICA',
+                style: TextStyle(
+                    fontWeight: FontWeight.bold, letterSpacing: 0.5)),
+          ),
+        ),
+      ],
+    ),
+  );
   }
 }

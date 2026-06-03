@@ -4,6 +4,7 @@ import '../models/event_model.dart';
 import '../models/registration_model.dart';
 import '../models/team_model.dart';
 import '../models/gps_point_model.dart';
+import '../models/classifica_model.dart';
 
 class FirestoreService {
   final _db = FirebaseFirestore.instance;
@@ -204,6 +205,22 @@ class FirestoreService {
       'userId': userId,
     });
   }
+
+  Stream<List<WaypointPassageRecord>> getPassagesStream(String eventId) => _db
+      .collection(FirebaseConstants.tracking)
+      .doc(eventId)
+      .collection(FirebaseConstants.passages)
+      .orderBy('timestamp')
+      .snapshots()
+      .map((s) =>
+          s.docs.map((d) => WaypointPassageRecord.fromFirestore(d)).toList());
+
+  Stream<Set<String>> getWithdrawalsStream(String eventId) => _db
+      .collection(FirebaseConstants.events)
+      .doc(eventId)
+      .collection(FirebaseConstants.withdrawals)
+      .snapshots()
+      .map((s) => s.docs.map((d) => d.id).toSet());
 
   Future<void> _createNotification(
       String eventId, Map<String, dynamic> data) =>

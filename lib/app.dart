@@ -15,6 +15,7 @@ import 'features/pilot/screens/pilot_home_screen.dart';
 import 'features/pilot/screens/event_detail_screen.dart';
 import 'features/pilot/screens/team_screen.dart';
 import 'features/pilot/screens/gps_recording_screen.dart';
+import 'features/classifica/screens/classifica_screen.dart';
 
 final _routerProvider = Provider<GoRouter>((ref) {
   return GoRouter(
@@ -99,6 +100,13 @@ final _routerProvider = Provider<GoRouter>((ref) {
                 builder: (context, state) {
                   final eventId = state.pathParameters['id']!;
                   return TeamScreen(eventId: eventId);
+                },
+              ),
+              GoRoute(
+                path: 'classifica',
+                builder: (context, state) {
+                  final eventId = state.pathParameters['id']!;
+                  return ClassificaScreen(eventId: eventId);
                 },
               ),
             ],

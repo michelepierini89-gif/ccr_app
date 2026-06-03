@@ -19,6 +19,7 @@ import '../widgets/special_tile.dart';
 import 'registrations_screen.dart';
 import 'live_tracking_screen.dart';
 import 'specials_editor_screen.dart';
+import '../../classifica/screens/classifica_screen.dart';
 
 class EventManagementScreen extends ConsumerStatefulWidget {
   final String eventId;
@@ -40,7 +41,7 @@ class _EventManagementScreenState
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 4, vsync: this);
   }
 
   @override
@@ -268,6 +269,7 @@ class _EventManagementScreenState
                 const Tab(text: 'Tracciato'),
                 _buildLockedTab('Iscrizioni', event.stato == EventStatus.bozza),
                 _buildLockedTab('Live', event.stato == EventStatus.bozza),
+                _buildLockedTab('Classifica', event.stato == EventStatus.bozza),
               ],
             ),
           ),
@@ -389,6 +391,8 @@ class _EventManagementScreenState
                       maxSquadra: event.maxSquadra,
                     ),
                     LiveTrackingScreen(eventId: event.id),
+                    ClassificaScreen(
+                        eventId: event.id, showAppBar: false),
                   ],
                 ),
               ),
@@ -613,28 +617,32 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
 
   // ── Map widget ─────────────────────────────────────────────────────────────
 
-  Widget _mapWidget() => widget.parsedTrack != null
-      ? TrackMapScreen(
-          trackPoints: widget.parsedTrack!.points,
-          specials: widget.event.speciali,
-          waypoints: widget.parsedTrack!.waypoints,
-          fuelPoint: widget.event.fuelPoint,
-          interactive: true,
-        )
-      : Container(
-          color: AppColors.cardBackground,
-          child: Center(
-            child: widget.uploadingTrack
-                ? const Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      CircularProgressIndicator(color: AppColors.accent),
-                      SizedBox(height: 12),
-                      Text('Caricamento tracciato...',
-                          style: TextStyle(color: AppColors.textSecondary)),
-                    ],
-                  )
-                : Column(
+  Widget _mapWidget() {
+    if (widget.parsedTrack != null) {
+      return TrackMapScreen(
+        trackPoints: widget.parsedTrack!.points,
+        specials: widget.event.speciali,
+        waypoints: widget.parsedTrack!.waypoints,
+        fuelPoint: widget.event.fuelPoint,
+        interactive: true,
+      );
+    }
+    return Container(
+      color: AppColors.cardBackground,
+      child: Center(
+        child: widget.uploadingTrack
+            ? const Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(color: AppColors.accent),
+                  SizedBox(height: 12),
+                  Text('Caricamento tracciato...',
+                      style: TextStyle(color: AppColors.textSecondary)),
+                ],
+              )
+            : widget.trackAvailable
+                // URL present but parse failed
+                ? Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       const Icon(Icons.error_outline,
@@ -649,9 +657,22 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
                             style: TextStyle(color: AppColors.accent)),
                       ),
                     ],
+                  )
+                // No track at all
+                : const Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.map_outlined,
+                          color: AppColors.textSecondary, size: 48),
+                      SizedBox(height: 8),
+                      Text('Nessun tracciato',
+                          style: TextStyle(
+                              color: AppColors.textSecondary, fontSize: 13)),
+                    ],
                   ),
-          ),
-        );
+      ),
+    );
+  }
 
   // ── Controls column ────────────────────────────────────────────────────────
 
@@ -888,51 +909,22 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
 
   @override
   Widget build(BuildContext context) {
-    if (!widget.trackAvailable) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.map_outlined,
-                color: AppColors.textSecondary, size: 64),
-            const SizedBox(height: 16),
-            const Text('Nessun tracciato caricato',
-                style: TextStyle(
-                    color: AppColors.textPrimary,
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            const Text('Carica un file GPX o KML',
-                style: TextStyle(color: AppColors.textSecondary)),
-            const SizedBox(height: 24),
-            if (widget.uploadingTrack)
-              const CircularProgressIndicator(color: AppColors.accent)
-            else
-              ElevatedButton.icon(
-                onPressed: widget.onPickTrack,
-                icon: const Icon(Icons.upload_file),
-                label: const Text('Carica tracciato GPX/KML'),
-                style:
-                    ElevatedButton.styleFrom(minimumSize: const Size(0, 52)),
-              ),
-          ],
-        ),
-      );
-    }
-
     return LayoutBuilder(builder: (ctx, constraints) {
       final isWide = constraints.maxWidth >= 600;
       final mapSide = isWide
           ? (constraints.maxWidth * 0.6).clamp(200.0, 700.0)
           : constraints.maxWidth;
+      // Map height for mobile: compact when no track, full when available
+      final mapH = widget.trackAvailable
+          ? (constraints.maxWidth * 0.75).clamp(220.0, 420.0)
+          : 160.0;
 
       if (!isWide) {
         return SingleChildScrollView(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              SizedBox(
-                  width: mapSide, height: mapSide, child: _mapWidget()),
+              SizedBox(width: mapSide, height: mapH, child: _mapWidget()),
               Padding(
                   padding: const EdgeInsets.all(16),
                   child: _buildControlsColumn()),
