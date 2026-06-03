@@ -8,7 +8,14 @@ import '../providers/admin_provider.dart';
 
 class RegistrationsScreen extends ConsumerWidget {
   final String eventId;
-  const RegistrationsScreen({super.key, required this.eventId});
+  final int minSquadra;
+  final int maxSquadra;
+  const RegistrationsScreen({
+    super.key,
+    required this.eventId,
+    this.minSquadra = 2,
+    this.maxSquadra = 3,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -23,8 +30,11 @@ class RegistrationsScreen extends ConsumerWidget {
               style: const TextStyle(color: AppColors.error))),
       data: (regs) {
         final teams = teamsAsync.valueOrNull ?? [];
-        final incompleteTeams =
-            teams.where((t) => t.membriIds.length < 2).toList();
+        final incompleteTeams = teams
+            .where((t) =>
+                t.membriIds.length < minSquadra ||
+                t.membriIds.length > maxSquadra)
+            .toList();
 
         return Column(
           children: [
@@ -40,7 +50,7 @@ class RegistrationsScreen extends ConsumerWidget {
                         color: AppColors.warning, size: 18),
                     const SizedBox(width: 8),
                     Text(
-                      '${incompleteTeams.length} squadr${incompleteTeams.length == 1 ? "a incompleta" : "e incomplete"} (pilota senza copilota)',
+                      '${incompleteTeams.length} squadr${incompleteTeams.length == 1 ? "a" : "e"} fuori dimensione (min $minSquadra–max $maxSquadra)',
                       style: const TextStyle(
                           color: AppColors.warning, fontSize: 13),
                     ),
@@ -68,34 +78,21 @@ class RegistrationsScreen extends ConsumerWidget {
                       child: TabBarView(
                         children: [
                           _RegistrationList(
-                              regs: regs,
-                              teams: teams,
-                              eventId: eventId,
-                              ref: ref),
+                              regs: regs, teams: teams,
+                              eventId: eventId, ref: ref,
+                              minSquadra: minSquadra, maxSquadra: maxSquadra),
                           _RegistrationList(
-                              regs: regs
-                                  .where((r) =>
-                                      r.stato == RegistrationStatus.inAttesa)
-                                  .toList(),
-                              teams: teams,
-                              eventId: eventId,
-                              ref: ref),
+                              regs: regs.where((r) => r.stato == RegistrationStatus.inAttesa).toList(),
+                              teams: teams, eventId: eventId, ref: ref,
+                              minSquadra: minSquadra, maxSquadra: maxSquadra),
                           _RegistrationList(
-                              regs: regs
-                                  .where((r) =>
-                                      r.stato == RegistrationStatus.approvato)
-                                  .toList(),
-                              teams: teams,
-                              eventId: eventId,
-                              ref: ref),
+                              regs: regs.where((r) => r.stato == RegistrationStatus.approvato).toList(),
+                              teams: teams, eventId: eventId, ref: ref,
+                              minSquadra: minSquadra, maxSquadra: maxSquadra),
                           _RegistrationList(
-                              regs: regs
-                                  .where((r) =>
-                                      r.stato == RegistrationStatus.rifiutato)
-                                  .toList(),
-                              teams: teams,
-                              eventId: eventId,
-                              ref: ref),
+                              regs: regs.where((r) => r.stato == RegistrationStatus.rifiutato).toList(),
+                              teams: teams, eventId: eventId, ref: ref,
+                              minSquadra: minSquadra, maxSquadra: maxSquadra),
                         ],
                       ),
                     ),
@@ -115,12 +112,16 @@ class _RegistrationList extends StatelessWidget {
   final List<TeamModel> teams;
   final String eventId;
   final WidgetRef ref;
+  final int minSquadra;
+  final int maxSquadra;
 
   const _RegistrationList({
     required this.regs,
     required this.teams,
     required this.eventId,
     required this.ref,
+    required this.minSquadra,
+    required this.maxSquadra,
   });
 
   Future<void> _updateStatus(
@@ -193,7 +194,9 @@ class _RegistrationList extends StatelessWidget {
         final statusColor = _statusColor(reg.stato);
         final team = _teamOf(reg.userId);
         final partner = team != null ? _partnerName(reg.userId, team) : null;
-        final isTeamIncomplete = team != null && team.membriIds.length < 2;
+        final isTeamIncomplete = team != null &&
+            (team.membriIds.length < minSquadra ||
+                team.membriIds.length > maxSquadra);
 
         return Container(
           margin: const EdgeInsets.only(bottom: 10),
