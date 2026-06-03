@@ -40,19 +40,13 @@ class TrackLayer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final polylines = <Polyline>[];
-    if (trackPoints.isNotEmpty) {
-      polylines.add(Polyline(
-        points: trackPoints,
-        color: AppColors.accent,
-        strokeWidth: 3,
-      ));
-    }
+    // Specials first (underneath), wider stroke
     for (final s in specials) {
       if (trackPoints.isEmpty) {
         polylines.add(Polyline(
           points: [s.waypointInizio.latLng, s.waypointFine.latLng],
           color: s.color,
-          strokeWidth: 4,
+          strokeWidth: 5,
         ));
       } else {
         final startIdx =
@@ -65,10 +59,18 @@ class TrackLayer extends StatelessWidget {
           polylines.add(Polyline(
             points: trackPoints.sublist(a, b + 1),
             color: s.color,
-            strokeWidth: 4,
+            strokeWidth: 5,
           ));
         }
       }
+    }
+    // Base track last (on top), thinner — always visible over specials
+    if (trackPoints.isNotEmpty) {
+      polylines.add(Polyline(
+        points: trackPoints,
+        color: AppColors.accent,
+        strokeWidth: 2,
+      ));
     }
     return PolylineLayer(polylines: polylines);
   }
