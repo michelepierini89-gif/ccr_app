@@ -1,10 +1,15 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
+import 'package:latlong2/latlong.dart';
 import '../../../core/models/event_model.dart';
+import '../../../core/models/waypoint_model.dart';
 import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
@@ -231,7 +236,6 @@ class _EventManagementScreenState
           );
         }
 
-        // Auto-load track from Storage when URL is available but track not yet parsed
         if (event.trackUrl != null &&
             _parsedTrack == null &&
             _loadedTrackUrl != event.trackUrl &&
@@ -269,7 +273,6 @@ class _EventManagementScreenState
           ),
           body: Column(
             children: [
-              // Event header
               Container(
                 color: AppColors.cardBackground,
                 padding: const EdgeInsets.all(16),
@@ -314,7 +317,6 @@ class _EventManagementScreenState
                             ],
                           ),
                         ),
-                        // Status dropdown
                         DropdownButton<EventStatus>(
                           value: event.stato,
                           dropdownColor: AppColors.cardBackground,
@@ -352,7 +354,6 @@ class _EventManagementScreenState
                 child: TabBarView(
                   controller: _tabController,
                   children: [
-                    // --- Tracciato tab ---
                     _TracciatoTab(
                       event: event,
                       parsedTrack: _parsedTrack,
@@ -382,13 +383,11 @@ class _EventManagementScreenState
                         }
                       },
                     ),
-                    // --- Iscrizioni tab ---
                     RegistrationsScreen(
                       eventId: event.id,
                       minSquadra: event.minSquadra,
                       maxSquadra: event.maxSquadra,
                     ),
-                    // --- Live tab ---
                     LiveTrackingScreen(eventId: event.id),
                   ],
                 ),
@@ -401,7 +400,9 @@ class _EventManagementScreenState
   }
 }
 
-class _TracciatoTab extends StatelessWidget {
+// ── Tracciato tab ─────────────────────────────────────────────────────────────
+
+class _TracciatoTab extends ConsumerStatefulWidget {
   final EventModel event;
   final ParsedTrack? parsedTrack;
   final bool trackAvailable;
@@ -418,17 +419,212 @@ class _TracciatoTab extends StatelessWidget {
     required this.onManageSpecials,
   });
 
-  Widget _mapWidget() => parsedTrack != null
+  @override
+  ConsumerState<_TracciatoTab> createState() => _TracciatoTabState();
+}
+
+class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
+  double? _totalLength;
+  int _minSquadra = 1;
+  int _maxSquadra = 4;
+  TipologiaClassifica _tipologia = TipologiaClassifica.sommaTempi;
+  Timer? _squadraDebounce;
+  Timer? _tipologiaDebounce;
+
+  @override
+  void initState() {
+    super.initState();
+    _minSquadra = widget.event.minSquadra;
+    _maxSquadra = widget.event.maxSquadra;
+    _tipologia = widget.event.tipologiaClassifica;
+    _totalLength = _computeTotalLength();
+  }
+
+  @override
+  void didUpdateWidget(_TracciatoTab old) {
+    super.didUpdateWidget(old);
+    if (old.parsedTrack != widget.parsedTrack) {
+      setState(() => _totalLength = _computeTotalLength());
+    }
+    if (_squadraDebounce == null || !_squadraDebounce!.isActive) {
+      if (widget.event.minSquadra != _minSquadra ||
+          widget.event.maxSquadra != _maxSquadra) {
+        setState(() {
+          _minSquadra = widget.event.minSquadra;
+          _maxSquadra = widget.event.maxSquadra;
+        });
+      }
+    }
+    if (_tipologiaDebounce == null || !_tipologiaDebounce!.isActive) {
+      if (widget.event.tipologiaClassifica != _tipologia) {
+        setState(() => _tipologia = widget.event.tipologiaClassifica);
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _squadraDebounce?.cancel();
+    _tipologiaDebounce?.cancel();
+    super.dispose();
+  }
+
+  // ── Geometry helpers ───────────────────────────────────────────────────────
+
+  double _haversineMeters(LatLng a, LatLng b) {
+    const R = 6371000.0;
+    final lat1 = a.latitude * pi / 180;
+    final lat2 = b.latitude * pi / 180;
+    final dLat = (b.latitude - a.latitude) * pi / 180;
+    final dLng = (b.longitude - a.longitude) * pi / 180;
+    final sinDLat = sin(dLat / 2);
+    final sinDLng = sin(dLng / 2);
+    final aVal =
+        sinDLat * sinDLat + cos(lat1) * cos(lat2) * sinDLng * sinDLng;
+    return R * 2 * atan2(sqrt(aVal), sqrt(1 - aVal));
+  }
+
+  double? _computeTotalLength() {
+    final pts = widget.parsedTrack?.points;
+    if (pts == null || pts.length < 2) return null;
+    double total = 0.0;
+    for (int i = 1; i < pts.length; i++) {
+      total += _haversineMeters(pts[i - 1], pts[i]);
+    }
+    return total / 1000.0;
+  }
+
+  double _sectionLength(int startIdx, int endIdx) {
+    final pts = widget.parsedTrack!.points;
+    final a = min(startIdx, endIdx);
+    final b = max(startIdx, endIdx);
+    if (a < 0 || b >= pts.length || a == b) return 0.0;
+    double total = 0.0;
+    for (int i = a; i < b; i++) {
+      total += _haversineMeters(pts[i], pts[i + 1]);
+    }
+    return total / 1000.0;
+  }
+
+  int _ensureTrackIdx(WaypointModel wp) {
+    final m = RegExp(r'track_pt_(\d+)$').firstMatch(wp.id);
+    if (m != null) return int.tryParse(m.group(1)!) ?? 0;
+    final pts = widget.parsedTrack!.points;
+    var minDist = double.infinity;
+    var minIdx = 0;
+    for (var i = 0; i < pts.length; i++) {
+      final dlat = wp.lat - pts[i].latitude;
+      final dlng = wp.lng - pts[i].longitude;
+      final d = dlat * dlat + dlng * dlng;
+      if (d < minDist) {
+        minDist = d;
+        minIdx = i;
+      }
+    }
+    return minIdx;
+  }
+
+  // ── Debounced saves ────────────────────────────────────────────────────────
+
+  void _onSquadraChanged() {
+    _squadraDebounce?.cancel();
+    _squadraDebounce = Timer(const Duration(milliseconds: 800), () {
+      ref
+          .read(firestoreServiceProvider)
+          .updateEvent(widget.event
+              .copyWith(minSquadra: _minSquadra, maxSquadra: _maxSquadra))
+          .catchError((e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Errore salvataggio: $e'),
+            backgroundColor: AppColors.error,
+          ));
+        }
+      });
+    });
+  }
+
+  void _onTipologiaChanged(TipologiaClassifica t) {
+    setState(() => _tipologia = t);
+    _tipologiaDebounce?.cancel();
+    _tipologiaDebounce = Timer(const Duration(milliseconds: 800), () {
+      ref
+          .read(firestoreServiceProvider)
+          .updateEvent(
+              widget.event.copyWith(tipologiaClassifica: _tipologia))
+          .catchError((e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Errore salvataggio: $e'),
+            backgroundColor: AppColors.error,
+          ));
+        }
+      });
+    });
+  }
+
+  // ── Fuel point ─────────────────────────────────────────────────────────────
+
+  Future<void> _showFuelPointDialog() async {
+    final pts = widget.parsedTrack?.points ?? [];
+    final result = await showDialog<LatLng>(
+      context: context,
+      builder: (_) => _FuelPointDialog(
+        trackPoints: pts,
+        initial: widget.event.fuelPoint?.latLng,
+      ),
+    );
+    if (result == null || !mounted) return;
+    final wp = WaypointModel(
+      id: 'fuel_point',
+      nome: 'Punto ristoro',
+      lat: result.latitude,
+      lng: result.longitude,
+      type: WaypointType.intermedio,
+    );
+    try {
+      await ref
+          .read(firestoreServiceProvider)
+          .updateEvent(widget.event.copyWith(fuelPoint: wp));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Errore salvataggio: $e'),
+          backgroundColor: AppColors.error,
+        ));
+      }
+    }
+  }
+
+  Future<void> _removeFuelPoint() async {
+    try {
+      await ref
+          .read(firestoreServiceProvider)
+          .updateEvent(widget.event.copyWith(clearFuelPoint: true));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Errore rimozione: $e'),
+          backgroundColor: AppColors.error,
+        ));
+      }
+    }
+  }
+
+  // ── Map widget ─────────────────────────────────────────────────────────────
+
+  Widget _mapWidget() => widget.parsedTrack != null
       ? TrackMapScreen(
-          trackPoints: parsedTrack!.points,
-          specials: event.speciali,
-          waypoints: parsedTrack!.waypoints,
+          trackPoints: widget.parsedTrack!.points,
+          specials: widget.event.speciali,
+          waypoints: widget.parsedTrack!.waypoints,
+          fuelPoint: widget.event.fuelPoint,
           interactive: true,
         )
       : Container(
           color: AppColors.cardBackground,
           child: Center(
-            child: uploadingTrack
+            child: widget.uploadingTrack
                 ? const Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
@@ -448,7 +644,7 @@ class _TracciatoTab extends StatelessWidget {
                           style: TextStyle(color: AppColors.textSecondary)),
                       const SizedBox(height: 8),
                       TextButton(
-                        onPressed: onPickTrack,
+                        onPressed: widget.onPickTrack,
                         child: const Text('Carica manualmente',
                             style: TextStyle(color: AppColors.accent)),
                       ),
@@ -457,77 +653,242 @@ class _TracciatoTab extends StatelessWidget {
           ),
         );
 
-  Widget _controlsColumn() => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          ElevatedButton.icon(
-            onPressed: parsedTrack != null ? onManageSpecials : null,
-            icon: const Icon(Icons.edit_location_alt),
-            label: const Text('Gestisci Speciali'),
-            style: ElevatedButton.styleFrom(minimumSize: const Size(0, 52)),
-          ),
-          const SizedBox(height: 10),
-          OutlinedButton.icon(
-            onPressed: uploadingTrack ? null : onPickTrack,
-            icon: const Icon(Icons.upload_file),
-            label: Text(parsedTrack != null
-                ? 'Sostituisci tracciato'
-                : 'Carica tracciato GPX/KML'),
-            style: OutlinedButton.styleFrom(minimumSize: const Size(0, 52)),
-          ),
-          if (parsedTrack != null) ...[
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: AppColors.cardBackground,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.route, size: 14, color: AppColors.textSecondary),
-                  const SizedBox(width: 6),
-                  Text('${parsedTrack!.points.length} punti GPS',
-                      style: const TextStyle(
-                          color: AppColors.textSecondary, fontSize: 12)),
-                ],
-              ),
-            ),
-          ],
-          // Event details
-          const SizedBox(height: 16),
+  // ── Controls column ────────────────────────────────────────────────────────
+
+  Widget _buildControlsColumn() {
+    final parsedTrack = widget.parsedTrack;
+    final event = widget.event;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // ── Track actions ──
+        ElevatedButton.icon(
+          onPressed: parsedTrack != null ? widget.onManageSpecials : null,
+          icon: const Icon(Icons.edit_location_alt),
+          label: const Text('Gestisci Speciali'),
+          style: ElevatedButton.styleFrom(minimumSize: const Size(0, 52)),
+        ),
+        const SizedBox(height: 10),
+        OutlinedButton.icon(
+          onPressed: widget.uploadingTrack ? null : widget.onPickTrack,
+          icon: const Icon(Icons.upload_file),
+          label: Text(parsedTrack != null
+              ? 'Sostituisci tracciato'
+              : 'Carica tracciato GPX/KML'),
+          style: OutlinedButton.styleFrom(minimumSize: const Size(0, 52)),
+        ),
+
+        // ── Track stats ──
+        if (parsedTrack != null) ...[
+          const SizedBox(height: 12),
           Container(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(
               color: AppColors.cardBackground,
               borderRadius: BorderRadius.circular(8),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: Row(
               children: [
-                _InfoRow(Icons.group,
-                    'Squadra: ${event.minSquadra}–${event.maxSquadra} persone'),
-                const SizedBox(height: 6),
-                _InfoRow(Icons.leaderboard, event.tipologiaClassifica.label),
+                const Icon(Icons.route,
+                    size: 14, color: AppColors.textSecondary),
+                const SizedBox(width: 6),
+                Text('${parsedTrack.points.length} punti GPS',
+                    style: const TextStyle(
+                        color: AppColors.textSecondary, fontSize: 12)),
+                if (_totalLength != null) ...[
+                  const Spacer(),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: AppColors.accent.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                          color: AppColors.accent.withValues(alpha: 0.4)),
+                    ),
+                    child: Text(
+                      '${_totalLength!.toStringAsFixed(1)} km totali',
+                      style: const TextStyle(
+                          color: AppColors.accent,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
-          if (event.speciali.isNotEmpty) ...[
-            const SizedBox(height: 20),
-            const Text('Speciali',
-                style: TextStyle(
-                    color: AppColors.textPrimary,
-                    fontSize: 15,
-                    fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            ...event.speciali.map((s) => SpecialTile(special: s)),
-          ],
         ],
-      );
+
+        // ── Punto ristoro ──
+        const SizedBox(height: 16),
+        _SectionLabel('Punto ristoro'),
+        const SizedBox(height: 8),
+        if (event.fuelPoint != null) ...[
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.amber.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.amber.withValues(alpha: 0.4)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.local_gas_station,
+                    color: Colors.amber.shade600, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '${event.fuelPoint!.lat.toStringAsFixed(5)}, '
+                    '${event.fuelPoint!.lng.toStringAsFixed(5)}',
+                    style: TextStyle(
+                        color: Colors.amber.shade200, fontSize: 11),
+                  ),
+                ),
+                InkWell(
+                  onTap: _showFuelPointDialog,
+                  child: const Padding(
+                    padding: EdgeInsets.all(4),
+                    child: Icon(Icons.edit,
+                        size: 16, color: AppColors.textSecondary),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                InkWell(
+                  onTap: _removeFuelPoint,
+                  child: const Padding(
+                    padding: EdgeInsets.all(4),
+                    child: Icon(Icons.close,
+                        size: 16, color: AppColors.error),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 6),
+        ],
+        OutlinedButton.icon(
+          onPressed: _showFuelPointDialog,
+          icon: Icon(Icons.local_gas_station,
+              color: Colors.amber.shade600, size: 18),
+          label: Text(
+            event.fuelPoint != null
+                ? 'Modifica punto ristoro'
+                : 'Aggiungi punto ristoro',
+            style: TextStyle(color: Colors.amber.shade600),
+          ),
+          style: OutlinedButton.styleFrom(
+            side: BorderSide(color: Colors.amber.withValues(alpha: 0.5)),
+            minimumSize: const Size(0, 44),
+          ),
+        ),
+
+        // ── Configurazione evento ──
+        const SizedBox(height: 20),
+        _SectionLabel('Dimensione squadra'),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: _StepperField(
+                label: 'Minimo',
+                value: _minSquadra,
+                min: 1,
+                max: _maxSquadra,
+                onChanged: (v) {
+                  setState(() => _minSquadra = v);
+                  _onSquadraChanged();
+                },
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _StepperField(
+                label: 'Massimo',
+                value: _maxSquadra,
+                min: _minSquadra,
+                max: 4,
+                onChanged: (v) {
+                  setState(() => _maxSquadra = v);
+                  _onSquadraChanged();
+                },
+              ),
+            ),
+          ],
+        ),
+
+        const SizedBox(height: 16),
+        _SectionLabel('Tipologia punteggio'),
+        const SizedBox(height: 8),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          decoration: BoxDecoration(
+            color: AppColors.cardBackground,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppColors.border),
+          ),
+          child: DropdownButton<TipologiaClassifica>(
+            value: _tipologia,
+            isExpanded: true,
+            dropdownColor: AppColors.cardBackground,
+            underline: const SizedBox(),
+            style: const TextStyle(
+                color: AppColors.textPrimary, fontSize: 13),
+            items: TipologiaClassifica.values
+                .map((t) => DropdownMenuItem(
+                      value: t,
+                      child: Text(t.label,
+                          style: const TextStyle(
+                              color: AppColors.textPrimary, fontSize: 13)),
+                    ))
+                .toList(),
+            onChanged: (t) {
+              if (t != null) _onTipologiaChanged(t);
+            },
+          ),
+        ),
+
+        // ── Specials list ──
+        if (event.speciali.isNotEmpty) ...[
+          const SizedBox(height: 20),
+          Row(
+            children: [
+              const Text('Speciali',
+                  style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold)),
+              if (_totalLength != null) ...[
+                const Spacer(),
+                Text(
+                  '${event.speciali.length} prove',
+                  style: const TextStyle(
+                      color: AppColors.textSecondary, fontSize: 12),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 8),
+          ...event.speciali.map((s) {
+            double? len;
+            if (parsedTrack != null && parsedTrack.points.isNotEmpty) {
+              final a = _ensureTrackIdx(s.waypointInizio);
+              final b = _ensureTrackIdx(s.waypointFine);
+              len = _sectionLength(a, b);
+            }
+            return SpecialTile(special: s, lengthKm: len);
+          }),
+        ],
+      ],
+    );
+  }
+
+  // ── Build ──────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
-    if (!trackAvailable) {
+    if (!widget.trackAvailable) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -544,14 +905,15 @@ class _TracciatoTab extends StatelessWidget {
             const Text('Carica un file GPX o KML',
                 style: TextStyle(color: AppColors.textSecondary)),
             const SizedBox(height: 24),
-            if (uploadingTrack)
+            if (widget.uploadingTrack)
               const CircularProgressIndicator(color: AppColors.accent)
             else
               ElevatedButton.icon(
-                onPressed: onPickTrack,
+                onPressed: widget.onPickTrack,
                 icon: const Icon(Icons.upload_file),
                 label: const Text('Carica tracciato GPX/KML'),
-                style: ElevatedButton.styleFrom(minimumSize: const Size(0, 52)),
+                style:
+                    ElevatedButton.styleFrom(minimumSize: const Size(0, 52)),
               ),
           ],
         ),
@@ -569,10 +931,11 @@ class _TracciatoTab extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              SizedBox(width: mapSide, height: mapSide, child: _mapWidget()),
+              SizedBox(
+                  width: mapSide, height: mapSide, child: _mapWidget()),
               Padding(
                   padding: const EdgeInsets.all(16),
-                  child: _controlsColumn()),
+                  child: _buildControlsColumn()),
             ],
           ),
         );
@@ -585,7 +948,7 @@ class _TracciatoTab extends StatelessWidget {
             width: constraints.maxWidth - mapSide,
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(16),
-              child: _controlsColumn(),
+              child: _buildControlsColumn(),
             ),
           ),
           SizedBox(width: mapSide, height: mapSide, child: _mapWidget()),
@@ -595,21 +958,285 @@ class _TracciatoTab extends StatelessWidget {
   }
 }
 
-class _InfoRow extends StatelessWidget {
-  final IconData icon;
-  final String text;
-  const _InfoRow(this.icon, this.text);
+// ── Fuel point dialog ─────────────────────────────────────────────────────────
+
+class _FuelPointDialog extends StatefulWidget {
+  final List<LatLng> trackPoints;
+  final LatLng? initial;
+
+  const _FuelPointDialog({required this.trackPoints, this.initial});
 
   @override
-  Widget build(BuildContext context) => Row(
-        children: [
-          Icon(icon, size: 13, color: AppColors.textSecondary),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(text,
+  State<_FuelPointDialog> createState() => _FuelPointDialogState();
+}
+
+class _FuelPointDialogState extends State<_FuelPointDialog> {
+  LatLng? _picked;
+
+  @override
+  void initState() {
+    super.initState();
+    _picked = widget.initial;
+  }
+
+  MapOptions get _mapOptions {
+    if (widget.trackPoints.isNotEmpty) {
+      return MapOptions(
+        initialCameraFit: CameraFit.bounds(
+          bounds: LatLngBounds.fromPoints(widget.trackPoints),
+          padding: const EdgeInsets.all(32),
+        ),
+        onTap: (_, ll) => setState(() => _picked = ll),
+      );
+    }
+    return MapOptions(
+      initialCenter: const LatLng(44.0, 11.0),
+      initialZoom: 13,
+      onTap: (_, ll) => setState(() => _picked = ll),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screenH = MediaQuery.of(context).size.height;
+    return Dialog(
+      backgroundColor: AppColors.background,
+      insetPadding: const EdgeInsets.all(16),
+      child: SizedBox(
+        height: screenH * 0.75,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Header
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 8, 0),
+              child: Row(
+                children: [
+                  Icon(Icons.local_gas_station,
+                      color: Colors.amber.shade600, size: 20),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Punto ristoro',
+                      style: TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close,
+                        color: AppColors.textSecondary),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Text(
+                _picked == null
+                    ? 'Clicca sulla mappa per posizionare il punto ristoro'
+                    : 'Punto selezionato — clicca di nuovo per spostarlo',
                 style: const TextStyle(
-                    color: AppColors.textSecondary, fontSize: 12)),
+                    color: AppColors.textSecondary, fontSize: 12),
+              ),
+            ),
+            const Divider(height: 1, color: AppColors.border),
+            // Map
+            Expanded(
+              child: MouseRegion(
+                cursor: SystemMouseCursors.precise,
+                child: FlutterMap(
+                  options: _mapOptions,
+                  children: [
+                    TileLayer(
+                      urlTemplate:
+                          'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                      userAgentPackageName: 'com.ccr.ccr_app',
+                    ),
+                    if (widget.trackPoints.isNotEmpty)
+                      PolylineLayer(polylines: [
+                        Polyline(
+                          points: widget.trackPoints,
+                          color: AppColors.accent,
+                          strokeWidth: 3,
+                        ),
+                      ]),
+                    if (_picked != null)
+                      MarkerLayer(markers: [
+                        Marker(
+                          point: _picked!,
+                          width: 44,
+                          height: 52,
+                          child: Column(
+                            children: [
+                              Container(
+                                width: 36,
+                                height: 36,
+                                decoration: BoxDecoration(
+                                  color: Colors.amber.shade700,
+                                  shape: BoxShape.circle,
+                                  border: Border.all(
+                                      color: Colors.white, width: 2),
+                                  boxShadow: [
+                                    BoxShadow(
+                                        color: Colors.amber
+                                            .withValues(alpha: 0.6),
+                                        blurRadius: 8)
+                                  ],
+                                ),
+                                child: const Icon(Icons.local_gas_station,
+                                    color: Colors.white, size: 20),
+                              ),
+                              const Text('Ristoro',
+                                  style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 9,
+                                      shadows: [
+                                        Shadow(
+                                            color: Colors.black54,
+                                            blurRadius: 2)
+                                      ])),
+                            ],
+                          ),
+                        ),
+                      ]),
+                  ],
+                ),
+              ),
+            ),
+            const Divider(height: 1, color: AppColors.border),
+            // Actions
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: const Text('Annulla'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: _picked != null
+                          ? () => Navigator.of(context).pop(_picked)
+                          : null,
+                      style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.accent),
+                      child: const Text('Conferma'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Shared widgets ────────────────────────────────────────────────────────────
+
+class _SectionLabel extends StatelessWidget {
+  final String text;
+  const _SectionLabel(this.text);
+
+  @override
+  Widget build(BuildContext context) => Text(
+        text,
+        style: const TextStyle(
+            color: AppColors.textPrimary,
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.3),
+      );
+}
+
+class _StepperField extends StatelessWidget {
+  final String label;
+  final int value;
+  final int min;
+  final int max;
+  final void Function(int) onChanged;
+
+  const _StepperField({
+    required this.label,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.cardBackground,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label,
+              style: const TextStyle(
+                  color: AppColors.textSecondary, fontSize: 12)),
+          const SizedBox(height: 6),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              InkWell(
+                onTap: value > min ? () => onChanged(value - 1) : null,
+                borderRadius: BorderRadius.circular(20),
+                child: Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: value > min
+                        ? AppColors.accent.withValues(alpha: 0.15)
+                        : AppColors.border,
+                  ),
+                  child: Icon(Icons.remove,
+                      size: 16,
+                      color: value > min
+                          ? AppColors.accent
+                          : AppColors.textSecondary),
+                ),
+              ),
+              Text('$value',
+                  style: const TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold)),
+              InkWell(
+                onTap: value < max ? () => onChanged(value + 1) : null,
+                borderRadius: BorderRadius.circular(20),
+                child: Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: value < max
+                        ? AppColors.accent.withValues(alpha: 0.15)
+                        : AppColors.border,
+                  ),
+                  child: Icon(Icons.add,
+                      size: 16,
+                      color: value < max
+                          ? AppColors.accent
+                          : AppColors.textSecondary),
+                ),
+              ),
+            ],
           ),
         ],
-      );
+      ),
+    );
+  }
 }

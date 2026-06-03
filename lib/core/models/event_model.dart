@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'special_model.dart';
+import 'waypoint_model.dart';
 
 enum EventStatus { bozza, aperto, inCorso, concluso }
 
@@ -27,6 +28,7 @@ class EventModel {
   final int minSquadra;
   final int maxSquadra;
   final TipologiaClassifica tipologiaClassifica;
+  final WaypointModel? fuelPoint;
 
   const EventModel({
     required this.id,
@@ -42,6 +44,7 @@ class EventModel {
     this.minSquadra = 2,
     this.maxSquadra = 3,
     this.tipologiaClassifica = TipologiaClassifica.sommaTempi,
+    this.fuelPoint,
   });
 
   factory EventModel.fromFirestore(DocumentSnapshot doc) {
@@ -68,6 +71,9 @@ class EventModel {
         (e) => e.name == (d['tipologiaClassifica'] ?? 'sommaTempi'),
         orElse: () => TipologiaClassifica.sommaTempi,
       ),
+      fuelPoint: d['fuelPoint'] != null
+          ? WaypointModel.fromMap(d['fuelPoint'] as Map<String, dynamic>)
+          : null,
     );
   }
 
@@ -84,6 +90,7 @@ class EventModel {
         'minSquadra': minSquadra,
         'maxSquadra': maxSquadra,
         'tipologiaClassifica': tipologiaClassifica.name,
+        'fuelPoint': fuelPoint?.toMap(),
       };
 
   EventModel copyWith({
@@ -97,6 +104,8 @@ class EventModel {
     int? minSquadra,
     int? maxSquadra,
     TipologiaClassifica? tipologiaClassifica,
+    WaypointModel? fuelPoint,
+    bool clearFuelPoint = false,
   }) =>
       EventModel(
         id: id,
@@ -112,5 +121,6 @@ class EventModel {
         minSquadra: minSquadra ?? this.minSquadra,
         maxSquadra: maxSquadra ?? this.maxSquadra,
         tipologiaClassifica: tipologiaClassifica ?? this.tipologiaClassifica,
+        fuelPoint: clearFuelPoint ? null : (fuelPoint ?? this.fuelPoint),
       );
 }

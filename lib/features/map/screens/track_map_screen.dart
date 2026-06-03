@@ -12,6 +12,7 @@ class TrackMapScreen extends StatefulWidget {
   final List<SpecialModel> specials;
   final List<WaypointModel> waypoints;
   final bool interactive;
+  final WaypointModel? fuelPoint;
 
   const TrackMapScreen({
     super.key,
@@ -19,6 +20,7 @@ class TrackMapScreen extends StatefulWidget {
     required this.specials,
     required this.waypoints,
     this.interactive = true,
+    this.fuelPoint,
   });
 
   @override
@@ -89,6 +91,47 @@ class _TrackMapScreenState extends State<TrackMapScreen> {
                 onTap: (wp) =>
                     setState(() => _selectedWaypoint = wp),
               ),
+              if (widget.fuelPoint != null)
+                MarkerLayer(markers: [
+                  Marker(
+                    point: widget.fuelPoint!.latLng,
+                    width: 44,
+                    height: 52,
+                    child: GestureDetector(
+                      onTap: () => setState(
+                          () => _selectedWaypoint = widget.fuelPoint),
+                      child: Column(
+                        children: [
+                          Container(
+                            width: 36,
+                            height: 36,
+                            decoration: BoxDecoration(
+                              color: Colors.amber.shade700,
+                              shape: BoxShape.circle,
+                              border:
+                                  Border.all(color: Colors.white, width: 2),
+                              boxShadow: [
+                                BoxShadow(
+                                    color: Colors.amber.withValues(alpha: 0.5),
+                                    blurRadius: 6)
+                              ],
+                            ),
+                            child: const Icon(Icons.local_gas_station,
+                                color: Colors.white, size: 20),
+                          ),
+                          const Text('Ristoro',
+                              style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 8,
+                                  shadows: [
+                                    Shadow(
+                                        color: Colors.black54, blurRadius: 2)
+                                  ])),
+                        ],
+                      ),
+                    ),
+                  ),
+                ]),
             ],
           ),
         ),
