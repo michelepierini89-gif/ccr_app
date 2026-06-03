@@ -352,8 +352,8 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
     if (pts.isNotEmpty) {
       polylines.add(Polyline(
         points: pts,
-        color: AppColors.textSecondary.withValues(alpha: 0.35),
-        strokeWidth: 2,
+        color: AppColors.accent,
+        strokeWidth: 3,
       ));
     }
 
