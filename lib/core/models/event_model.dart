@@ -3,6 +3,16 @@ import 'special_model.dart';
 
 enum EventStatus { bozza, aperto, inCorso, concluso }
 
+enum TipologiaClassifica { sommaTempi, punteggioSpeciale }
+
+extension TipologiaClassificaLabel on TipologiaClassifica {
+  String get label => switch (this) {
+        TipologiaClassifica.sommaTempi => 'Somma dei tempi',
+        TipologiaClassifica.punteggioSpeciale =>
+          'Punteggio per speciale (25/20/16/13/11/10/9/8/7/6)',
+      };
+}
+
 class EventModel {
   final String id;
   final String nome;
@@ -14,6 +24,9 @@ class EventModel {
   final EventStatus stato;
   final String createdBy;
   final DateTime createdAt;
+  final int minSquadra;
+  final int maxSquadra;
+  final TipologiaClassifica tipologiaClassifica;
 
   const EventModel({
     required this.id,
@@ -26,6 +39,9 @@ class EventModel {
     required this.stato,
     required this.createdBy,
     required this.createdAt,
+    this.minSquadra = 2,
+    this.maxSquadra = 3,
+    this.tipologiaClassifica = TipologiaClassifica.sommaTempi,
   });
 
   factory EventModel.fromFirestore(DocumentSnapshot doc) {
@@ -46,6 +62,12 @@ class EventModel {
       ),
       createdBy: d['createdBy'] ?? '',
       createdAt: (d['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      minSquadra: (d['minSquadra'] as num?)?.toInt() ?? 2,
+      maxSquadra: (d['maxSquadra'] as num?)?.toInt() ?? 3,
+      tipologiaClassifica: TipologiaClassifica.values.firstWhere(
+        (e) => e.name == (d['tipologiaClassifica'] ?? 'sommaTempi'),
+        orElse: () => TipologiaClassifica.sommaTempi,
+      ),
     );
   }
 
@@ -59,6 +81,9 @@ class EventModel {
         'stato': stato.name,
         'createdBy': createdBy,
         'createdAt': Timestamp.fromDate(createdAt),
+        'minSquadra': minSquadra,
+        'maxSquadra': maxSquadra,
+        'tipologiaClassifica': tipologiaClassifica.name,
       };
 
   EventModel copyWith({
@@ -69,6 +94,9 @@ class EventModel {
     String? trackUrl,
     List<SpecialModel>? speciali,
     EventStatus? stato,
+    int? minSquadra,
+    int? maxSquadra,
+    TipologiaClassifica? tipologiaClassifica,
   }) =>
       EventModel(
         id: id,
@@ -81,5 +109,8 @@ class EventModel {
         stato: stato ?? this.stato,
         createdBy: createdBy,
         createdAt: createdAt,
+        minSquadra: minSquadra ?? this.minSquadra,
+        maxSquadra: maxSquadra ?? this.maxSquadra,
+        tipologiaClassifica: tipologiaClassifica ?? this.tipologiaClassifica,
       );
 }
