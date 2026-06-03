@@ -193,23 +193,28 @@ class _EventManagementScreenState
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<EventModel?>(
-      stream: ref
-          .watch(firestoreServiceProvider)
-          .getEvents()
-          .map((list) =>
-              list.where((e) => e.id == widget.eventId).isNotEmpty
-                  ? list.firstWhere((e) => e.id == widget.eventId)
-                  : null),
-      builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(
-            backgroundColor: AppColors.background,
-            body:
-                Center(child: CircularProgressIndicator(color: AppColors.accent)),
-          );
-        }
-        final event = snap.data;
+    final eventAsync = ref.watch(eventStreamProvider(widget.eventId));
+
+    return eventAsync.when(
+      loading: () => const Scaffold(
+        backgroundColor: AppColors.background,
+        body: Center(
+            child: CircularProgressIndicator(color: AppColors.accent)),
+      ),
+      error: (e, _) => Scaffold(
+        backgroundColor: AppColors.background,
+        appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: () => context.pop(),
+          ),
+        ),
+        body: Center(
+          child:
+              Text('Errore: $e', style: const TextStyle(color: AppColors.error)),
+        ),
+      ),
+      data: (event) {
         if (event == null) {
           return Scaffold(
             backgroundColor: AppColors.background,

@@ -29,3 +29,8 @@ final liveTrackingProvider =
     StreamProvider.family<List<GpsPointModel>, String>((ref, eventId) {
   return ref.watch(firestoreServiceProvider).getPilotTracking(eventId);
 });
+
+final eventStreamProvider =
+    StreamProvider.family<EventModel?, String>((ref, id) {
+  return ref.watch(firestoreServiceProvider).getEventById(id);
+});

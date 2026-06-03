@@ -123,6 +123,17 @@ class _TeamScreenState extends ConsumerState<TeamScreen> {
   @override
   Widget build(BuildContext context) {
     final teamsAsync = ref.watch(teamsProvider(widget.eventId));
+    final regs = ref.watch(registrationsProvider(widget.eventId)).valueOrNull ?? [];
+
+    String memberName(String memberId) {
+      if (memberId == _userId) return 'Tu';
+      try {
+        final r = regs.firstWhere((r) => r.userId == memberId);
+        return r.nomeCompleto;
+      } catch (_) {
+        return memberId.length > 8 ? '${memberId.substring(0, 8)}…' : memberId;
+      }
+    }
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -183,17 +194,26 @@ class _TeamScreenState extends ConsumerState<TeamScreen> {
                                 vertical: 4),
                             child: Row(
                               children: [
-                                const Icon(Icons.person,
-                                    color: AppColors.textSecondary,
-                                    size: 16),
+                                Icon(
+                                  id == _userId
+                                      ? Icons.person_pin
+                                      : Icons.person,
+                                  color: id == _userId
+                                      ? AppColors.accent
+                                      : AppColors.textSecondary,
+                                  size: 16,
+                                ),
                                 const SizedBox(width: 8),
                                 Text(
-                                  id == _userId ? 'Tu ($id)' : id,
+                                  memberName(id),
                                   style: TextStyle(
                                     color: id == _userId
                                         ? AppColors.accent
                                         : AppColors.textPrimary,
                                     fontSize: 13,
+                                    fontWeight: id == _userId
+                                        ? FontWeight.bold
+                                        : FontWeight.normal,
                                   ),
                                 ),
                               ],

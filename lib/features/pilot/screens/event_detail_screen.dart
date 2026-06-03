@@ -1,17 +1,28 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
-import '../../../core/models/event_model.dart';
 import '../../../core/models/registration_model.dart';
+import '../../../core/services/gpx_parser.dart';
+import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../admin/providers/admin_provider.dart';
 import '../../map/screens/track_map_screen.dart';
 
-class EventDetailScreen extends ConsumerWidget {
+class EventDetailScreen extends ConsumerStatefulWidget {
   final String eventId;
   const EventDetailScreen({super.key, required this.eventId});
+
+  @override
+  ConsumerState<EventDetailScreen> createState() => _EventDetailScreenState();
+}
+
+class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
+  ParsedTrack? _parsedTrack;
+  bool _isLoadingTrack = false;
+  String? _loadedTrackUrl;
 
   Color _regStatusColor(RegistrationStatus s) {
     switch (s) {
@@ -35,25 +46,51 @@ class EventDetailScreen extends ConsumerWidget {
     }
   }
 
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final userAsync = ref.watch(currentUserModelProvider);
+  Future<void> _autoLoadTrack(String url) async {
+    if (_isLoadingTrack) return;
+    setState(() {
+      _isLoadingTrack = true;
+      _loadedTrackUrl = url;
+    });
+    try {
+      final bytes = await StorageService().downloadTrack(url);
+      final content = utf8.decode(bytes);
+      final ext = url.contains('track.kml') ? 'kml' : 'gpx';
+      final parsed = ext == 'gpx'
+          ? GpxParser.parseGpx(content)
+          : GpxParser.parseKml(content);
+      if (mounted) setState(() => _parsedTrack = parsed);
+    } catch (_) {
+      if (mounted) setState(() => _loadedTrackUrl = null);
+    } finally {
+      if (mounted) setState(() => _isLoadingTrack = false);
+    }
+  }
 
-    return StreamBuilder<EventModel?>(
-      stream: ref.watch(firestoreServiceProvider).getEvents().map(
-            (list) => list.where((e) => e.id == eventId).isNotEmpty
-                ? list.firstWhere((e) => e.id == eventId)
-                : null,
+  @override
+  Widget build(BuildContext context) {
+    final eventAsync = ref.watch(eventStreamProvider(widget.eventId));
+
+    return eventAsync.when(
+      loading: () => const Scaffold(
+        backgroundColor: AppColors.background,
+        body: Center(
+            child: CircularProgressIndicator(color: AppColors.accent)),
+      ),
+      error: (e, _) => Scaffold(
+        backgroundColor: AppColors.background,
+        appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: () => context.pop(),
           ),
-      builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(
-            backgroundColor: AppColors.background,
-            body: Center(
-                child: CircularProgressIndicator(color: AppColors.accent)),
-          );
-        }
-        final event = snap.data;
+        ),
+        body: Center(
+          child: Text('Errore: $e',
+              style: const TextStyle(color: AppColors.error)),
+        ),
+      ),
+      data: (event) {
         if (event == null) {
           return Scaffold(
             backgroundColor: AppColors.background,
@@ -69,6 +106,17 @@ class EventDetailScreen extends ConsumerWidget {
             ),
           );
         }
+
+        if (event.trackUrl != null &&
+            _parsedTrack == null &&
+            _loadedTrackUrl != event.trackUrl &&
+            !_isLoadingTrack) {
+          WidgetsBinding.instance
+              .addPostFrameCallback((_) => _autoLoadTrack(event.trackUrl!));
+        }
+
+        final trackPoints = _parsedTrack?.points ?? const [];
+        final showMap = event.speciali.isNotEmpty || event.trackUrl != null;
 
         return Scaffold(
           backgroundColor: AppColors.background,
@@ -139,18 +187,38 @@ class EventDetailScreen extends ConsumerWidget {
                 const Divider(height: 1, color: AppColors.border),
 
                 // Track map
-                if (event.speciali.isNotEmpty || event.trackUrl != null) ...[
-                  SizedBox(
-                    height: 220,
-                    child: TrackMapScreen(
-                      trackPoints: const [],
-                      specials: event.speciali,
-                      waypoints: event.speciali
-                          .expand((s) => [s.waypointInizio, s.waypointFine])
-                          .toList(),
-                      interactive: false,
-                    ),
-                  ),
+                if (showMap) ...[
+                  _isLoadingTrack
+                      ? Container(
+                          height: 220,
+                          color: AppColors.cardBackground,
+                          child: const Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                CircularProgressIndicator(
+                                    color: AppColors.accent),
+                                SizedBox(height: 8),
+                                Text('Caricamento tracciato...',
+                                    style: TextStyle(
+                                        color: AppColors.textSecondary,
+                                        fontSize: 12)),
+                              ],
+                            ),
+                          ),
+                        )
+                      : SizedBox(
+                          height: 220,
+                          child: TrackMapScreen(
+                            trackPoints: trackPoints,
+                            specials: event.speciali,
+                            waypoints: event.speciali
+                                .expand((s) =>
+                                    [s.waypointInizio, s.waypointFine])
+                                .toList(),
+                            interactive: false,
+                          ),
+                        ),
                   const Divider(height: 1, color: AppColors.border),
                 ],
 
@@ -214,7 +282,7 @@ class EventDetailScreen extends ConsumerWidget {
                 // Registration section
                 Padding(
                   padding: const EdgeInsets.all(20),
-                  child: userAsync.when(
+                  child: ref.watch(currentUserModelProvider).when(
                     loading: () => const Center(
                         child: CircularProgressIndicator(
                             color: AppColors.accent)),
@@ -224,7 +292,7 @@ class EventDetailScreen extends ConsumerWidget {
                       return FutureBuilder(
                         future: ref
                             .read(firestoreServiceProvider)
-                            .getMyRegistration(eventId, user.id),
+                            .getMyRegistration(widget.eventId, user.id),
                         builder: (context, regSnap) {
                           final reg = regSnap.data;
                           return Column(
@@ -245,7 +313,8 @@ class EventDetailScreen extends ConsumerWidget {
                                   decoration: BoxDecoration(
                                     color: _regStatusColor(reg.stato)
                                         .withValues(alpha: 0.1),
-                                    borderRadius: BorderRadius.circular(10),
+                                    borderRadius:
+                                        BorderRadius.circular(10),
                                     border: Border.all(
                                         color:
                                             _regStatusColor(reg.stato)),
@@ -254,7 +323,8 @@ class EventDetailScreen extends ConsumerWidget {
                                     children: [
                                       Icon(
                                         reg.stato ==
-                                                RegistrationStatus.approvato
+                                                RegistrationStatus
+                                                    .approvato
                                             ? Icons.check_circle
                                             : reg.stato ==
                                                     RegistrationStatus
@@ -289,7 +359,7 @@ class EventDetailScreen extends ConsumerWidget {
                                         await ref
                                             .read(firestoreServiceProvider)
                                             .registerForEvent(
-                                              eventId: eventId,
+                                              eventId: widget.eventId,
                                               userId: user.id,
                                               nome: user.nome,
                                               cognome: user.cognome,
@@ -351,8 +421,8 @@ class EventDetailScreen extends ConsumerWidget {
                         width: double.infinity,
                         height: 50,
                         child: OutlinedButton.icon(
-                          onPressed: () => context
-                              .push('/pilot/event/$eventId/team'),
+                          onPressed: () => context.push(
+                              '/pilot/event/${widget.eventId}/team'),
                           icon: const Icon(Icons.group),
                           label: const Text('Gestisci squadra'),
                         ),

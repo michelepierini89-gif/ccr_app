@@ -44,6 +44,12 @@ class FirestoreService {
     return EventModel.fromFirestore(doc);
   }
 
+  Stream<EventModel?> getEventById(String id) => _db
+      .collection(FirebaseConstants.events)
+      .doc(id)
+      .snapshots()
+      .map((doc) => doc.exists ? EventModel.fromFirestore(doc) : null);
+
   // Registrations
   Future<void> registerForEvent({
     required String eventId,

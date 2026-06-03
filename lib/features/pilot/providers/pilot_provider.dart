@@ -5,6 +5,11 @@ import '../../../core/services/gps_service.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../admin/providers/admin_provider.dart';
 
+final eventProvider =
+    FutureProvider.family<EventModel?, String>((ref, id) async {
+  return ref.read(firestoreServiceProvider).getEvent(id);
+});
+
 final openEventsProvider = StreamProvider<List<EventModel>>((ref) {
   return ref.watch(firestoreServiceProvider).getOpenEvents();
 });

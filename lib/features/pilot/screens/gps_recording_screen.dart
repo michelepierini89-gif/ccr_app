@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../core/models/waypoint_model.dart';
 import '../../../core/services/gps_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/location_utils.dart';
@@ -86,10 +87,20 @@ class _GpsRecordingScreenState
     }
 
     try {
+      // Load event to extract waypoints
+      final event = await ref.read(eventProvider(widget.eventId!).future);
+      final waypoints = <WaypointModel>[];
+      if (event != null) {
+        for (final s in event.speciali) {
+          waypoints.add(s.waypointInizio);
+          waypoints.add(s.waypointFine);
+        }
+      }
+
       await gps.startRecording(
         eventId: widget.eventId!,
         userId: user.uid,
-        waypoints: const [],
+        waypoints: waypoints,
       );
     } catch (e) {
       if (!mounted) return;
@@ -152,14 +163,30 @@ class _GpsRecordingScreenState
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          widget.eventId != null
-                              ? 'Evento: ${widget.eventId!.substring(0, widget.eventId!.length.clamp(0, 8))}...'
-                              : 'Nessun evento',
-                          style: const TextStyle(
-                              color: AppColors.textSecondary,
-                              fontSize: 12),
-                        ),
+                        if (widget.eventId != null)
+                          ref.watch(eventProvider(widget.eventId!)).when(
+                                data: (ev) => Text(
+                                  ev?.nome ?? 'Evento',
+                                  style: const TextStyle(
+                                      color: AppColors.textSecondary,
+                                      fontSize: 12),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                loading: () => const Text('...',
+                                    style: TextStyle(
+                                        color: AppColors.textSecondary,
+                                        fontSize: 12)),
+                                error: (e, _) => const Text('Evento',
+                                    style: TextStyle(
+                                        color: AppColors.textSecondary,
+                                        fontSize: 12)),
+                              )
+                        else
+                          const Text(
+                            'Nessun evento',
+                            style: TextStyle(
+                                color: AppColors.textSecondary, fontSize: 12),
+                          ),
                         if (isRecording) ...[
                           Text(
                             LocationUtils.formatDuration(_elapsed),
