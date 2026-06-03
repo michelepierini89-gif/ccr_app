@@ -87,12 +87,13 @@ class _GpsRecordingScreenState
     }
 
     try {
-      // Load event to extract waypoints
+      // Load event to extract waypoints (inizio, fine e control points)
       final event = await ref.read(eventProvider(widget.eventId!).future);
       final waypoints = <WaypointModel>[];
       if (event != null) {
         for (final s in event.speciali) {
           waypoints.add(s.waypointInizio);
+          waypoints.addAll(s.controlPoints);
           waypoints.add(s.waypointFine);
         }
       }

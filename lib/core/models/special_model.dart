@@ -8,6 +8,7 @@ class SpecialModel {
   final int colorIndex;
   final WaypointModel waypointInizio;
   final WaypointModel waypointFine;
+  final List<WaypointModel> controlPoints;
   final int ordine;
 
   const SpecialModel({
@@ -16,6 +17,7 @@ class SpecialModel {
     required this.colorIndex,
     required this.waypointInizio,
     required this.waypointFine,
+    this.controlPoints = const [],
     required this.ordine,
   });
 
@@ -32,6 +34,9 @@ class SpecialModel {
             WaypointModel.fromMap(m['waypointInizio'] as Map<String, dynamic>),
         waypointFine:
             WaypointModel.fromMap(m['waypointFine'] as Map<String, dynamic>),
+        controlPoints: (m['controlPoints'] as List<dynamic>? ?? [])
+            .map((e) => WaypointModel.fromMap(e as Map<String, dynamic>))
+            .toList(),
         ordine: (m['ordine'] as num?)?.toInt() ?? 0,
       );
 
@@ -41,6 +46,7 @@ class SpecialModel {
         'colorIndex': colorIndex,
         'waypointInizio': waypointInizio.toMap(),
         'waypointFine': waypointFine.toMap(),
+        'controlPoints': controlPoints.map((cp) => cp.toMap()).toList(),
         'ordine': ordine,
       };
 
@@ -50,6 +56,7 @@ class SpecialModel {
     int? colorIndex,
     WaypointModel? waypointInizio,
     WaypointModel? waypointFine,
+    List<WaypointModel>? controlPoints,
     int? ordine,
   }) =>
       SpecialModel(
@@ -58,6 +65,7 @@ class SpecialModel {
         colorIndex: colorIndex ?? this.colorIndex,
         waypointInizio: waypointInizio ?? this.waypointInizio,
         waypointFine: waypointFine ?? this.waypointFine,
+        controlPoints: controlPoints ?? this.controlPoints,
         ordine: ordine ?? this.ordine,
       );
 }

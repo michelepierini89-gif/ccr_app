@@ -89,6 +89,21 @@ class SpecialTile extends StatelessWidget {
                 ),
               ],
             ),
+            if (special.controlPoints.isNotEmpty) ...[
+              const SizedBox(height: 2),
+              Row(
+                children: [
+                  const Icon(Icons.pin_drop,
+                      color: AppColors.textSecondary, size: 14),
+                  const SizedBox(width: 4),
+                  Text(
+                    '${special.controlPoints.length} punt${special.controlPoints.length == 1 ? "o" : "i"} di controllo',
+                    style: const TextStyle(
+                        color: AppColors.textSecondary, fontSize: 12),
+                  ),
+                ],
+              ),
+            ],
           ],
         ),
         trailing: Row(

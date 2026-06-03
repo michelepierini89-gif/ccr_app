@@ -1,3 +1,4 @@
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -12,7 +13,7 @@ import '../../../core/theme/app_colors.dart';
 import '../providers/admin_provider.dart';
 import '../widgets/special_tile.dart';
 
-enum _SelectionMode { none, inizio, fine }
+enum _SelectionMode { none, inizio, fine, controlPoint }
 
 class SpecialsEditorScreen extends ConsumerStatefulWidget {
   final String eventId;
@@ -31,24 +32,27 @@ class SpecialsEditorScreen extends ConsumerStatefulWidget {
       _SpecialsEditorScreenState();
 }
 
-class _SpecialsEditorScreenState
-    extends ConsumerState<SpecialsEditorScreen> {
+class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
   late List<SpecialModel> _specials;
   bool _isSaving = false;
 
-  // Inline editing state
   bool _isEditing = false;
   int _editingIndex = -1;
   final _nomeCtrl = TextEditingController();
   int _editingColorIndex = 0;
-  WaypointModel? _editingInizio;
-  WaypointModel? _editingFine;
+  int _editingInicioIdx = -1;
+  int _editingFineIdx = -1;
+  List<int> _editingControlIdxs = [];
   _SelectionMode _selectionMode = _SelectionMode.none;
+  int _activeControlPointIdx = -1;
+
+  double? _cachedTotalLength;
 
   @override
   void initState() {
     super.initState();
     _specials = List.from(widget.event.speciali);
+    _cachedTotalLength = _computeTotalLength();
   }
 
   @override
@@ -57,8 +61,67 @@ class _SpecialsEditorScreenState
     super.dispose();
   }
 
-  // --- Nearest track point (squared Euclidean — fast for 5000+ pts) ---
-  WaypointModel _nearestTrackPoint(LatLng tapped) {
+  // ── Geometry helpers ──────────────────────────────────────────────────────
+
+  double _haversineMeters(LatLng a, LatLng b) {
+    const R = 6371000.0;
+    final lat1 = a.latitude * pi / 180;
+    final lat2 = b.latitude * pi / 180;
+    final dLat = (b.latitude - a.latitude) * pi / 180;
+    final dLng = (b.longitude - a.longitude) * pi / 180;
+    final sinDLat = sin(dLat / 2);
+    final sinDLng = sin(dLng / 2);
+    final aVal =
+        sinDLat * sinDLat + cos(lat1) * cos(lat2) * sinDLng * sinDLng;
+    return R * 2 * atan2(sqrt(aVal), sqrt(1 - aVal));
+  }
+
+  double _computeTotalLength() {
+    final pts = widget.parsedTrack.points;
+    if (pts.length < 2) return 0.0;
+    double total = 0.0;
+    for (int i = 1; i < pts.length; i++) {
+      total += _haversineMeters(pts[i - 1], pts[i]);
+    }
+    return total / 1000.0;
+  }
+
+  double _sectionLength(int startIdx, int endIdx) {
+    final pts = widget.parsedTrack.points;
+    final a = min(startIdx, endIdx);
+    final b = max(startIdx, endIdx);
+    if (a < 0 || b >= pts.length || a == b) return 0.0;
+    double total = 0.0;
+    for (int i = a; i < b; i++) {
+      total += _haversineMeters(pts[i], pts[i + 1]);
+    }
+    return total / 1000.0;
+  }
+
+  int? _indexFromId(String id) {
+    final m = RegExp(r'track_pt_(\d+)$').firstMatch(id);
+    return m != null ? int.tryParse(m.group(1)!) : null;
+  }
+
+  int _ensureTrackIdx(WaypointModel wp) {
+    final parsed = _indexFromId(wp.id);
+    if (parsed != null) return parsed;
+    final pts = widget.parsedTrack.points;
+    var minDist = double.infinity;
+    var minIdx = 0;
+    for (var i = 0; i < pts.length; i++) {
+      final dlat = wp.lat - pts[i].latitude;
+      final dlng = wp.lng - pts[i].longitude;
+      final d = dlat * dlat + dlng * dlng;
+      if (d < minDist) {
+        minDist = d;
+        minIdx = i;
+      }
+    }
+    return minIdx;
+  }
+
+  int _nearestTrackIdx(LatLng tapped) {
     final pts = widget.parsedTrack.points;
     var minDist = double.infinity;
     var minIdx = 0;
@@ -71,41 +134,41 @@ class _SpecialsEditorScreenState
         minIdx = i;
       }
     }
-    final pt = pts[minIdx];
+    return minIdx;
+  }
+
+  WaypointModel _waypointFromIdx(int idx, WaypointType type) {
+    final pt = widget.parsedTrack.points[idx];
     return WaypointModel(
-      id: 'track_pt_$minIdx',
+      id: 'track_pt_$idx',
       nome:
           '${pt.latitude.toStringAsFixed(5)}, ${pt.longitude.toStringAsFixed(5)}',
       lat: pt.latitude,
       lng: pt.longitude,
-      type: WaypointType.intermedio,
+      type: type,
     );
   }
 
-  void _onMapTap(LatLng latlng) {
-    if (_selectionMode == _SelectionMode.none) return;
-    if (widget.parsedTrack.points.isEmpty) return;
-    final wp = _nearestTrackPoint(latlng);
-    setState(() {
-      if (_selectionMode == _SelectionMode.inizio) {
-        _editingInizio = wp;
-      } else {
-        _editingFine = wp;
-      }
-      _selectionMode = _SelectionMode.none;
-    });
+  Color _contrastColor(Color c) {
+    final hsl = HSLColor.fromColor(c);
+    final newHue = (hsl.hue + 180.0) % 360.0;
+    return HSLColor.fromAHSL(1.0, newHue, 0.9, 0.55).toColor();
   }
 
-  // --- Editing lifecycle ---
+  // ── Editing lifecycle ─────────────────────────────────────────────────────
+
   void _startAdd() {
+    final ptCount = widget.parsedTrack.points.length;
     setState(() {
       _isEditing = true;
       _editingIndex = -1;
       _editingColorIndex = _specials.length % AppColors.specialColors.length;
       _nomeCtrl.text = 'PS${_specials.length + 1}';
-      _editingInizio = null;
-      _editingFine = null;
+      _editingInicioIdx = ptCount > 0 ? 0 : -1;
+      _editingFineIdx = ptCount > 1 ? ptCount - 1 : -1;
+      _editingControlIdxs = [];
       _selectionMode = _SelectionMode.none;
+      _activeControlPointIdx = -1;
     });
   }
 
@@ -116,9 +179,14 @@ class _SpecialsEditorScreenState
       _editingIndex = index;
       _editingColorIndex = s.colorIndex;
       _nomeCtrl.text = s.nome;
-      _editingInizio = s.waypointInizio;
-      _editingFine = s.waypointFine;
+      _editingInicioIdx =
+          widget.parsedTrack.points.isNotEmpty ? _ensureTrackIdx(s.waypointInizio) : -1;
+      _editingFineIdx =
+          widget.parsedTrack.points.isNotEmpty ? _ensureTrackIdx(s.waypointFine) : -1;
+      _editingControlIdxs =
+          s.controlPoints.map(_ensureTrackIdx).toList();
       _selectionMode = _SelectionMode.none;
+      _activeControlPointIdx = -1;
     });
   }
 
@@ -126,28 +194,43 @@ class _SpecialsEditorScreenState
     setState(() {
       _isEditing = false;
       _editingIndex = -1;
-      _editingInizio = null;
-      _editingFine = null;
+      _editingInicioIdx = -1;
+      _editingFineIdx = -1;
+      _editingControlIdxs = [];
       _selectionMode = _SelectionMode.none;
+      _activeControlPointIdx = -1;
       _nomeCtrl.clear();
     });
   }
 
   void _confirmEditing() {
     final nome = _nomeCtrl.text.trim();
-    if (nome.isEmpty || _editingInizio == null || _editingFine == null) return;
+    if (nome.isEmpty) return;
+    final ptCount = widget.parsedTrack.points.length;
+    if (_editingInicioIdx < 0 || _editingFineIdx < 0 || ptCount == 0) return;
+    if (_editingInicioIdx == _editingFineIdx) return;
+
+    final inizio = _waypointFromIdx(_editingInicioIdx, WaypointType.inizio);
+    final fine = _waypointFromIdx(_editingFineIdx, WaypointType.fine);
+    final controlPoints = _editingControlIdxs
+        .where((idx) => idx >= 0 && idx < ptCount)
+        .map((idx) => _waypointFromIdx(idx, WaypointType.intermedio))
+        .toList();
+
     final special = SpecialModel(
       id: _editingIndex >= 0
           ? _specials[_editingIndex].id
           : const Uuid().v4(),
       nome: nome,
       colorIndex: _editingColorIndex,
-      waypointInizio: _editingInizio!,
-      waypointFine: _editingFine!,
+      waypointInizio: inizio,
+      waypointFine: fine,
+      controlPoints: controlPoints,
       ordine: _editingIndex >= 0
           ? _specials[_editingIndex].ordine
           : _specials.length,
     );
+
     setState(() {
       if (_editingIndex >= 0) {
         _specials[_editingIndex] = special;
@@ -194,57 +277,125 @@ class _SpecialsEditorScreenState
     }
   }
 
-  // --- Map options ---
-  MapOptions get _mapOptions {
-    final hasPts = widget.parsedTrack.points.isNotEmpty;
-    final tapHandler = _selectionMode != _SelectionMode.none
-        ? (TapPosition _, LatLng ll) => _onMapTap(ll)
-        : null;
+  // ── Map interactions ──────────────────────────────────────────────────────
 
-    if (hasPts) {
-      return MapOptions(
-        initialCameraFit: CameraFit.bounds(
-          bounds: LatLngBounds.fromPoints(widget.parsedTrack.points),
-          padding: const EdgeInsets.all(32),
-        ),
-        onTap: tapHandler,
-      );
-    }
-    return MapOptions(
-      initialCenter: const LatLng(44.0, 11.0),
-      initialZoom: 13,
-      onTap: tapHandler,
-    );
+  void _onMapTap(LatLng latlng) {
+    if (_selectionMode == _SelectionMode.none) return;
+    if (widget.parsedTrack.points.isEmpty) return;
+    final idx = _nearestTrackIdx(latlng);
+    setState(() {
+      switch (_selectionMode) {
+        case _SelectionMode.inizio:
+          _editingInicioIdx = idx;
+          break;
+        case _SelectionMode.fine:
+          _editingFineIdx = idx;
+          break;
+        case _SelectionMode.controlPoint:
+          if (_activeControlPointIdx >= 0 &&
+              _activeControlPointIdx < _editingControlIdxs.length) {
+            _editingControlIdxs[_activeControlPointIdx] = idx;
+          } else {
+            _editingControlIdxs.add(idx);
+          }
+          break;
+        case _SelectionMode.none:
+          break;
+      }
+      _selectionMode = _SelectionMode.none;
+      _activeControlPointIdx = -1;
+    });
   }
 
-  // --- Build map markers ---
-  List<Marker> _buildMarkers() {
-    final markers = <Marker>[];
+  // ── Map overlays ──────────────────────────────────────────────────────────
 
-    // Existing specials (excluding the one being edited)
+  List<Polyline> _buildPolylines() {
+    final polylines = <Polyline>[];
+    final pts = widget.parsedTrack.points;
+
+    if (pts.isNotEmpty) {
+      polylines.add(Polyline(
+        points: pts,
+        color: AppColors.textSecondary.withValues(alpha: 0.35),
+        strokeWidth: 2,
+      ));
+    }
+
     for (var i = 0; i < _specials.length; i++) {
       if (i == _editingIndex) continue;
       final s = _specials[i];
-      markers.add(_markerAt(s.waypointInizio.latLng, s.color, s.nome,
-          icon: Icons.play_arrow));
-      markers.add(
-          _markerAt(s.waypointFine.latLng, s.color, '', icon: Icons.stop));
+      if (pts.isEmpty) continue;
+      final startIdx = _ensureTrackIdx(s.waypointInizio);
+      final endIdx = _ensureTrackIdx(s.waypointFine);
+      final a = min(startIdx, endIdx);
+      final b = max(startIdx, endIdx);
+      if (b < pts.length) {
+        polylines.add(Polyline(
+          points: pts.sublist(a, b + 1),
+          color: s.color,
+          strokeWidth: 4,
+        ));
+      }
     }
 
-    // Current editing markers
-    final editColor = _isEditing
-        ? AppColors.specialColors[
-            _editingColorIndex % AppColors.specialColors.length]
-        : null;
-    if (_editingInizio != null && editColor != null) {
-      markers.add(_markerAt(
-          _editingInizio!.latLng, editColor, 'Inizio',
-          icon: Icons.play_arrow, large: true));
+    if (_isEditing && _editingInicioIdx >= 0 && _editingFineIdx >= 0) {
+      final editColor = AppColors
+          .specialColors[_editingColorIndex % AppColors.specialColors.length];
+      final a = min(_editingInicioIdx, _editingFineIdx);
+      final b = max(_editingInicioIdx, _editingFineIdx);
+      if (b < pts.length) {
+        polylines.add(Polyline(
+          points: pts.sublist(a, b + 1),
+          color: editColor,
+          strokeWidth: 5,
+        ));
+      }
     }
-    if (_editingFine != null && editColor != null) {
-      markers.add(_markerAt(
-          _editingFine!.latLng, editColor, 'Fine',
-          icon: Icons.stop, large: true));
+
+    return polylines;
+  }
+
+  List<Marker> _buildMarkers() {
+    final markers = <Marker>[];
+    final pts = widget.parsedTrack.points;
+
+    for (var i = 0; i < _specials.length; i++) {
+      if (i == _editingIndex) continue;
+      final s = _specials[i];
+      markers
+        ..add(_markerAt(s.waypointInizio.latLng, s.color, s.nome,
+            icon: Icons.play_arrow))
+        ..add(_markerAt(s.waypointFine.latLng, s.color, '',
+            icon: Icons.stop));
+      final contrast = _contrastColor(s.color);
+      for (var j = 0; j < s.controlPoints.length; j++) {
+        markers.add(
+            _controlMarkerAt(s.controlPoints[j].latLng, contrast, 'P${j + 1}'));
+      }
+    }
+
+    if (_isEditing) {
+      final editColor = AppColors
+          .specialColors[_editingColorIndex % AppColors.specialColors.length];
+      if (_editingInicioIdx >= 0 && _editingInicioIdx < pts.length) {
+        markers.add(_markerAt(
+            pts[_editingInicioIdx], editColor, 'Inizio',
+            icon: Icons.play_arrow, large: true));
+      }
+      if (_editingFineIdx >= 0 && _editingFineIdx < pts.length) {
+        markers.add(_markerAt(pts[_editingFineIdx], editColor, 'Fine',
+            icon: Icons.stop, large: true));
+      }
+      final contrast = _contrastColor(editColor);
+      for (var j = 0; j < _editingControlIdxs.length; j++) {
+        final idx = _editingControlIdxs[j];
+        if (idx >= 0 && idx < pts.length) {
+          final isActive = _selectionMode == _SelectionMode.controlPoint &&
+              _activeControlPointIdx == j;
+          markers.add(_controlMarkerAt(pts[idx], contrast, 'P${j + 1}',
+              active: isActive));
+        }
+      }
     }
 
     return markers;
@@ -274,53 +425,74 @@ class _SpecialsEditorScreenState
             child: Icon(icon, color: Colors.white, size: size * 0.5),
           ),
           if (label.isNotEmpty)
-            Text(
-              label,
-              style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 8,
-                  shadows: [Shadow(color: Colors.black, blurRadius: 2)]),
-            ),
+            Text(label,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 8,
+                    shadows: [Shadow(color: Colors.black, blurRadius: 2)])),
         ],
       ),
     );
   }
 
-  // --- Polylines ---
-  List<Polyline> _buildPolylines() {
-    final polylines = <Polyline>[];
-    if (widget.parsedTrack.points.isNotEmpty) {
-      polylines.add(Polyline(
-          points: widget.parsedTrack.points,
-          color: AppColors.accent,
-          strokeWidth: 3));
-    }
-    for (var i = 0; i < _specials.length; i++) {
-      if (i == _editingIndex) continue;
-      final s = _specials[i];
-      polylines.add(Polyline(
-        points: [s.waypointInizio.latLng, s.waypointFine.latLng],
-        color: s.color,
-        strokeWidth: 4,
-      ));
-    }
-    // Current editing special polyline
-    if (_editingInizio != null && _editingFine != null) {
-      final c = AppColors.specialColors[
-          _editingColorIndex % AppColors.specialColors.length];
-      polylines.add(Polyline(
-        points: [_editingInizio!.latLng, _editingFine!.latLng],
-        color: c,
-        strokeWidth: 4,
-      ));
-    }
-    return polylines;
+  Marker _controlMarkerAt(LatLng point, Color color, String label,
+      {bool active = false}) {
+    final size = active ? 28.0 : 22.0;
+    return Marker(
+      point: point,
+      width: size + 4,
+      height: size + 4,
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
+          border:
+              Border.all(color: Colors.white, width: active ? 3 : 2),
+          boxShadow: [
+            BoxShadow(
+                color: color.withValues(alpha: 0.6),
+                blurRadius: active ? 10 : 4)
+          ],
+        ),
+        child: Center(
+          child: Text(label,
+              style: TextStyle(
+                  color: Colors.white,
+                  fontSize: size * 0.3,
+                  fontWeight: FontWeight.bold)),
+        ),
+      ),
+    );
   }
+
+  MapOptions get _mapOptions {
+    final pts = widget.parsedTrack.points;
+    final isSelecting = _selectionMode != _SelectionMode.none;
+    final tapHandler =
+        isSelecting ? (TapPosition _, LatLng ll) => _onMapTap(ll) : null;
+
+    if (pts.isNotEmpty) {
+      return MapOptions(
+        initialCameraFit: CameraFit.bounds(
+          bounds: LatLngBounds.fromPoints(pts),
+          padding: const EdgeInsets.all(32),
+        ),
+        onTap: tapHandler,
+      );
+    }
+    return MapOptions(
+      initialCenter: const LatLng(44.0, 11.0),
+      initialZoom: 13,
+      onTap: tapHandler,
+    );
+  }
+
+  // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
-    final isSelecting = _selectionMode != _SelectionMode.none;
-
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
@@ -348,281 +520,669 @@ class _SpecialsEditorScreenState
             ),
         ],
       ),
-      body: Column(
-        children: [
-          // --- Map ---
-          SizedBox(
-            height: 280,
-            child: Stack(
-              children: [
-                MouseRegion(
-                  cursor: isSelecting
-                      ? SystemMouseCursors.precise
-                      : MouseCursor.defer,
-                  child: FlutterMap(
-                    options: _mapOptions,
-                    children: [
-                      TileLayer(
-                        urlTemplate:
-                            'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                        userAgentPackageName: 'com.ccr.ccr_app',
-                      ),
-                      PolylineLayer(polylines: _buildPolylines()),
-                      MarkerLayer(markers: _buildMarkers()),
-                    ],
-                  ),
+      body: LayoutBuilder(builder: (context, constraints) {
+        final isWide = constraints.maxWidth >= 600;
+        if (isWide) {
+          final ctrlWidth = constraints.maxWidth * 0.4;
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: ctrlWidth,
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(16),
+                  child: _buildControlsPanel(),
                 ),
-                // Selection mode banner
-                if (isSelecting)
-                  Positioned(
-                    top: 8,
-                    left: 8,
-                    right: 8,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: AppColors.cardBackground.withValues(alpha: 0.92),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: AppColors.accent),
-                      ),
-                      child: Text(
-                        'Clicca sulla traccia per selezionare il punto di '
-                        '${_selectionMode == _SelectionMode.inizio ? "inizio" : "fine"}',
-                        style: const TextStyle(
-                            color: AppColors.textPrimary, fontSize: 13),
-                        textAlign: TextAlign.center,
-                      ),
-                    ),
-                  ),
+              ),
+              Expanded(child: _buildMap()),
+            ],
+          );
+        }
+        final mapH = (constraints.maxWidth * 0.75).clamp(220.0, 400.0);
+        return Column(
+          children: [
+            SizedBox(height: mapH, child: _buildMap()),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(16),
+                child: _buildControlsPanel(),
+              ),
+            ),
+          ],
+        );
+      }),
+    );
+  }
+
+  Widget _buildMap() {
+    final isSelecting = _selectionMode != _SelectionMode.none;
+    String bannerText = '';
+    if (isSelecting) {
+      if (_selectionMode == _SelectionMode.inizio) {
+        bannerText = 'Clicca sulla traccia per selezionare l\'INIZIO';
+      } else if (_selectionMode == _SelectionMode.fine) {
+        bannerText = 'Clicca sulla traccia per selezionare la FINE';
+      } else {
+        final num = _activeControlPointIdx >= 0
+            ? _activeControlPointIdx + 1
+            : _editingControlIdxs.length + 1;
+        bannerText = 'Clicca sulla traccia per posizionare P$num';
+      }
+    }
+
+    return Stack(
+      children: [
+        MouseRegion(
+          cursor: isSelecting
+              ? SystemMouseCursors.precise
+              : MouseCursor.defer,
+          child: FlutterMap(
+            options: _mapOptions,
+            children: [
+              TileLayer(
+                urlTemplate:
+                    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'com.ccr.ccr_app',
+              ),
+              PolylineLayer(polylines: _buildPolylines()),
+              MarkerLayer(markers: _buildMarkers()),
+            ],
+          ),
+        ),
+        if (isSelecting)
+          Positioned(
+            top: 8,
+            left: 8,
+            right: 8,
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: AppColors.cardBackground.withValues(alpha: 0.92),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppColors.accent),
+              ),
+              child: Text(bannerText,
+                  style: const TextStyle(
+                      color: AppColors.textPrimary, fontSize: 13),
+                  textAlign: TextAlign.center),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildControlsPanel() {
+    final pts = widget.parsedTrack.points;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (_cachedTotalLength != null && _cachedTotalLength! > 0) ...[
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: AppColors.cardBackground,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.route,
+                    size: 14, color: AppColors.textSecondary),
+                const SizedBox(width: 8),
+                Text(
+                  'Traccia: ${_cachedTotalLength!.toStringAsFixed(1)} km',
+                  style: const TextStyle(
+                      color: AppColors.textSecondary, fontSize: 12),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '(${pts.length} pt)',
+                  style: const TextStyle(
+                      color: AppColors.border, fontSize: 11),
+                ),
               ],
             ),
           ),
+          const SizedBox(height: 12),
+        ],
+        if (_isEditing) _buildEditingPanel() else _buildSpecialsList(),
+      ],
+    );
+  }
 
-          // --- Inline editing panel ---
-          if (_isEditing) _buildEditingPanel(),
-
-          // --- Specials list header ---
-          if (!_isEditing)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-              child: Row(
-                children: [
-                  const Text(
-                    'Speciali',
-                    style: TextStyle(
-                        color: AppColors.textPrimary,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold),
-                  ),
-                  const Spacer(),
-                  TextButton.icon(
-                    onPressed: _startAdd,
-                    icon: const Icon(Icons.add, color: AppColors.accent),
-                    label: const Text('Aggiungi',
-                        style: TextStyle(color: AppColors.accent)),
-                  ),
-                ],
+  Widget _buildSpecialsList() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          children: [
+            const Text('Speciali',
+                style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 17,
+                    fontWeight: FontWeight.bold)),
+            const Spacer(),
+            TextButton.icon(
+              onPressed: _startAdd,
+              icon: const Icon(Icons.add, color: AppColors.accent),
+              label: const Text('Aggiungi',
+                  style: TextStyle(color: AppColors.accent)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (_specials.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 24),
+            child: Center(
+              child: Text(
+                'Nessuna speciale.\nPremi "Aggiungi" per crearne una.',
+                style: TextStyle(color: AppColors.textSecondary),
+                textAlign: TextAlign.center,
               ),
             ),
-
-          // --- Specials list ---
-          Expanded(
-            child: _specials.isEmpty && !_isEditing
-                ? const Center(
-                    child: Text(
-                      'Nessuna speciale.\nPremi "Aggiungi" per crearne una.',
-                      style: TextStyle(color: AppColors.textSecondary),
-                      textAlign: TextAlign.center,
-                    ),
-                  )
-                : ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: _specials.length,
-                    itemBuilder: (ctx, i) => SpecialTile(
-                      special: _specials[i],
-                      onEdit: () => _startEdit(i),
-                      onDelete: () => _deleteSpeciale(i),
-                    ),
-                  ),
+          )
+        else
+          ...List.generate(
+            _specials.length,
+            (i) => SpecialTile(
+              special: _specials[i],
+              onEdit: () => _startEdit(i),
+              onDelete: () => _deleteSpeciale(i),
+            ),
           ),
-        ],
-      ),
+      ],
     );
   }
 
   Widget _buildEditingPanel() {
-    final hasPts = widget.parsedTrack.points.isNotEmpty;
-    return Container(
-      color: AppColors.cardBackground,
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Nome + colori
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _nomeCtrl,
-                  style: const TextStyle(
-                      color: AppColors.textPrimary, fontSize: 15),
-                  decoration: InputDecoration(
-                    labelText: 'Nome speciale',
-                    labelStyle:
-                        const TextStyle(color: AppColors.textSecondary),
-                    isDense: true,
-                    contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 8),
-                    border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8)),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      borderSide:
-                          const BorderSide(color: AppColors.border),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      borderSide:
-                          const BorderSide(color: AppColors.accent, width: 2),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              // Color picker
-              Row(
-                children: List.generate(
-                  AppColors.specialColors.length,
-                  (i) => GestureDetector(
-                    onTap: () => setState(() => _editingColorIndex = i),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 150),
-                      width: 28,
-                      height: 28,
-                      margin: const EdgeInsets.only(left: 6),
-                      decoration: BoxDecoration(
-                        color: AppColors.specialColors[i],
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: _editingColorIndex == i
-                              ? Colors.white
-                              : Colors.transparent,
-                          width: 3,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          // Inizio selector
-          _buildPointSelector(
-            label: 'Inizio',
-            waypoint: _editingInizio,
-            mode: _SelectionMode.inizio,
-            color: AppColors.success,
-            enabled: hasPts,
-          ),
-          const SizedBox(height: 8),
-          // Fine selector
-          _buildPointSelector(
-            label: 'Fine',
-            waypoint: _editingFine,
-            mode: _SelectionMode.fine,
-            color: AppColors.warning,
-            enabled: hasPts,
-          ),
-          if (!hasPts)
-            const Padding(
-              padding: EdgeInsets.only(top: 6),
-              child: Text(
-                'Carica un file GPX per selezionare i punti sulla traccia.',
-                style:
-                    TextStyle(color: AppColors.textSecondary, fontSize: 11),
-              ),
+    final pts = widget.parsedTrack.points;
+    final editColor = AppColors
+        .specialColors[_editingColorIndex % AppColors.specialColors.length];
+    final hasPts = pts.isNotEmpty;
+    final hasRange = _editingInicioIdx >= 0 &&
+        _editingFineIdx >= 0 &&
+        _editingInicioIdx != _editingFineIdx;
+    final specialLen = hasPts && hasRange
+        ? _sectionLength(_editingInicioIdx, _editingFineIdx)
+        : null;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          children: [
+            Text(
+              _editingIndex >= 0 ? 'Modifica speciale' : 'Nuova speciale',
+              style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold),
             ),
-          const SizedBox(height: 12),
-          // Actions
-          Row(
-            children: [
-              TextButton(
-                onPressed: _cancelEditing,
-                child: const Text('Annulla',
-                    style: TextStyle(color: AppColors.textSecondary)),
-              ),
-              const Spacer(),
-              ElevatedButton(
-                onPressed: (_editingInizio != null &&
-                        _editingFine != null &&
-                        _nomeCtrl.text.trim().isNotEmpty)
-                    ? _confirmEditing
-                    : null,
-                style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.accent),
-                child: Text(
-                    _editingIndex >= 0 ? 'Salva modifiche' : 'Aggiungi'),
-              ),
-            ],
+            const Spacer(),
+            IconButton(
+              icon: const Icon(Icons.close,
+                  color: AppColors.textSecondary, size: 20),
+              onPressed: _cancelEditing,
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+
+        // Name
+        TextField(
+          controller: _nomeCtrl,
+          style: const TextStyle(
+              color: AppColors.textPrimary, fontSize: 14),
+          decoration: InputDecoration(
+            labelText: 'Nome speciale',
+            labelStyle:
+                const TextStyle(color: AppColors.textSecondary),
+            isDense: true,
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            border:
+                OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: AppColors.border),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(
+                  color: AppColors.accent, width: 2),
+            ),
           ),
+          onChanged: (_) => setState(() {}),
+        ),
+        const SizedBox(height: 10),
+
+        // Colors
+        Row(
+          children: [
+            const Text('Colore:',
+                style: TextStyle(
+                    color: AppColors.textSecondary, fontSize: 12)),
+            const SizedBox(width: 8),
+            ...List.generate(AppColors.specialColors.length, (i) =>
+              GestureDetector(
+                onTap: () => setState(() => _editingColorIndex = i),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 150),
+                  width: 26,
+                  height: 26,
+                  margin: const EdgeInsets.only(right: 6),
+                  decoration: BoxDecoration(
+                    color: AppColors.specialColors[i],
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: _editingColorIndex == i
+                          ? Colors.white
+                          : Colors.transparent,
+                      width: 3,
+                    ),
+                  ),
+                ),
+              )),
+          ],
+        ),
+        const SizedBox(height: 12),
+
+        // Special length badge
+        if (specialLen != null) ...[
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: editColor.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: editColor.withValues(alpha: 0.4)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.straighten, size: 14, color: editColor),
+                const SizedBox(width: 6),
+                Text(
+                  'Lunghezza speciale: ${specialLen.toStringAsFixed(2)} km',
+                  style: TextStyle(
+                      color: editColor,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
         ],
-      ),
+
+        // Inizio slider
+        _buildSliderSection(
+          label: 'INIZIO',
+          color: AppColors.success,
+          currentIdx: _editingInicioIdx,
+          totalPts: pts.length,
+          isMapActive: _selectionMode == _SelectionMode.inizio,
+          onSliderChanged: hasPts
+              ? (v) => setState(() {
+                    _editingInicioIdx = v;
+                    _selectionMode = _SelectionMode.none;
+                  })
+              : null,
+          onMapClick: hasPts
+              ? () => setState(() {
+                    _selectionMode =
+                        _selectionMode == _SelectionMode.inizio
+                            ? _SelectionMode.none
+                            : _SelectionMode.inizio;
+                    _activeControlPointIdx = -1;
+                  })
+              : null,
+        ),
+        const SizedBox(height: 6),
+
+        // Fine slider
+        _buildSliderSection(
+          label: 'FINE',
+          color: AppColors.error,
+          currentIdx: _editingFineIdx,
+          totalPts: pts.length,
+          isMapActive: _selectionMode == _SelectionMode.fine,
+          onSliderChanged: hasPts
+              ? (v) => setState(() {
+                    _editingFineIdx = v;
+                    _selectionMode = _SelectionMode.none;
+                  })
+              : null,
+          onMapClick: hasPts
+              ? () => setState(() {
+                    _selectionMode =
+                        _selectionMode == _SelectionMode.fine
+                            ? _SelectionMode.none
+                            : _SelectionMode.fine;
+                    _activeControlPointIdx = -1;
+                  })
+              : null,
+        ),
+        const SizedBox(height: 14),
+
+        // Control points
+        _buildControlPointsSection(editColor, pts, hasPts),
+        const SizedBox(height: 14),
+
+        // Confirm
+        ElevatedButton(
+          onPressed: (_nomeCtrl.text.trim().isNotEmpty && hasRange)
+              ? _confirmEditing
+              : null,
+          style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.accent,
+              minimumSize: const Size(0, 44)),
+          child: Text(
+              _editingIndex >= 0 ? 'Salva modifiche' : 'Aggiungi speciale'),
+        ),
+      ],
     );
   }
 
-  Widget _buildPointSelector({
+  Widget _buildSliderSection({
     required String label,
-    required WaypointModel? waypoint,
-    required _SelectionMode mode,
     required Color color,
-    required bool enabled,
+    required int currentIdx,
+    required int totalPts,
+    required bool isMapActive,
+    required ValueChanged<int>? onSliderChanged,
+    required VoidCallback? onMapClick,
   }) {
-    final isActive = _selectionMode == mode;
-    return Row(
+    final hasValue = currentIdx >= 0 && totalPts > 0;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
       children: [
-        Expanded(
-          flex: 2,
-          child: OutlinedButton.icon(
-            onPressed: enabled
-                ? () => setState(() {
-                      _selectionMode =
-                          isActive ? _SelectionMode.none : mode;
-                    })
-                : null,
-            icon: Icon(
-              isActive ? Icons.my_location : Icons.add_location_alt,
-              size: 16,
-              color: isActive ? AppColors.accent : color,
+        Row(
+          children: [
+            Container(
+                width: 8,
+                height: 8,
+                decoration:
+                    BoxDecoration(color: color, shape: BoxShape.circle)),
+            const SizedBox(width: 6),
+            Text(label,
+                style: TextStyle(
+                    color: color,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12,
+                    letterSpacing: 0.5)),
+            const Spacer(),
+            if (hasValue)
+              Text(
+                '${currentIdx + 1} / $totalPts',
+                style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 11,
+                    fontFamily: 'monospace'),
+              ),
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: onMapClick,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: isMapActive
+                      ? color.withValues(alpha: 0.15)
+                      : AppColors.cardBackground,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                      color: isMapActive ? color : AppColors.border),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      isMapActive ? Icons.touch_app : Icons.map_outlined,
+                      size: 13,
+                      color: isMapActive
+                          ? color
+                          : AppColors.textSecondary,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      isMapActive ? 'Clicca...' : 'Mappa',
+                      style: TextStyle(
+                          fontSize: 11,
+                          color: isMapActive
+                              ? color
+                              : AppColors.textSecondary),
+                    ),
+                  ],
+                ),
+              ),
             ),
-            label: Text(
-              isActive ? 'Clicca sulla mappa...' : 'Seleziona $label',
+          ],
+        ),
+        if (totalPts > 0)
+          SliderTheme(
+            data: SliderThemeData(
+              activeTrackColor: color,
+              inactiveTrackColor: AppColors.border,
+              thumbColor: color,
+              overlayColor: color.withValues(alpha: 0.2),
+              thumbShape:
+                  const RoundSliderThumbShape(enabledThumbRadius: 8),
+              trackHeight: 3,
+              showValueIndicator: ShowValueIndicator.onlyForDiscrete,
+            ),
+            child: Slider(
+              value:
+                  currentIdx >= 0 ? currentIdx.toDouble() : 0.0,
+              min: 0,
+              max: (totalPts - 1).toDouble(),
+              label: hasValue ? '${currentIdx + 1}/$totalPts' : '–',
+              onChanged: onSliderChanged != null
+                  ? (v) => onSliderChanged(v.round())
+                  : null,
+            ),
+          )
+        else
+          const Padding(
+            padding: EdgeInsets.only(top: 4, bottom: 4),
+            child: Text(
+              'Carica un file GPX per abilitare lo slider.',
               style: TextStyle(
-                  fontSize: 13,
-                  color: isActive ? AppColors.accent : color),
-            ),
-            style: OutlinedButton.styleFrom(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              side: BorderSide(
-                  color: isActive ? AppColors.accent : color, width: 1.5),
+                  color: AppColors.textSecondary, fontSize: 11),
             ),
           ),
+      ],
+    );
+  }
+
+  Widget _buildControlPointsSection(
+      Color editColor, List<LatLng> pts, bool hasPts) {
+    final contrast = _contrastColor(editColor);
+    final canAdd = _editingControlIdxs.length < 10;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          children: [
+            Text(
+              'Punti di controllo (${_editingControlIdxs.length}/10)',
+              style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600),
+            ),
+            const Spacer(),
+            if (canAdd && hasPts)
+              TextButton.icon(
+                style: TextButton.styleFrom(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                onPressed: () {
+                  final newIdx = _editingControlIdxs.isNotEmpty
+                      ? _editingControlIdxs.last
+                      : (_editingInicioIdx >= 0 ? _editingInicioIdx : 0);
+                  setState(() {
+                    _editingControlIdxs
+                        .add(newIdx.clamp(0, pts.length - 1));
+                  });
+                },
+                icon: Icon(Icons.add_location, size: 14, color: contrast),
+                label: Text('Aggiungi',
+                    style: TextStyle(color: contrast, fontSize: 12)),
+              ),
+          ],
         ),
-        if (waypoint != null) ...[
-          const SizedBox(width: 8),
-          Expanded(
-            flex: 3,
+        const SizedBox(height: 4),
+        if (_editingControlIdxs.isEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
             child: Text(
-              '${waypoint.lat.toStringAsFixed(5)}, ${waypoint.lng.toStringAsFixed(5)}',
+              'Min 1 punto consigliato per la validazione GPS.',
               style: const TextStyle(
                   color: AppColors.textSecondary, fontSize: 11),
-              overflow: TextOverflow.ellipsis,
             ),
           ),
-        ],
+        ...List.generate(_editingControlIdxs.length, (j) {
+          final cpIdx = _editingControlIdxs[j];
+          final isActive =
+              _selectionMode == _SelectionMode.controlPoint &&
+                  _activeControlPointIdx == j;
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Container(
+                  width: 24,
+                  height: 24,
+                  decoration: BoxDecoration(
+                      color: contrast, shape: BoxShape.circle),
+                  child: Center(
+                    child: Text('P${j + 1}',
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold)),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        children: [
+                          Text(
+                            '${cpIdx + 1} / ${pts.length}',
+                            style: const TextStyle(
+                                color: AppColors.textSecondary,
+                                fontSize: 10,
+                                fontFamily: 'monospace'),
+                          ),
+                          const Spacer(),
+                          GestureDetector(
+                            onTap: () => setState(() {
+                              if (isActive) {
+                                _selectionMode = _SelectionMode.none;
+                                _activeControlPointIdx = -1;
+                              } else {
+                                _selectionMode =
+                                    _SelectionMode.controlPoint;
+                                _activeControlPointIdx = j;
+                              }
+                            }),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 6, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: isActive
+                                    ? contrast.withValues(alpha: 0.2)
+                                    : AppColors.cardBackground,
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(
+                                    color: isActive
+                                        ? contrast
+                                        : AppColors.border),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    isActive
+                                        ? Icons.touch_app
+                                        : Icons.map_outlined,
+                                    size: 12,
+                                    color: isActive
+                                        ? contrast
+                                        : AppColors.textSecondary,
+                                  ),
+                                  const SizedBox(width: 3),
+                                  Text(
+                                    isActive ? 'Clicca...' : 'Mappa',
+                                    style: TextStyle(
+                                        fontSize: 10,
+                                        color: isActive
+                                            ? contrast
+                                            : AppColors.textSecondary),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      SliderTheme(
+                        data: SliderThemeData(
+                          activeTrackColor: contrast,
+                          inactiveTrackColor: AppColors.border,
+                          thumbColor: contrast,
+                          overlayColor: contrast.withValues(alpha: 0.2),
+                          thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 6),
+                          trackHeight: 2,
+                        ),
+                        child: Slider(
+                          value: cpIdx.toDouble(),
+                          min: 0,
+                          max: (pts.length - 1).toDouble(),
+                          onChanged: (v) => setState(() {
+                            _editingControlIdxs[j] = v.round();
+                            _selectionMode = _SelectionMode.none;
+                          }),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.remove_circle_outline,
+                      color: AppColors.error, size: 18),
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                  onPressed: () => setState(() {
+                    _editingControlIdxs.removeAt(j);
+                    if (_activeControlPointIdx >=
+                        _editingControlIdxs.length) {
+                      _activeControlPointIdx = -1;
+                      _selectionMode = _SelectionMode.none;
+                    }
+                  }),
+                ),
+              ],
+            ),
+          );
+        }),
       ],
     );
   }
