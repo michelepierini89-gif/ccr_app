@@ -1,9 +1,12 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
+import 'package:latlong2/latlong.dart';
 import '../../../core/models/registration_model.dart';
+import '../../../core/models/special_model.dart';
 import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
@@ -65,6 +68,55 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
     } finally {
       if (mounted) setState(() => _isLoadingTrack = false);
     }
+  }
+
+  int? _indexFromId(String id) {
+    final m = RegExp(r'track_pt_(\d+)$').firstMatch(id);
+    return m != null ? int.tryParse(m.group(1)!) : null;
+  }
+
+  double _haversineKm(LatLng a, LatLng b) {
+    const R = 6371.0;
+    final lat1 = a.latitude * pi / 180;
+    final lat2 = b.latitude * pi / 180;
+    final dLat = (b.latitude - a.latitude) * pi / 180;
+    final dLng = (b.longitude - a.longitude) * pi / 180;
+    final sinDLat = sin(dLat / 2);
+    final sinDLng = sin(dLng / 2);
+    final aVal =
+        sinDLat * sinDLat + cos(lat1) * cos(lat2) * sinDLng * sinDLng;
+    return R * 2 * atan2(sqrt(aVal), sqrt(1 - aVal));
+  }
+
+  int _nearestIdx(LatLng point, List<LatLng> pts) {
+    var minDist = double.infinity;
+    var minIdx = 0;
+    for (var i = 0; i < pts.length; i++) {
+      final dlat = point.latitude - pts[i].latitude;
+      final dlng = point.longitude - pts[i].longitude;
+      final d = dlat * dlat + dlng * dlng;
+      if (d < minDist) {
+        minDist = d;
+        minIdx = i;
+      }
+    }
+    return minIdx;
+  }
+
+  double? _specialLengthKm(SpecialModel s, List<LatLng> pts) {
+    if (pts.isEmpty) return null;
+    final startIdx = _indexFromId(s.waypointInizio.id) ??
+        _nearestIdx(s.waypointInizio.latLng, pts);
+    final endIdx = _indexFromId(s.waypointFine.id) ??
+        _nearestIdx(s.waypointFine.latLng, pts);
+    final a = min(startIdx, endIdx).clamp(0, pts.length - 1);
+    final b = max(startIdx, endIdx).clamp(0, pts.length - 1);
+    if (a >= b) return null;
+    double total = 0.0;
+    for (var i = a; i < b; i++) {
+      total += _haversineKm(pts[i], pts[i + 1]);
+    }
+    return total;
   }
 
   @override
@@ -237,42 +289,61 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
                   ),
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: event.speciali
-                          .map((s) => Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 12, vertical: 6),
+                    child: Column(
+                      children: event.speciali.map((s) {
+                        final kmLen = _specialLengthKm(s, trackPoints);
+                        final cpCount = s.controlPoints.length;
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: s.color.withValues(alpha: 0.10),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                                color: s.color.withValues(alpha: 0.5)),
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 10,
+                                height: 10,
                                 decoration: BoxDecoration(
-                                  color: s.color.withValues(alpha: 0.15),
-                                  borderRadius: BorderRadius.circular(20),
-                                  border: Border.all(color: s.color),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
+                                    color: s.color, shape: BoxShape.circle),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Container(
-                                      width: 8,
-                                      height: 8,
-                                      decoration: BoxDecoration(
-                                        color: s.color,
-                                        shape: BoxShape.circle,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 6),
                                     Text(
                                       s.nome,
                                       style: TextStyle(
                                         color: s.color,
                                         fontWeight: FontWeight.bold,
-                                        fontSize: 13,
+                                        fontSize: 14,
                                       ),
                                     ),
+                                    if (kmLen != null || cpCount > 0)
+                                      Text(
+                                        [
+                                          if (kmLen != null)
+                                            '${kmLen.toStringAsFixed(1)} km',
+                                          if (cpCount > 0)
+                                            '$cpCount punt${cpCount == 1 ? "o" : "i"} di controllo',
+                                        ].join(' · '),
+                                        style: const TextStyle(
+                                          color: AppColors.textSecondary,
+                                          fontSize: 12,
+                                        ),
+                                      ),
                                   ],
                                 ),
-                              ))
-                          .toList(),
+                              ),
+                            ],
+                          ),
+                        );
+                      }).toList(),
                     ),
                   ),
                   const SizedBox(height: 16),

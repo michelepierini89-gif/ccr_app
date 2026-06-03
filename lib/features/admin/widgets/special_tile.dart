@@ -4,12 +4,14 @@ import '../../../core/theme/app_colors.dart';
 
 class SpecialTile extends StatelessWidget {
   final SpecialModel special;
+  final double? lengthKm;
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
 
   const SpecialTile({
     super.key,
     required this.special,
+    this.lengthKm,
     this.onEdit,
     this.onDelete,
   });
@@ -89,15 +91,20 @@ class SpecialTile extends StatelessWidget {
                 ),
               ],
             ),
-            if (special.controlPoints.isNotEmpty) ...[
+            if (lengthKm != null || special.controlPoints.isNotEmpty) ...[
               const SizedBox(height: 2),
               Row(
                 children: [
-                  const Icon(Icons.pin_drop,
-                      color: AppColors.textSecondary, size: 14),
+                  Icon(
+                    lengthKm != null ? Icons.straighten : Icons.pin_drop,
+                    color: AppColors.textSecondary,
+                    size: 14,
+                  ),
                   const SizedBox(width: 4),
                   Text(
-                    '${special.controlPoints.length} punt${special.controlPoints.length == 1 ? "o" : "i"} di controllo',
+                    lengthKm != null
+                        ? '${lengthKm!.toStringAsFixed(1)} km · ${special.controlPoints.length} punt${special.controlPoints.length == 1 ? "o" : "i"} di controllo'
+                        : '${special.controlPoints.length} punt${special.controlPoints.length == 1 ? "o" : "i"} di controllo',
                     style: const TextStyle(
                         color: AppColors.textSecondary, fontSize: 12),
                   ),

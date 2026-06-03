@@ -121,6 +121,15 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
     return minIdx;
   }
 
+  void _reclampControlPoints() {
+    if (_editingInicioIdx < 0 || _editingFineIdx < 0) return;
+    final lo = min(_editingInicioIdx, _editingFineIdx);
+    final hi = max(_editingInicioIdx, _editingFineIdx);
+    for (var i = 0; i < _editingControlIdxs.length; i++) {
+      _editingControlIdxs[i] = _editingControlIdxs[i].clamp(lo, hi);
+    }
+  }
+
   int _nearestTrackIdx(LatLng tapped) {
     final pts = widget.parsedTrack.points;
     var minDist = double.infinity;
@@ -208,7 +217,28 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
     if (nome.isEmpty) return;
     final ptCount = widget.parsedTrack.points.length;
     if (_editingInicioIdx < 0 || _editingFineIdx < 0 || ptCount == 0) return;
-    if (_editingInicioIdx == _editingFineIdx) return;
+    if (_editingFineIdx <= _editingInicioIdx) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('La fine deve essere successiva all\'inizio'),
+        backgroundColor: AppColors.error,
+      ));
+      return;
+    }
+    for (var i = 0; i < _specials.length; i++) {
+      if (i == _editingIndex) continue;
+      final s = _specials[i];
+      final sA = _ensureTrackIdx(s.waypointInizio);
+      final sB = _ensureTrackIdx(s.waypointFine);
+      final lo = min(sA, sB);
+      final hi = max(sA, sB);
+      if (_editingInicioIdx < hi && lo < _editingFineIdx) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Il range si sovrappone con "${s.nome}"'),
+          backgroundColor: AppColors.error,
+        ));
+        return;
+      }
+    }
 
     final inizio = _waypointFromIdx(_editingInicioIdx, WaypointType.inizio);
     final fine = _waypointFromIdx(_editingFineIdx, WaypointType.fine);
@@ -287,16 +317,22 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
       switch (_selectionMode) {
         case _SelectionMode.inizio:
           _editingInicioIdx = idx;
+          _reclampControlPoints();
           break;
         case _SelectionMode.fine:
           _editingFineIdx = idx;
+          _reclampControlPoints();
           break;
         case _SelectionMode.controlPoint:
+          final clampedIdx =
+              (_editingInicioIdx >= 0 && _editingFineIdx > _editingInicioIdx)
+                  ? idx.clamp(_editingInicioIdx, _editingFineIdx)
+                  : idx;
           if (_activeControlPointIdx >= 0 &&
               _activeControlPointIdx < _editingControlIdxs.length) {
-            _editingControlIdxs[_activeControlPointIdx] = idx;
+            _editingControlIdxs[_activeControlPointIdx] = clampedIdx;
           } else {
-            _editingControlIdxs.add(idx);
+            _editingControlIdxs.add(clampedIdx);
           }
           break;
         case _SelectionMode.none:
@@ -691,6 +727,11 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
             _specials.length,
             (i) => SpecialTile(
               special: _specials[i],
+              lengthKm: widget.parsedTrack.points.isNotEmpty
+                  ? _sectionLength(
+                      _ensureTrackIdx(_specials[i].waypointInizio),
+                      _ensureTrackIdx(_specials[i].waypointFine))
+                  : null,
               onEdit: () => _startEdit(i),
               onDelete: () => _deleteSpeciale(i),
             ),
@@ -706,7 +747,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
     final hasPts = pts.isNotEmpty;
     final hasRange = _editingInicioIdx >= 0 &&
         _editingFineIdx >= 0 &&
-        _editingInicioIdx != _editingFineIdx;
+        _editingFineIdx > _editingInicioIdx;
     final specialLen = hasPts && hasRange
         ? _sectionLength(_editingInicioIdx, _editingFineIdx)
         : null;
@@ -830,6 +871,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
               ? (v) => setState(() {
                     _editingInicioIdx = v;
                     _selectionMode = _SelectionMode.none;
+                    _reclampControlPoints();
                   })
               : null,
           onMapClick: hasPts
@@ -855,6 +897,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
               ? (v) => setState(() {
                     _editingFineIdx = v;
                     _selectionMode = _SelectionMode.none;
+                    _reclampControlPoints();
                   })
               : null,
           onMapClick: hasPts
@@ -867,7 +910,36 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
                   })
               : null,
         ),
-        const SizedBox(height: 14),
+        const SizedBox(height: 6),
+        if (_editingInicioIdx >= 0 &&
+            _editingFineIdx >= 0 &&
+            _editingFineIdx <= _editingInicioIdx) ...[
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: AppColors.error.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(6),
+              border:
+                  Border.all(color: AppColors.error.withValues(alpha: 0.4)),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.warning_amber_rounded,
+                    size: 14, color: AppColors.error),
+                SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'La fine deve essere successiva all\'inizio',
+                    style: TextStyle(color: AppColors.error, fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 6),
+        ],
+        const SizedBox(height: 8),
 
         // Control points
         _buildControlPointsSection(editColor, pts, hasPts),
@@ -1004,6 +1076,14 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
       Color editColor, List<LatLng> pts, bool hasPts) {
     final contrast = _contrastColor(editColor);
     final canAdd = _editingControlIdxs.length < 10;
+    final cpLo =
+        (_editingInicioIdx >= 0 && _editingFineIdx > _editingInicioIdx)
+            ? _editingInicioIdx
+            : 0;
+    final cpHi =
+        (_editingFineIdx > _editingInicioIdx && pts.isNotEmpty)
+            ? _editingFineIdx
+            : (pts.isNotEmpty ? pts.length - 1 : 0);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1027,12 +1107,8 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
                     minimumSize: Size.zero,
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap),
                 onPressed: () {
-                  final newIdx = _editingControlIdxs.isNotEmpty
-                      ? _editingControlIdxs.last
-                      : (_editingInicioIdx >= 0 ? _editingInicioIdx : 0);
                   setState(() {
-                    _editingControlIdxs
-                        .add(newIdx.clamp(0, pts.length - 1));
+                    _editingControlIdxs.add(cpLo);
                   });
                 },
                 icon: Icon(Icons.add_location, size: 14, color: contrast),
@@ -1152,9 +1228,9 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
                           trackHeight: 2,
                         ),
                         child: Slider(
-                          value: cpIdx.toDouble(),
-                          min: 0,
-                          max: (pts.length - 1).toDouble(),
+                          value: cpIdx.clamp(cpLo, cpHi).toDouble(),
+                          min: cpLo.toDouble(),
+                          max: cpHi.toDouble(),
                           onChanged: (v) => setState(() {
                             _editingControlIdxs[j] = v.round();
                             _selectionMode = _SelectionMode.none;
