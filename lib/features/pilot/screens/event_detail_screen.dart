@@ -7,12 +7,14 @@ import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart';
 import '../../../core/models/registration_model.dart';
 import '../../../core/models/special_model.dart';
+import '../../../core/models/team_model.dart';
 import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../admin/providers/admin_provider.dart';
 import '../../map/screens/track_map_screen.dart';
+import '../providers/pilot_provider.dart';
 
 class EventDetailScreen extends ConsumerStatefulWidget {
   final String eventId;
@@ -26,28 +28,6 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
   ParsedTrack? _parsedTrack;
   bool _isLoadingTrack = false;
   String? _loadedTrackUrl;
-
-  Color _regStatusColor(RegistrationStatus s) {
-    switch (s) {
-      case RegistrationStatus.inAttesa:
-        return AppColors.warning;
-      case RegistrationStatus.approvato:
-        return AppColors.success;
-      case RegistrationStatus.rifiutato:
-        return AppColors.error;
-    }
-  }
-
-  String _regStatusLabel(RegistrationStatus s) {
-    switch (s) {
-      case RegistrationStatus.inAttesa:
-        return 'Iscrizione in attesa di approvazione';
-      case RegistrationStatus.approvato:
-        return 'Iscrizione approvata';
-      case RegistrationStatus.rifiutato:
-        return 'Iscrizione rifiutata';
-    }
-  }
 
   Future<void> _autoLoadTrack(String url) async {
     if (_isLoadingTrack) return;
@@ -350,162 +330,464 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
                   const Divider(height: 1, color: AppColors.border),
                 ],
 
-                // Registration section
-                Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: ref.watch(currentUserModelProvider).when(
-                    loading: () => const Center(
-                        child: CircularProgressIndicator(
-                            color: AppColors.accent)),
-                    error: (e, _) => const SizedBox(),
-                    data: (user) {
-                      if (user == null) return const SizedBox();
-                      return FutureBuilder(
-                        future: ref
-                            .read(firestoreServiceProvider)
-                            .getMyRegistration(widget.eventId, user.id),
-                        builder: (context, regSnap) {
-                          final reg = regSnap.data;
-                          return Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                'Iscrizione',
-                                style: TextStyle(
-                                  color: AppColors.textPrimary,
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              const SizedBox(height: 12),
-                              if (reg != null) ...[
-                                Container(
-                                  padding: const EdgeInsets.all(16),
-                                  decoration: BoxDecoration(
-                                    color: _regStatusColor(reg.stato)
-                                        .withValues(alpha: 0.1),
-                                    borderRadius:
-                                        BorderRadius.circular(10),
-                                    border: Border.all(
-                                        color:
-                                            _regStatusColor(reg.stato)),
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      Icon(
-                                        reg.stato ==
-                                                RegistrationStatus
-                                                    .approvato
-                                            ? Icons.check_circle
-                                            : reg.stato ==
-                                                    RegistrationStatus
-                                                        .rifiutato
-                                                ? Icons.cancel
-                                                : Icons.hourglass_empty,
-                                        color: _regStatusColor(reg.stato),
-                                        size: 24,
-                                      ),
-                                      const SizedBox(width: 12),
-                                      Expanded(
-                                        child: Text(
-                                          _regStatusLabel(reg.stato),
-                                          style: TextStyle(
-                                            color:
-                                                _regStatusColor(reg.stato),
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ] else if (regSnap.connectionState ==
-                                  ConnectionState.done) ...[
-                                SizedBox(
-                                  width: double.infinity,
-                                  height: 50,
-                                  child: ElevatedButton(
-                                    onPressed: () async {
-                                      try {
-                                        await ref
-                                            .read(firestoreServiceProvider)
-                                            .registerForEvent(
-                                              eventId: widget.eventId,
-                                              userId: user.id,
-                                              nome: user.nome,
-                                              cognome: user.cognome,
-                                            );
-                                        if (context.mounted) {
-                                          ScaffoldMessenger.of(context)
-                                              .showSnackBar(
-                                            const SnackBar(
-                                              content: Text(
-                                                  'Iscrizione inviata!'),
-                                              backgroundColor:
-                                                  AppColors.success,
-                                            ),
-                                          );
-                                        }
-                                      } catch (e) {
-                                        if (context.mounted) {
-                                          ScaffoldMessenger.of(context)
-                                              .showSnackBar(
-                                            SnackBar(
-                                              content: Text('Errore: $e'),
-                                              backgroundColor:
-                                                  AppColors.error,
-                                            ),
-                                          );
-                                        }
-                                      }
-                                    },
-                                    child: const Text('Iscriviti'),
-                                  ),
-                                ),
-                              ],
-                            ],
-                          );
-                        },
-                      );
-                    },
-                  ),
-                ),
-
-                // Team section
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Divider(color: AppColors.border),
-                      const SizedBox(height: 12),
-                      const Text(
-                        'Squadra',
-                        style: TextStyle(
-                          color: AppColors.textPrimary,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      SizedBox(
-                        width: double.infinity,
-                        height: 50,
-                        child: OutlinedButton.icon(
-                          onPressed: () => context.push(
-                              '/pilot/event/${widget.eventId}/team'),
-                          icon: const Icon(Icons.group),
-                          label: const Text('Gestisci squadra'),
-                        ),
-                      ),
-                    ],
-                  ),
+                // Pilot registration section
+                _PilotRegistrationSection(
+                  eventId: widget.eventId,
+                  maxSquadra: event.maxSquadra,
                 ),
               ],
             ),
           ),
         );
       },
+    );
+  }
+}
+
+// ── Pilot registration section ────────────────────────────────────────────────
+
+class _PilotRegistrationSection extends ConsumerStatefulWidget {
+  final String eventId;
+  final int maxSquadra;
+
+  const _PilotRegistrationSection({
+    required this.eventId,
+    required this.maxSquadra,
+  });
+
+  @override
+  ConsumerState<_PilotRegistrationSection> createState() =>
+      _PilotRegistrationSectionState();
+}
+
+class _PilotRegistrationSectionState
+    extends ConsumerState<_PilotRegistrationSection> {
+  bool _isLoading = false;
+
+  Future<void> _joinTeamAndRegister(
+      TeamModel team, String userId, String nome, String cognome) async {
+    setState(() => _isLoading = true);
+    try {
+      final service = ref.read(firestoreServiceProvider);
+      await service.joinTeam(widget.eventId, team.id, userId);
+      await service.registerForEvent(
+        eventId: widget.eventId,
+        userId: userId,
+        nome: nome,
+        cognome: cognome,
+        squadraId: team.id,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Richiesta di iscrizione inviata all\'admin!'),
+          backgroundColor: AppColors.success,
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Errore: $e'),
+          backgroundColor: AppColors.error,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _createTeamAndRegister(
+      String teamName, String userId, String nome, String cognome) async {
+    if (teamName.trim().isEmpty) return;
+    setState(() => _isLoading = true);
+    try {
+      final service = ref.read(firestoreServiceProvider);
+      final team = TeamModel(
+        id: '',
+        nome: teamName.trim(),
+        membriIds: [userId],
+        createdBy: userId,
+        eventId: widget.eventId,
+      );
+      final teamId = await service.createTeam(team);
+      await service.registerForEvent(
+        eventId: widget.eventId,
+        userId: userId,
+        nome: nome,
+        cognome: cognome,
+        squadraId: teamId,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Squadra creata e richiesta inviata all\'admin!'),
+          backgroundColor: AppColors.success,
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Errore: $e'),
+          backgroundColor: AppColors.error,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _showCreateTeamDialog(
+      String userId, String nome, String cognome) async {
+    final ctrl = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: const Text('Nuova squadra',
+            style: TextStyle(color: AppColors.textPrimary)),
+        content: TextField(
+          controller: ctrl,
+          style: const TextStyle(color: AppColors.textPrimary),
+          decoration: InputDecoration(
+            labelText: 'Nome squadra',
+            labelStyle: const TextStyle(color: AppColors.textSecondary),
+            enabledBorder: OutlineInputBorder(
+              borderSide: const BorderSide(color: AppColors.border),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderSide:
+                  const BorderSide(color: AppColors.accent, width: 2),
+              borderRadius: BorderRadius.circular(8),
+            ),
+          ),
+          autofocus: true,
+          textCapitalization: TextCapitalization.words,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annulla',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Crea'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && ctrl.text.trim().isNotEmpty) {
+      await _createTeamAndRegister(ctrl.text, userId, nome, cognome);
+    }
+    ctrl.dispose();
+  }
+
+  Color _statusColor(RegistrationStatus s) => switch (s) {
+        RegistrationStatus.inAttesa => AppColors.warning,
+        RegistrationStatus.approvato => AppColors.success,
+        RegistrationStatus.rifiutato => AppColors.error,
+      };
+
+  String _statusLabel(RegistrationStatus s) => switch (s) {
+        RegistrationStatus.inAttesa => 'In attesa di approvazione',
+        RegistrationStatus.approvato => 'Iscrizione approvata',
+        RegistrationStatus.rifiutato => 'Iscrizione rifiutata',
+      };
+
+  IconData _statusIcon(RegistrationStatus s) => switch (s) {
+        RegistrationStatus.inAttesa => Icons.hourglass_empty,
+        RegistrationStatus.approvato => Icons.check_circle,
+        RegistrationStatus.rifiutato => Icons.cancel,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final regAsync =
+        ref.watch(myRegistrationStreamProvider(widget.eventId));
+    final teamsAsync = ref.watch(teamsProvider(widget.eventId));
+    final userAsync = ref.watch(currentUserModelProvider);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Divider(color: AppColors.border),
+          const SizedBox(height: 16),
+          const Text(
+            'Iscrizione',
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 16),
+          userAsync.when(
+            loading: () => const Center(
+                child: CircularProgressIndicator(color: AppColors.accent)),
+            error: (e, _) => const SizedBox(),
+            data: (user) {
+              if (user == null) return const SizedBox();
+              return regAsync.when(
+                loading: () => const Center(
+                    child: CircularProgressIndicator(
+                        color: AppColors.accent)),
+                error: (e, _) => const SizedBox(),
+                data: (reg) {
+                  // ── Registered: show status ──────────────────────────
+                  if (reg != null) {
+                    final color = _statusColor(reg.stato);
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: color.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: color),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(_statusIcon(reg.stato),
+                                  color: color, size: 24),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  _statusLabel(reg.stato),
+                                  style: TextStyle(
+                                      color: color,
+                                      fontWeight: FontWeight.w600),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        // Team info
+                        if (reg.squadraId != null) ...[
+                          const SizedBox(height: 12),
+                          teamsAsync.when(
+                            loading: () => const SizedBox(),
+                            error: (e2, st) => const SizedBox(),
+                            data: (teams) {
+                              final team = teams
+                                  .where((t) => t.id == reg.squadraId)
+                                  .firstOrNull;
+                              if (team == null) return const SizedBox();
+                              return Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 14, vertical: 10),
+                                decoration: BoxDecoration(
+                                  color: AppColors.cardBackground,
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(
+                                      color: AppColors.border),
+                                ),
+                                child: Row(
+                                  children: [
+                                    const Icon(Icons.group,
+                                        color: AppColors.textSecondary,
+                                        size: 16),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      team.nome,
+                                      style: const TextStyle(
+                                          color: AppColors.textPrimary,
+                                          fontWeight: FontWeight.w600),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      '${team.membriIds.length}/${widget.maxSquadra}',
+                                      style: const TextStyle(
+                                          color: AppColors.textSecondary,
+                                          fontSize: 12),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                        ],
+                        // GPS button for approved pilots
+                        if (reg.stato == RegistrationStatus.approvato) ...[
+                          const SizedBox(height: 16),
+                          SizedBox(
+                            width: double.infinity,
+                            height: 54,
+                            child: ElevatedButton.icon(
+                              onPressed: () => context.push(
+                                  '/pilot/gps?eventId=${widget.eventId}'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppColors.accent,
+                                foregroundColor: Colors.white,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                              ),
+                              icon: const Icon(Icons.gps_fixed),
+                              label: const Text(
+                                'AVVIA GPS',
+                                style: TextStyle(
+                                    fontWeight: FontWeight.w900,
+                                    fontSize: 16,
+                                    letterSpacing: 1),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    );
+                  }
+
+                  // ── Not registered: show team list ───────────────────
+                  return teamsAsync.when(
+                    loading: () => const Center(
+                        child: CircularProgressIndicator(
+                            color: AppColors.accent)),
+                    error: (e, _) => const SizedBox(),
+                    data: (teams) => Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (teams.isNotEmpty) ...[
+                          const Text(
+                            'Squadre disponibili',
+                            style: TextStyle(
+                              color: AppColors.textSecondary,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          ...teams.map((team) {
+                            final isFull =
+                                team.membriIds.length >= widget.maxSquadra;
+                            final freeSpots =
+                                widget.maxSquadra - team.membriIds.length;
+                            return Container(
+                              margin: const EdgeInsets.only(bottom: 8),
+                              decoration: BoxDecoration(
+                                color: isFull
+                                    ? AppColors.background
+                                    : AppColors.cardBackground,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                    color: isFull
+                                        ? AppColors.border
+                                            .withValues(alpha: 0.4)
+                                        : AppColors.border),
+                              ),
+                              child: ListTile(
+                                leading: Icon(
+                                  Icons.group,
+                                  color: isFull
+                                      ? AppColors.textSecondary
+                                          .withValues(alpha: 0.4)
+                                      : AppColors.textSecondary,
+                                  size: 22,
+                                ),
+                                title: Text(
+                                  team.nome,
+                                  style: TextStyle(
+                                    color: isFull
+                                        ? AppColors.textSecondary
+                                            .withValues(alpha: 0.5)
+                                        : AppColors.textPrimary,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  isFull
+                                      ? '${team.membriIds.length}/${widget.maxSquadra} · Squadra al completo'
+                                      : '${team.membriIds.length}/${widget.maxSquadra} · $freeSpots post${freeSpots == 1 ? "o libero" : "i liberi"}',
+                                  style: TextStyle(
+                                    color: isFull
+                                        ? AppColors.textSecondary
+                                            .withValues(alpha: 0.4)
+                                        : AppColors.textSecondary,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                                trailing: isFull
+                                    ? Container(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 10, vertical: 6),
+                                        decoration: BoxDecoration(
+                                          color: AppColors.border
+                                              .withValues(alpha: 0.3),
+                                          borderRadius:
+                                              BorderRadius.circular(8),
+                                        ),
+                                        child: const Text(
+                                          'Piena',
+                                          style: TextStyle(
+                                            color: AppColors.textSecondary,
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                      )
+                                    : ElevatedButton(
+                                        onPressed: _isLoading
+                                            ? null
+                                            : () =>
+                                                _joinTeamAndRegister(
+                                                  team,
+                                                  user.id,
+                                                  user.nome,
+                                                  user.cognome,
+                                                ),
+                                        style: ElevatedButton.styleFrom(
+                                          minimumSize: Size.zero,
+                                          padding:
+                                              const EdgeInsets.symmetric(
+                                                  horizontal: 14,
+                                                  vertical: 8),
+                                          tapTargetSize:
+                                              MaterialTapTargetSize
+                                                  .shrinkWrap,
+                                        ),
+                                        child: const Text('Unisciti',
+                                            style:
+                                                TextStyle(fontSize: 12)),
+                                      ),
+                              ),
+                            );
+                          }),
+                          const SizedBox(height: 12),
+                          const Divider(color: AppColors.border),
+                          const SizedBox(height: 12),
+                        ],
+                        SizedBox(
+                          width: double.infinity,
+                          height: 50,
+                          child: OutlinedButton.icon(
+                            onPressed: _isLoading
+                                ? null
+                                : () => _showCreateTeamDialog(
+                                      user.id,
+                                      user.nome,
+                                      user.cognome,
+                                    ),
+                            icon: const Icon(Icons.group_add),
+                            label: const Text('Crea nuova squadra'),
+                          ),
+                        ),
+                        if (_isLoading) ...[
+                          const SizedBox(height: 16),
+                          const Center(
+                            child: CircularProgressIndicator(
+                                color: AppColors.accent),
+                          ),
+                        ],
+                      ],
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ],
+      ),
     );
   }
 }

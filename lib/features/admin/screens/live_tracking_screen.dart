@@ -41,6 +41,9 @@ class LiveTrackingScreen extends ConsumerWidget {
               style: const TextStyle(color: AppColors.error))),
       data: (pilots) {
         final regs = regsAsync.valueOrNull ?? [];
+        final event =
+            ref.watch(eventStreamProvider(eventId)).valueOrNull;
+        final startEnabled = event?.startEnabled ?? false;
         final onlinePilots = pilots.where(_isOnline).toList();
         final offlinePilots = pilots.where((p) => !_isOnline(p)).toList();
 
@@ -131,6 +134,79 @@ class LiveTrackingScreen extends ConsumerWidget {
                 ],
               ),
             ),
+            // Start enable toggle
+            Container(
+              width: double.infinity,
+              color: startEnabled
+                  ? AppColors.success.withValues(alpha: 0.12)
+                  : AppColors.cardBackground,
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Row(
+                children: [
+                  Icon(
+                    startEnabled
+                        ? Icons.flag
+                        : Icons.hourglass_empty,
+                    color: startEnabled
+                        ? AppColors.success
+                        : AppColors.textSecondary,
+                    size: 18,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      startEnabled
+                          ? 'Partenza abilitata — i piloti possono avviare il GPS'
+                          : 'Partenza disabilitata — i piloti sono in attesa',
+                      style: TextStyle(
+                        color: startEnabled
+                            ? AppColors.success
+                            : AppColors.textSecondary,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    onPressed: () async {
+                      try {
+                        await ref
+                            .read(firestoreServiceProvider)
+                            .setStartEnabled(eventId, !startEnabled);
+                      } catch (e) {
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('Errore: $e'),
+                              backgroundColor: AppColors.error,
+                            ),
+                          );
+                        }
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: startEnabled
+                          ? AppColors.error
+                          : AppColors.success,
+                      minimumSize: Size.zero,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 8),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: Text(
+                      startEnabled ? 'Blocca' : 'Abilita',
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1, color: AppColors.border),
             // Map
             Expanded(
               child: pilots.isEmpty

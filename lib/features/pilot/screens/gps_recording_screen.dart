@@ -6,6 +6,7 @@ import '../../../core/services/gps_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/location_utils.dart';
 import '../../auth/providers/auth_provider.dart';
+import '../../admin/providers/admin_provider.dart';
 import '../providers/pilot_provider.dart';
 
 class GpsRecordingScreen extends ConsumerStatefulWidget {
@@ -87,7 +88,6 @@ class _GpsRecordingScreenState
     }
 
     try {
-      // Load event to extract waypoints (inizio, fine e control points)
       final event = await ref.read(eventProvider(widget.eventId!).future);
       final waypoints = <WaypointModel>[];
       if (event != null) {
@@ -109,6 +109,87 @@ class _GpsRecordingScreenState
         SnackBar(
           content: Text('Errore: $e'),
           backgroundColor: AppColors.error,
+        ),
+      );
+    }
+  }
+
+  Future<void> _confirmWithdrawal() async {
+    final first = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: const Text('Conferma ritiro',
+            style: TextStyle(color: AppColors.textPrimary)),
+        content: const Text(
+          'Sei sicuro di volerti ritirare dalla gara?',
+          style: TextStyle(color: AppColors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annulla',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.error),
+            child: const Text('Continua'),
+          ),
+        ],
+      ),
+    );
+    if (first != true || !mounted) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: const Text('Ultima conferma',
+            style: TextStyle(color: AppColors.error)),
+        content: const Text(
+          'Questa azione non può essere annullata.\nLa traccia parziale verrà salvata e l\'admin verrà notificato.',
+          style: TextStyle(color: AppColors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annulla',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.error),
+            child: const Text('CONFERMO IL RITIRO'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final gps = ref.read(gpsServiceProvider);
+    final user = ref.read(authStateProvider).valueOrNull;
+    final eventId = widget.eventId;
+
+    await gps.stopRecording();
+    setState(() => _elapsed = Duration.zero);
+
+    if (user != null && eventId != null) {
+      try {
+        await ref
+            .read(firestoreServiceProvider)
+            .recordWithdrawal(eventId, user.uid);
+      } catch (_) {}
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Ritiro registrato. L\'admin è stato notificato.'),
+          backgroundColor: AppColors.warning,
+          duration: Duration(seconds: 4),
         ),
       );
     }
@@ -147,6 +228,12 @@ class _GpsRecordingScreenState
     final gps = ref.watch(gpsServiceProvider);
     final pos = gps.lastPosition;
     final isRecording = gps.isRecording;
+
+    final eventAsync = widget.eventId != null
+        ? ref.watch(eventStreamProvider(widget.eventId!))
+        : null;
+    final startEnabled = eventAsync?.valueOrNull?.startEnabled ?? true;
+    final canStart = widget.eventId == null || startEnabled;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -234,6 +321,31 @@ class _GpsRecordingScreenState
               ),
             ),
 
+            // Waiting banner when start not enabled
+            if (!canStart && !isRecording)
+              Container(
+                width: double.infinity,
+                color: AppColors.warning.withValues(alpha: 0.12),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                child: const Row(
+                  children: [
+                    Icon(Icons.hourglass_empty,
+                        color: AppColors.warning, size: 18),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'In attesa del via dell\'organizzatore',
+                        style: TextStyle(
+                            color: AppColors.warning,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
             // Center: big START/STOP button
             Expanded(
               child: Center(
@@ -263,7 +375,7 @@ class _GpsRecordingScreenState
 
                     // Big circular button
                     GestureDetector(
-                      onTap: _toggleRecording,
+                      onTap: canStart ? _toggleRecording : null,
                       child: isRecording
                           ? AnimatedBuilder(
                               animation: _pulseAnimation,
@@ -272,12 +384,42 @@ class _GpsRecordingScreenState
                                 child: child,
                               ),
                               child: _BigButton(
-                                  isRecording: true),
+                                  isRecording: true, enabled: true),
                             )
-                          : _BigButton(isRecording: false),
+                          : _BigButton(
+                              isRecording: false, enabled: canStart),
                     ),
 
-                    const SizedBox(height: 48),
+                    const SizedBox(height: 32),
+
+                    // Withdrawal button during recording
+                    if (isRecording)
+                      SizedBox(
+                        width: 200,
+                        height: 48,
+                        child: OutlinedButton.icon(
+                          onPressed: _confirmWithdrawal,
+                          icon: const Icon(Icons.flag,
+                              color: AppColors.error, size: 18),
+                          label: const Text(
+                            'RITIRO',
+                            style: TextStyle(
+                              color: AppColors.error,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 1,
+                            ),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            side: const BorderSide(
+                                color: AppColors.error, width: 2),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(24),
+                            ),
+                          ),
+                        ),
+                      ),
+
+                    const SizedBox(height: 16),
 
                     // GPS info row
                     if (pos != null) ...[
@@ -402,25 +544,30 @@ class _GpsRecordingScreenState
 
 class _BigButton extends StatelessWidget {
   final bool isRecording;
-  const _BigButton({required this.isRecording});
+  final bool enabled;
+  const _BigButton({required this.isRecording, this.enabled = true});
 
   @override
   Widget build(BuildContext context) {
+    final activeColor =
+        enabled ? AppColors.accent : AppColors.textSecondary;
     return Container(
       width: 200,
       height: 200,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
         color: isRecording
-            ? AppColors.accent
+            ? activeColor
             : AppColors.cardBackground,
         border: Border.all(
-          color: isRecording ? AppColors.accentDark : AppColors.accent,
+          color: isRecording
+              ? AppColors.accentDark
+              : activeColor,
           width: 4,
         ),
         boxShadow: [
           BoxShadow(
-            color: AppColors.accent.withValues(alpha: isRecording ? 0.5 : 0.3),
+            color: activeColor.withValues(alpha: isRecording ? 0.5 : 0.3),
             blurRadius: isRecording ? 32 : 16,
             spreadRadius: isRecording ? 8 : 4,
           ),
@@ -431,13 +578,13 @@ class _BigButton extends StatelessWidget {
         children: [
           Icon(
             isRecording ? Icons.stop : Icons.play_arrow,
-            color: isRecording ? Colors.white : AppColors.accent,
+            color: isRecording ? Colors.white : activeColor,
             size: 72,
           ),
           Text(
             isRecording ? 'STOP' : 'START',
             style: TextStyle(
-              color: isRecording ? Colors.white : AppColors.accent,
+              color: isRecording ? Colors.white : activeColor,
               fontWeight: FontWeight.w900,
               fontSize: 18,
               letterSpacing: 2,

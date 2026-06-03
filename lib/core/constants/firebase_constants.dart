@@ -8,4 +8,6 @@ class FirebaseConstants {
   static const String pilots = 'pilots';
   static const String iscritti = 'iscritti';
   static const String passages = 'passages';
+  static const String notifications = 'notifications';
+  static const String withdrawals = 'withdrawals';
 }

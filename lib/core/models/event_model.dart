@@ -29,6 +29,7 @@ class EventModel {
   final int maxSquadra;
   final TipologiaClassifica tipologiaClassifica;
   final WaypointModel? fuelPoint;
+  final bool startEnabled;
 
   const EventModel({
     required this.id,
@@ -45,6 +46,7 @@ class EventModel {
     this.maxSquadra = 3,
     this.tipologiaClassifica = TipologiaClassifica.sommaTempi,
     this.fuelPoint,
+    this.startEnabled = false,
   });
 
   factory EventModel.fromFirestore(DocumentSnapshot doc) {
@@ -74,6 +76,7 @@ class EventModel {
       fuelPoint: d['fuelPoint'] != null
           ? WaypointModel.fromMap(d['fuelPoint'] as Map<String, dynamic>)
           : null,
+      startEnabled: d['startEnabled'] as bool? ?? false,
     );
   }
 
@@ -91,6 +94,7 @@ class EventModel {
         'maxSquadra': maxSquadra,
         'tipologiaClassifica': tipologiaClassifica.name,
         'fuelPoint': fuelPoint?.toMap(),
+        'startEnabled': startEnabled,
       };
 
   EventModel copyWith({
@@ -106,6 +110,7 @@ class EventModel {
     TipologiaClassifica? tipologiaClassifica,
     WaypointModel? fuelPoint,
     bool clearFuelPoint = false,
+    bool? startEnabled,
   }) =>
       EventModel(
         id: id,
@@ -122,5 +127,6 @@ class EventModel {
         maxSquadra: maxSquadra ?? this.maxSquadra,
         tipologiaClassifica: tipologiaClassifica ?? this.tipologiaClassifica,
         fuelPoint: clearFuelPoint ? null : (fuelPoint ?? this.fuelPoint),
+        startEnabled: startEnabled ?? this.startEnabled,
       );
 }

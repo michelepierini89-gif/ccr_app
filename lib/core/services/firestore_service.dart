@@ -56,6 +56,7 @@ class FirestoreService {
     required String userId,
     required String nome,
     required String cognome,
+    String? squadraId,
   }) async {
     final reg = RegistrationModel(
       userId: userId,
@@ -63,6 +64,7 @@ class FirestoreService {
       nome: nome,
       cognome: cognome,
       stato: RegistrationStatus.inAttesa,
+      squadraId: squadraId,
       createdAt: DateTime.now(),
     );
     await _db
@@ -71,7 +73,24 @@ class FirestoreService {
         .collection(FirebaseConstants.iscritti)
         .doc(userId)
         .set(reg.toFirestore());
+    await _createNotification(eventId, {
+      'type': 'new_registration',
+      'userId': userId,
+      'nome': '$nome $cognome',
+      'squadraId': squadraId,
+    });
   }
+
+  Stream<RegistrationModel?> streamMyRegistration(
+          String eventId, String userId) =>
+      _db
+          .collection(FirebaseConstants.events)
+          .doc(eventId)
+          .collection(FirebaseConstants.iscritti)
+          .doc(userId)
+          .snapshots()
+          .map((doc) =>
+              doc.exists ? RegistrationModel.fromFirestore(doc, eventId) : null);
 
   Future<void> updateRegistrationStatus(
     String eventId,
@@ -163,6 +182,40 @@ class FirestoreService {
       .map((s) => s.docs
           .map((d) => GpsPointModel.fromFirestore(d, eventId))
           .toList());
+
+  Future<void> setStartEnabled(String eventId, bool enabled) =>
+      _db
+          .collection(FirebaseConstants.events)
+          .doc(eventId)
+          .update({'startEnabled': enabled});
+
+  Future<void> recordWithdrawal(String eventId, String userId) async {
+    await _db
+        .collection(FirebaseConstants.events)
+        .doc(eventId)
+        .collection(FirebaseConstants.withdrawals)
+        .doc(userId)
+        .set({
+      'userId': userId,
+      'timestamp': Timestamp.fromDate(DateTime.now()),
+    });
+    await _createNotification(eventId, {
+      'type': 'withdrawal',
+      'userId': userId,
+    });
+  }
+
+  Future<void> _createNotification(
+      String eventId, Map<String, dynamic> data) =>
+      _db
+          .collection(FirebaseConstants.events)
+          .doc(eventId)
+          .collection(FirebaseConstants.notifications)
+          .add({
+        ...data,
+        'createdAt': Timestamp.fromDate(DateTime.now()),
+        'read': false,
+      });
 
   Future<void> recordWaypointPassage({
     required String eventId,

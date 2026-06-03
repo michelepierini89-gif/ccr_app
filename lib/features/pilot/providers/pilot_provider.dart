@@ -28,6 +28,15 @@ final myRegistrationsProvider =
   yield regs;
 });
 
+final myRegistrationStreamProvider =
+    StreamProvider.family<RegistrationModel?, String>((ref, eventId) {
+  final user = ref.watch(authStateProvider).valueOrNull;
+  if (user == null) return Stream.value(null);
+  return ref
+      .watch(firestoreServiceProvider)
+      .streamMyRegistration(eventId, user.uid);
+});
+
 final gpsServiceProvider = ChangeNotifierProvider<GpsService>((ref) {
   return GpsService(ref.watch(firestoreServiceProvider));
 });
