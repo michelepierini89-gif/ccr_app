@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
@@ -31,16 +32,22 @@ class GpsService extends ChangeNotifier {
   String? _currentSpecialId;
   DateTime? _recordingStart;
   StreamSubscription<Position>? _positionSub;
+  final List<LatLng> _localTrack = [];
+  double _totalDistanceKm = 0.0;
 
   bool get isRecording => _isRecording;
   GpsMode get mode => _mode;
   Position? get lastPosition => _lastPosition;
   List<WaypointPassage> get passages => List.unmodifiable(_passages);
+  List<LatLng> get localTrack => List.unmodifiable(_localTrack);
+  double get totalDistanceKm => _totalDistanceKm;
   String? get currentSpecialId => _currentSpecialId;
   DateTime? get recordingStart => _recordingStart;
   Duration get elapsed => _recordingStart != null
       ? DateTime.now().difference(_recordingStart!)
       : Duration.zero;
+  List<WaypointModel> get remainingWaypoints =>
+      _waypoints.where((w) => !_passedWaypoints.contains(w.id)).toList();
 
   Future<bool> requestPermissions() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -68,6 +75,8 @@ class GpsService extends ChangeNotifier {
     _waypoints = waypoints;
     _passedWaypoints.clear();
     _passages.clear();
+    _localTrack.clear();
+    _totalDistanceKm = 0.0;
     _isRecording = true;
     _mode = GpsMode.transfer;
     _recordingStart = DateTime.now();
@@ -90,9 +99,26 @@ class GpsService extends ChangeNotifier {
     );
   }
 
+  double _haversineKm(LatLng a, LatLng b) {
+    const R = 6371.0;
+    final lat1 = a.latitude * pi / 180;
+    final lat2 = b.latitude * pi / 180;
+    final dLat = (b.latitude - a.latitude) * pi / 180;
+    final dLng = (b.longitude - a.longitude) * pi / 180;
+    final sinDLat = sin(dLat / 2);
+    final sinDLng = sin(dLng / 2);
+    final aVal =
+        sinDLat * sinDLat + cos(lat1) * cos(lat2) * sinDLng * sinDLng;
+    return R * 2 * atan2(sqrt(aVal), sqrt(1 - aVal));
+  }
+
   void _onPosition(Position pos) async {
     _lastPosition = pos;
     final latLng = LatLng(pos.latitude, pos.longitude);
+    if (_localTrack.isNotEmpty) {
+      _totalDistanceKm += _haversineKm(_localTrack.last, latLng);
+    }
+    _localTrack.add(latLng);
 
     // Detect waypoint passage
     final wp = WaypointDetector.detectPassage(
