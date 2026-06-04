@@ -14,6 +14,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../admin/providers/admin_provider.dart';
 import '../../map/screens/track_map_screen.dart';
+import '../../timing/screens/timing_screen.dart';
 import '../providers/pilot_provider.dart';
 
 class EventDetailScreen extends ConsumerStatefulWidget {
@@ -632,6 +633,40 @@ class _PilotRegistrationSectionState
                                     fontSize: 16,
                                     letterSpacing: 1),
                               ),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          SizedBox(
+                            width: double.infinity,
+                            height: 46,
+                            child: OutlinedButton.icon(
+                              onPressed: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => Scaffold(
+                                    appBar: AppBar(
+                                        title: const Text('I miei tempi')),
+                                    backgroundColor: AppColors.background,
+                                    body: TimingScreen(
+                                        eventId: widget.eventId,
+                                        adminView: false),
+                                  ),
+                                ),
+                              ),
+                              style: OutlinedButton.styleFrom(
+                                side: BorderSide(
+                                    color: AppColors.accent
+                                        .withValues(alpha: 0.6)),
+                                foregroundColor: AppColors.accent,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                              ),
+                              icon: const Icon(Icons.timer, size: 18),
+                              label: const Text('I MIEI TEMPI',
+                                  style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 0.5)),
                             ),
                           ),
                         ],

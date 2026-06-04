@@ -117,6 +117,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         eventId: widget.eventId!,
         userId: user.uid,
         waypoints: waypoints,
+        specials: event?.speciali ?? [],
       );
       setState(() => _followMode = true);
     } catch (e) {
@@ -475,8 +476,31 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           ),
         ),
 
-        // Last waypoint passed
-        if (lastPassage != null)
+        // Current special entry info
+        if (gps.currentSpecialNome != null)
+          Container(
+            color: AppColors.accent.withValues(alpha: 0.08),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Row(
+              children: [
+                const Icon(Icons.timer, color: AppColors.accent, size: 16),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'IN SPECIALE: ${gps.currentSpecialNome}',
+                    style: const TextStyle(
+                        color: AppColors.accent,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.5),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          )
+        else if (lastPassage != null)
           Container(
             color: AppColors.background,
             padding:

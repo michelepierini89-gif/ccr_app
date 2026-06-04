@@ -5,6 +5,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import '../models/waypoint_model.dart';
 import '../models/gps_point_model.dart';
+import '../models/special_model.dart';
 import '../constants/app_constants.dart';
 import '../services/waypoint_detector.dart';
 import '../services/firestore_service.dart';
@@ -17,6 +18,30 @@ class WaypointPassage {
   WaypointPassage({required this.waypoint, required this.timestamp});
 }
 
+class SpecialEntry {
+  final String specialeId;
+  final String specialeNome;
+  final DateTime entryTime;
+  final DateTime? exitTime;
+
+  const SpecialEntry({
+    required this.specialeId,
+    required this.specialeNome,
+    required this.entryTime,
+    this.exitTime,
+  });
+
+  Duration? get elapsed =>
+      exitTime != null ? exitTime!.difference(entryTime) : null;
+
+  SpecialEntry withExit(DateTime t) => SpecialEntry(
+        specialeId: specialeId,
+        specialeNome: specialeNome,
+        entryTime: entryTime,
+        exitTime: t,
+      );
+}
+
 class GpsService extends ChangeNotifier {
   final FirestoreService _firestoreService;
   GpsService(this._firestoreService);
@@ -27,9 +52,14 @@ class GpsService extends ChangeNotifier {
   String? _activeEventId;
   String? _activeUserId;
   List<WaypointModel> _waypoints = [];
+  List<SpecialModel> _specials = [];
+  final Map<String, String> _inizioToSpecial = {};
+  final Map<String, String> _fineToSpecial = {};
   final Set<String> _passedWaypoints = {};
   final List<WaypointPassage> _passages = [];
   String? _currentSpecialId;
+  String? _currentSpecialNome;
+  final List<SpecialEntry> _specialEntries = [];
   DateTime? _recordingStart;
   StreamSubscription<Position>? _positionSub;
   final List<LatLng> _localTrack = [];
@@ -42,6 +72,8 @@ class GpsService extends ChangeNotifier {
   List<LatLng> get localTrack => List.unmodifiable(_localTrack);
   double get totalDistanceKm => _totalDistanceKm;
   String? get currentSpecialId => _currentSpecialId;
+  String? get currentSpecialNome => _currentSpecialNome;
+  List<SpecialEntry> get specialEntries => List.unmodifiable(_specialEntries);
   DateTime? get recordingStart => _recordingStart;
   Duration get elapsed => _recordingStart != null
       ? DateTime.now().difference(_recordingStart!)
@@ -65,6 +97,7 @@ class GpsService extends ChangeNotifier {
     required String eventId,
     required String userId,
     required List<WaypointModel> waypoints,
+    List<SpecialModel> specials = const [],
   }) async {
     if (_isRecording) return;
     final hasPermission = await requestPermissions();
@@ -73,10 +106,20 @@ class GpsService extends ChangeNotifier {
     _activeEventId = eventId;
     _activeUserId = userId;
     _waypoints = waypoints;
+    _specials = specials;
+    _inizioToSpecial.clear();
+    _fineToSpecial.clear();
+    for (final s in specials) {
+      _inizioToSpecial[s.waypointInizio.id] = s.id;
+      _fineToSpecial[s.waypointFine.id] = s.id;
+    }
     _passedWaypoints.clear();
     _passages.clear();
+    _specialEntries.clear();
     _localTrack.clear();
     _totalDistanceKm = 0.0;
+    _currentSpecialId = null;
+    _currentSpecialNome = null;
     _isRecording = true;
     _mode = GpsMode.transfer;
     _recordingStart = DateTime.now();
@@ -125,9 +168,32 @@ class GpsService extends ChangeNotifier {
         latLng, _waypoints, _passedWaypoints);
     if (wp != null) {
       _passedWaypoints.add(wp.id);
-      final passage =
-          WaypointPassage(waypoint: wp, timestamp: DateTime.now());
+      final now = DateTime.now();
+      final passage = WaypointPassage(waypoint: wp, timestamp: now);
       _passages.add(passage);
+
+      // Special entry/exit detection
+      if (_inizioToSpecial.containsKey(wp.id) && _currentSpecialId == null) {
+        final specialId = _inizioToSpecial[wp.id]!;
+        final special = _specials.where((s) => s.id == specialId).firstOrNull;
+        _currentSpecialId = specialId;
+        _currentSpecialNome = special?.nome;
+        _specialEntries.add(SpecialEntry(
+          specialeId: specialId,
+          specialeNome: special?.nome ?? specialId,
+          entryTime: now,
+        ));
+      } else if (_fineToSpecial.containsKey(wp.id) &&
+          _currentSpecialId == _fineToSpecial[wp.id]) {
+        final idx =
+            _specialEntries.lastIndexWhere((e) => e.exitTime == null);
+        if (idx >= 0) {
+          _specialEntries[idx] = _specialEntries[idx].withExit(now);
+        }
+        _currentSpecialId = null;
+        _currentSpecialNome = null;
+      }
+
       if (_activeEventId != null && _activeUserId != null) {
         await _firestoreService.recordWaypointPassage(
           eventId: _activeEventId!,
@@ -140,8 +206,10 @@ class GpsService extends ChangeNotifier {
     }
 
     // Determine mode
+    final remainingForMode =
+        _waypoints.where((w) => !_passedWaypoints.contains(w.id)).toList();
     final nearest =
-        WaypointDetector.nearestWaypointDistance(latLng, _waypoints);
+        WaypointDetector.nearestWaypointDistance(latLng, remainingForMode);
     final newMode = nearest != null &&
             nearest <= AppConstants.nearWaypointThresholdMeters
         ? GpsMode.nearWaypoint
@@ -180,6 +248,8 @@ class GpsService extends ChangeNotifier {
     _mode = GpsMode.idle;
     _activeEventId = null;
     _activeUserId = null;
+    _currentSpecialId = null;
+    _currentSpecialNome = null;
     _recordingStart = null;
     notifyListeners();
   }

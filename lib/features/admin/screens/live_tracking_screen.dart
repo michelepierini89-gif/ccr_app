@@ -6,6 +6,7 @@ import '../../../core/models/gps_point_model.dart';
 import '../../../core/models/registration_model.dart';
 import '../../../core/theme/app_colors.dart';
 import '../providers/admin_provider.dart';
+import '../../classifica/providers/classifica_provider.dart';
 
 class LiveTrackingScreen extends ConsumerWidget {
   final String eventId;
@@ -269,6 +270,8 @@ class LiveTrackingScreen extends ConsumerWidget {
                   ),
                 ),
               ),
+            // Pilot status table
+            _PilotStatusSection(eventId: eventId, regs: regs, pilots: pilots),
           ],
         );
       },
@@ -356,6 +359,132 @@ class _PilotChip extends StatelessWidget {
             style: const TextStyle(
                 color: AppColors.textSecondary, fontSize: 9),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Pilot status section ───────────────────────────────────────────────────────
+
+class _PilotStatusSection extends ConsumerWidget {
+  final String eventId;
+  final List<RegistrationModel> regs;
+  final List<GpsPointModel> pilots;
+
+  const _PilotStatusSection({
+    required this.eventId,
+    required this.regs,
+    required this.pilots,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final withdrawalsAv = ref.watch(withdrawalsStreamProvider(eventId));
+    final withdrawals = withdrawalsAv.valueOrNull ?? {};
+
+    final approvedRegs = regs
+        .where((r) => r.stato == RegistrationStatus.approvato)
+        .toList();
+
+    if (approvedRegs.isEmpty) return const SizedBox.shrink();
+
+    final now = DateTime.now();
+    final pilotMap = {for (final p in pilots) p.userId: p};
+
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.background,
+        border: Border(top: BorderSide(color: AppColors.border)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
+            child: Text(
+              'Stato piloti (${approvedRegs.length} iscritti)',
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 0.5,
+              ),
+            ),
+          ),
+          SizedBox(
+            height: 36,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              itemCount: approvedRegs.length,
+              itemBuilder: (ctx, i) {
+                final reg = approvedRegs[i];
+                final gps = pilotMap[reg.userId];
+                final isWithdrawn = withdrawals.contains(reg.userId);
+                final isOnline = gps != null &&
+                    now.difference(gps.timestamp).inSeconds < 60;
+                final hasGps = gps != null;
+
+                Color color;
+                String statusLabel;
+                IconData statusIcon;
+
+                if (isWithdrawn) {
+                  color = AppColors.error;
+                  statusLabel = 'RIT';
+                  statusIcon = Icons.flag;
+                } else if (isOnline) {
+                  color = AppColors.success;
+                  statusLabel = 'IN GARA';
+                  statusIcon = Icons.gps_fixed;
+                } else if (hasGps) {
+                  color = AppColors.warning;
+                  statusLabel = 'OFFLINE';
+                  statusIcon = Icons.gps_not_fixed;
+                } else {
+                  color = AppColors.textSecondary;
+                  statusLabel = 'N/P';
+                  statusIcon = Icons.person_outline;
+                }
+
+                return Container(
+                  margin:
+                      const EdgeInsets.only(right: 8, bottom: 8),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(
+                        color: color.withValues(alpha: 0.5)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(statusIcon, color: color, size: 11),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${reg.nome} ${reg.cognome[0]}.',
+                        style: TextStyle(
+                            color: color,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        statusLabel,
+                        style: TextStyle(
+                            color: color.withValues(alpha: 0.7),
+                            fontSize: 9),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 4),
         ],
       ),
     );

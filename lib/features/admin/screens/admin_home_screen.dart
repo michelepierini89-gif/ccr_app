@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../core/models/event_model.dart';
+import '../../../core/models/registration_model.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../providers/admin_provider.dart';
@@ -91,11 +93,13 @@ class AdminHomeScreen extends ConsumerWidget {
           return RefreshIndicator(
             color: AppColors.accent,
             backgroundColor: AppColors.cardBackground,
-            onRefresh: () async {},
+            onRefresh: () async {
+              ref.invalidate(adminEventsProvider);
+            },
             child: ListView.builder(
               padding: const EdgeInsets.only(top: 8, bottom: 80),
               itemCount: events.length,
-              itemBuilder: (context, i) => EventCardAdmin(
+              itemBuilder: (context, i) => _EventCardWithBadge(
                 event: events[i],
                 onTap: () =>
                     context.push('/admin/event/${events[i].id}'),
@@ -104,6 +108,52 @@ class AdminHomeScreen extends ConsumerWidget {
           );
         },
       ),
+    );
+  }
+}
+
+class _EventCardWithBadge extends ConsumerWidget {
+  final EventModel event;
+  final VoidCallback? onTap;
+
+  const _EventCardWithBadge({required this.event, this.onTap});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final regsAv = ref.watch(registrationsProvider(event.id));
+    final regs = regsAv.valueOrNull ?? [];
+    final pendingCount =
+        regs.where((r) => r.stato == RegistrationStatus.inAttesa).length;
+
+    return Stack(
+      children: [
+        EventCardAdmin(
+          event: event,
+          pilotCount: regs.isEmpty ? null : regs.length,
+          onTap: onTap,
+        ),
+        if (pendingCount > 0)
+          Positioned(
+            top: 12,
+            right: 24,
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+              decoration: BoxDecoration(
+                color: AppColors.warning,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                '$pendingCount',
+                style: const TextStyle(
+                  color: Colors.black,
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 }

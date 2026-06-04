@@ -20,6 +20,7 @@ import 'registrations_screen.dart';
 import 'live_tracking_screen.dart';
 import 'specials_editor_screen.dart';
 import '../../classifica/screens/classifica_screen.dart';
+import '../../timing/screens/timing_screen.dart';
 
 class EventManagementScreen extends ConsumerStatefulWidget {
   final String eventId;
@@ -41,7 +42,7 @@ class _EventManagementScreenState
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 4, vsync: this);
+    _tabController = TabController(length: 5, vsync: this);
   }
 
   @override
@@ -270,6 +271,7 @@ class _EventManagementScreenState
                 _buildLockedTab('Iscrizioni', event.stato == EventStatus.bozza),
                 _buildLockedTab('Live', event.stato == EventStatus.bozza),
                 _buildLockedTab('Classifica', event.stato == EventStatus.bozza),
+                _buildLockedTab('Tempi', event.stato == EventStatus.bozza),
               ],
             ),
           ),
@@ -393,6 +395,8 @@ class _EventManagementScreenState
                     LiveTrackingScreen(eventId: event.id),
                     ClassificaScreen(
                         eventId: event.id, showAppBar: false),
+                    TimingScreen(
+                        eventId: event.id, adminView: true),
                   ],
                 ),
               ),
