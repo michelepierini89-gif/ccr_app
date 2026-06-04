@@ -79,19 +79,19 @@ class RegistrationsScreen extends ConsumerWidget {
                         children: [
                           _RegistrationList(
                               regs: regs, teams: teams,
-                              eventId: eventId, ref: ref,
+                              eventId: eventId,
                               minSquadra: minSquadra, maxSquadra: maxSquadra),
                           _RegistrationList(
                               regs: regs.where((r) => r.stato == RegistrationStatus.inAttesa).toList(),
-                              teams: teams, eventId: eventId, ref: ref,
+                              teams: teams, eventId: eventId,
                               minSquadra: minSquadra, maxSquadra: maxSquadra),
                           _RegistrationList(
                               regs: regs.where((r) => r.stato == RegistrationStatus.approvato).toList(),
-                              teams: teams, eventId: eventId, ref: ref,
+                              teams: teams, eventId: eventId,
                               minSquadra: minSquadra, maxSquadra: maxSquadra),
                           _RegistrationList(
                               regs: regs.where((r) => r.stato == RegistrationStatus.rifiutato).toList(),
-                              teams: teams, eventId: eventId, ref: ref,
+                              teams: teams, eventId: eventId,
                               minSquadra: minSquadra, maxSquadra: maxSquadra),
                         ],
                       ),
@@ -107,11 +107,10 @@ class RegistrationsScreen extends ConsumerWidget {
   }
 }
 
-class _RegistrationList extends StatelessWidget {
+class _RegistrationList extends ConsumerStatefulWidget {
   final List<RegistrationModel> regs;
   final List<TeamModel> teams;
   final String eventId;
-  final WidgetRef ref;
   final int minSquadra;
   final int maxSquadra;
 
@@ -119,24 +118,32 @@ class _RegistrationList extends StatelessWidget {
     required this.regs,
     required this.teams,
     required this.eventId,
-    required this.ref,
     required this.minSquadra,
     required this.maxSquadra,
   });
 
-  Future<void> _updateStatus(
-      BuildContext context, String userId, RegistrationStatus status) async {
+  @override
+  ConsumerState<_RegistrationList> createState() => _RegistrationListState();
+}
+
+class _RegistrationListState extends ConsumerState<_RegistrationList> {
+  String? _loadingUserId;
+
+  Future<void> _updateStatus(String userId, RegistrationStatus status) async {
+    setState(() => _loadingUserId = userId);
     try {
       await ref
           .read(firestoreServiceProvider)
-          .updateRegistrationStatus(eventId, userId, status);
+          .updateRegistrationStatus(widget.eventId, userId, status);
     } catch (e) {
-      if (context.mounted) {
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text('Errore: $e'),
           backgroundColor: AppColors.error,
         ));
       }
+    } finally {
+      if (mounted) setState(() => _loadingUserId = null);
     }
   }
 
@@ -154,7 +161,7 @@ class _RegistrationList extends StatelessWidget {
 
   TeamModel? _teamOf(String userId) {
     try {
-      return teams.firstWhere((t) => t.membriIds.contains(userId));
+      return widget.teams.firstWhere((t) => t.membriIds.contains(userId));
     } catch (_) {
       return null;
     }
@@ -165,7 +172,7 @@ class _RegistrationList extends StatelessWidget {
         team.membriIds.where((id) => id != userId).firstOrNull;
     if (partnerId == null) return null;
     try {
-      return regs.firstWhere((r) => r.userId == partnerId).nomeCompleto;
+      return widget.regs.firstWhere((r) => r.userId == partnerId).nomeCompleto;
     } catch (_) {
       return null;
     }
@@ -173,6 +180,7 @@ class _RegistrationList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final regs = widget.regs;
     if (regs.isEmpty) {
       return const Center(
         child: Column(
@@ -195,8 +203,8 @@ class _RegistrationList extends StatelessWidget {
         final team = _teamOf(reg.userId);
         final partner = team != null ? _partnerName(reg.userId, team) : null;
         final isTeamIncomplete = team != null &&
-            (team.membriIds.length < minSquadra ||
-                team.membriIds.length > maxSquadra);
+            (team.membriIds.length < widget.minSquadra ||
+                team.membriIds.length > widget.maxSquadra);
 
         return Container(
           margin: const EdgeInsets.only(bottom: 10),
@@ -319,21 +327,34 @@ class _RegistrationList extends StatelessWidget {
                     children: [
                       Expanded(
                         child: OutlinedButton(
-                          onPressed: () => _updateStatus(
-                              context, reg.userId, RegistrationStatus.approvato),
+                          onPressed: _loadingUserId != null
+                              ? null
+                              : () => _updateStatus(
+                                  reg.userId, RegistrationStatus.approvato),
                           style: OutlinedButton.styleFrom(
                             foregroundColor: AppColors.success,
                             side: const BorderSide(color: AppColors.success),
                             minimumSize: const Size(0, 44),
                           ),
-                          child: const Text('Approva'),
+                          child: _loadingUserId == reg.userId
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: AppColors.success,
+                                  ),
+                                )
+                              : const Text('Approva'),
                         ),
                       ),
                       const SizedBox(width: 8),
                       Expanded(
                         child: OutlinedButton(
-                          onPressed: () => _updateStatus(
-                              context, reg.userId, RegistrationStatus.rifiutato),
+                          onPressed: _loadingUserId != null
+                              ? null
+                              : () => _updateStatus(
+                                  reg.userId, RegistrationStatus.rifiutato),
                           style: OutlinedButton.styleFrom(
                             foregroundColor: AppColors.error,
                             side: const BorderSide(color: AppColors.error),
@@ -347,14 +368,25 @@ class _RegistrationList extends StatelessWidget {
                 ] else if (reg.stato == RegistrationStatus.approvato) ...[
                   const SizedBox(height: 8),
                   OutlinedButton(
-                    onPressed: () => _updateStatus(
-                        context, reg.userId, RegistrationStatus.inAttesa),
+                    onPressed: _loadingUserId != null
+                        ? null
+                        : () => _updateStatus(
+                            reg.userId, RegistrationStatus.inAttesa),
                     style: OutlinedButton.styleFrom(
                       foregroundColor: AppColors.textSecondary,
                       side: const BorderSide(color: AppColors.border),
                       minimumSize: const Size(0, 40),
                     ),
-                    child: const Text('Revoca approvazione'),
+                    child: _loadingUserId == reg.userId
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: AppColors.textSecondary,
+                            ),
+                          )
+                        : const Text('Revoca approvazione'),
                   ),
                 ],
               ],

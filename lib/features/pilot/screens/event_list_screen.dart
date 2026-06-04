@@ -7,21 +7,58 @@ import '../../admin/providers/admin_provider.dart';
 import '../providers/pilot_provider.dart';
 import '../widgets/event_card_pilot.dart';
 
-class EventListScreen extends ConsumerWidget {
+class EventListScreen extends ConsumerStatefulWidget {
   const EventListScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<EventListScreen> createState() => _EventListScreenState();
+}
+
+class _EventListScreenState extends ConsumerState<EventListScreen> {
+  String? _loadingEventId;
+
+  Future<void> _quickRegister(String eventId) async {
+    final user = ref.read(currentUserModelProvider).valueOrNull;
+    if (user == null) return;
+    setState(() => _loadingEventId = eventId);
+    try {
+      await ref.read(firestoreServiceProvider).registerForEvent(
+            eventId: eventId,
+            userId: user.id,
+            nome: user.nome,
+            cognome: user.cognome,
+          );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Iscrizione inviata! In attesa di approvazione.'),
+            backgroundColor: AppColors.success,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Errore: $e'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _loadingEventId = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final eventsAsync = ref.watch(openEventsProvider);
-    final userAsync = ref.watch(currentUserModelProvider);
     final myRegsAsync = ref.watch(myRegistrationsProvider);
 
     return RefreshIndicator(
       color: AppColors.accent,
       backgroundColor: AppColors.cardBackground,
-      onRefresh: () async {
-        ref.invalidate(openEventsProvider);
-      },
+      onRefresh: () async => ref.invalidate(openEventsProvider),
       child: eventsAsync.when(
         loading: () => const Center(
             child: CircularProgressIndicator(color: AppColors.accent)),
@@ -75,47 +112,15 @@ class EventListScreen extends ConsumerWidget {
               final event = events[i];
               final reg = myRegs
                   .where((r) => r.eventId == event.id)
-                  .isNotEmpty
-                  ? myRegs.firstWhere((r) => r.eventId == event.id)
-                  : null;
+                  .firstOrNull;
 
               return EventCardPilot(
                 event: event,
                 registration: reg,
+                isLoading: _loadingEventId == event.id,
                 onTap: () => context.push('/pilot/event/${event.id}'),
                 onRegister: reg == null
-                    ? () async {
-                        final user = userAsync.valueOrNull;
-                        if (user == null) return;
-                        try {
-                          await ref
-                              .read(firestoreServiceProvider)
-                              .registerForEvent(
-                                eventId: event.id,
-                                userId: user.id,
-                                nome: user.nome,
-                                cognome: user.cognome,
-                              );
-                          if (context.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text(
-                                    'Iscrizione inviata! In attesa di approvazione.'),
-                                backgroundColor: AppColors.success,
-                              ),
-                            );
-                          }
-                        } catch (e) {
-                          if (context.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text('Errore: $e'),
-                                backgroundColor: AppColors.error,
-                              ),
-                            );
-                          }
-                        }
-                      }
+                    ? () => _quickRegister(event.id)
                     : null,
               );
             },

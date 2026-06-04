@@ -9,6 +9,7 @@ class EventCardPilot extends StatelessWidget {
   final RegistrationModel? registration;
   final VoidCallback? onTap;
   final VoidCallback? onRegister;
+  final bool isLoading;
 
   const EventCardPilot({
     super.key,
@@ -16,6 +17,7 @@ class EventCardPilot extends StatelessWidget {
     this.registration,
     this.onTap,
     this.onRegister,
+    this.isLoading = false,
   });
 
   Color _regStatusColor(RegistrationStatus s) {
@@ -183,7 +185,7 @@ class EventCardPilot extends StatelessWidget {
                     ),
                   ] else ...[
                     ElevatedButton(
-                      onPressed: onRegister,
+                      onPressed: isLoading ? null : onRegister,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.accent,
                         padding: const EdgeInsets.symmetric(
@@ -191,8 +193,17 @@ class EventCardPilot extends StatelessWidget {
                         minimumSize: Size.zero,
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       ),
-                      child: const Text('Iscriviti',
-                          style: TextStyle(fontSize: 13)),
+                      child: isLoading
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Text('Iscriviti',
+                              style: TextStyle(fontSize: 13)),
                     ),
                   ],
                   const Spacer(),
