@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 04 giugno 2026 (Step 9 completato)  
+**Data aggiornamento:** 04 giugno 2026 (Step 10 in corso)  
 **Branch:** main  
 **Versione:** 1.0.0+1
 
@@ -375,7 +375,15 @@ gsutil cors get gs://ccr-enduro.firebasestorage.app
 - [ ] Test end-to-end classifica e timing con più piloti
 - [ ] Test flusso offline: spegnere connessione durante tracking, verificare sync al ritorno
 
-### Step 10 — Possibili evoluzioni
+### Step 10 — Fix & UX miglioramenti (04 giugno 2026)
+- [x] **Fix Firestore rules**: aggiunta regola `user_notifications/{userId}/items` → admin può inviare notifiche ai piloti senza permission-denied ✅
+- [x] **Icona app Android**: coppa stilizzata rossa `#e53e1e` su sfondo nero per mipmap-mdpi/hdpi/xhdpi/xxhdpi/xxxhdpi ✅
+- [x] **Slider con frecce**: pulsanti `–` e `+` accanto a ogni slider (inizio, fine, punti di controllo) in `SpecialsEditorScreen` ✅
+- [x] **Marker PS sulla mappa**: `WaypointMarkersLayer` mostra etichette PS1, PS2… con icona play(▶)/stop(■) colorate per inizio/fine speciale ✅
+- [x] **Elimina evento**: pulsante cestino rosso nell'AppBar di `EventManagementScreen` con doppia conferma, elimina da Firestore e torna a `/admin` ✅
+- [x] **Frase logo**: `"manca m'ai chen..."` in corsivo grigio chiaro sotto il logo CCR nella schermata di login ✅
+
+### Step 11 — Possibili evoluzioni
 - Export PDF risultati post-gara (logo CCR, classifica finale, tempi speciali)
 - Mappa live admin con trail percorso per ogni pilota (attualmente solo posizione istantanea)
 - Dashboard admin con statistiche gara (passaggi speciali, ritiri, progressi)
