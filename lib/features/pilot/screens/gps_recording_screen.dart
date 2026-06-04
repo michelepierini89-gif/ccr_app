@@ -1,14 +1,20 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:latlong2/latlong.dart';
+import '../../../core/models/event_model.dart';
 import '../../../core/models/waypoint_model.dart';
 import '../../../core/services/gps_service.dart';
+import '../../../core/services/gpx_parser.dart';
+import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/location_utils.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../admin/providers/admin_provider.dart';
+import '../../classifica/providers/classifica_provider.dart';
 import '../providers/pilot_provider.dart';
 
 class GpsRecordingScreen extends ConsumerStatefulWidget {
@@ -32,6 +38,9 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   double _mapZoom = 15.0;
   bool _programmaticMove = false;
 
+  List<LatLng> _eventTrackPoints = [];
+  bool _eventTrackLoaded = false;
+
   @override
   void initState() {
     super.initState();
@@ -44,6 +53,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
     _startElapsedTimer();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadEventTrack());
   }
 
   void _startElapsedTimer() {
@@ -65,6 +75,62 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     _mapController.dispose();
     super.dispose();
   }
+
+  Future<void> _loadEventTrack() async {
+    if (widget.eventId == null || _eventTrackLoaded) return;
+    _eventTrackLoaded = true;
+    try {
+      final event = await ref.read(eventProvider(widget.eventId!).future);
+      if (event?.trackUrl == null || !mounted) return;
+      final bytes = await StorageService().downloadTrack(event!.trackUrl!);
+      final content = utf8.decode(bytes);
+      final pts = event.trackUrl!.contains('.kml')
+          ? GpxParser.parseKml(content).points
+          : GpxParser.parseGpx(content).points;
+      if (mounted) setState(() => _eventTrackPoints = pts);
+    } catch (_) {}
+  }
+
+  double _calcBearing(List<LatLng> track) {
+    if (track.length < 2) return 0;
+    final a = track[track.length - 2];
+    final b = track[track.length - 1];
+    final dLng = (b.longitude - a.longitude) * pi / 180;
+    final lat1 = a.latitude * pi / 180;
+    final lat2 = b.latitude * pi / 180;
+    final y = sin(dLng) * cos(lat2);
+    final x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLng);
+    return atan2(y, x);
+  }
+
+  Marker _psMarker(LatLng point, String label, Color color, bool isStart) =>
+      Marker(
+        point: point,
+        width: 58,
+        height: 52,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                '$label ${isStart ? '▶' : '■'}',
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 9,
+                    fontWeight: FontWeight.bold),
+              ),
+            ),
+            Icon(isStart ? Icons.play_arrow : Icons.stop,
+                color: color, size: 18),
+          ],
+        ),
+      );
 
   void _recenter() {
     final pos = ref.read(gpsServiceProvider).lastPosition;
@@ -230,8 +296,20 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     final eventAsync = widget.eventId != null
         ? ref.watch(eventStreamProvider(widget.eventId!))
         : null;
-    final startEnabled = eventAsync?.valueOrNull?.startEnabled ?? true;
+    final event = eventAsync?.valueOrNull;
+    final startEnabled = event?.startEnabled ?? true;
     final canStart = widget.eventId == null || startEnabled;
+
+    // Withdrawal check
+    final authUser = ref.watch(authStateProvider).valueOrNull;
+    final Set<String> withdrawnIds = widget.eventId != null
+        ? ref
+                .watch(withdrawalsStreamProvider(widget.eventId!))
+                .valueOrNull ??
+            {}
+        : {};
+    final isWithdrawn =
+        authUser != null && withdrawnIds.contains(authUser.uid);
 
     // Auto-follow: move map whenever position updates during recording
     ref.listen(gpsServiceProvider, (prev, next) {
@@ -251,15 +329,54 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
       backgroundColor: AppColors.background,
       body: SafeArea(
         child: isRecording
-            ? _buildActiveTracking(gps, pos)
-            : _buildPreStart(gps, pos, canStart),
+            ? _buildActiveTracking(gps, pos, event)
+            : _buildPreStart(gps, pos, canStart, isWithdrawn),
       ),
     );
   }
 
   // ── Pre-start view ──────────────────────────────────────────────────────────
 
-  Widget _buildPreStart(GpsService gps, dynamic pos, bool canStart) {
+  Widget _buildPreStart(
+      GpsService gps, dynamic pos, bool canStart, bool isWithdrawn) {
+    if (isWithdrawn) {
+      return Column(
+        children: [
+          _TopBar(eventId: widget.eventId, elapsed: null, isRecording: false),
+          Expanded(
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.flag, color: AppColors.error, size: 64),
+                    const SizedBox(height: 24),
+                    const Text(
+                      'Sei ritirato da questa gara',
+                      style: TextStyle(
+                        color: AppColors.error,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Il tuo ritiro è stato registrato.\nNon è possibile riprendere la gara.',
+                      style: TextStyle(
+                          color: AppColors.textSecondary, fontSize: 14),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
     return Column(
       children: [
         _TopBar(
@@ -299,7 +416,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
 
   // ── Active tracking view ────────────────────────────────────────────────────
 
-  Widget _buildActiveTracking(GpsService gps, dynamic pos) {
+  Widget _buildActiveTracking(GpsService gps, dynamic pos, EventModel? event) {
     final curPos = pos != null
         ? LatLng(pos.latitude, pos.longitude)
         : const LatLng(44.0, 11.0);
@@ -344,13 +461,83 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                         'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                     userAgentPackageName: 'com.ccr.ccr_app',
                   ),
-                  // Track polyline
+                  // Event GPX track in red
+                  if (_eventTrackPoints.length >= 2)
+                    PolylineLayer(polylines: [
+                      Polyline(
+                        points: _eventTrackPoints,
+                        color: Colors.red,
+                        strokeWidth: 3.0,
+                      ),
+                    ]),
+                  // Pilot's recorded track
                   if (gps.localTrack.length >= 2)
                     PolylineLayer(polylines: [
                       Polyline(
                         points: gps.localTrack,
                         color: AppColors.accent,
                         strokeWidth: 4.0,
+                      ),
+                    ]),
+                  // PS start/end markers from event specials
+                  if (event != null && event.speciali.isNotEmpty)
+                    MarkerLayer(
+                      markers: [
+                        for (int i = 0; i < event.speciali.length; i++) ...[
+                          _psMarker(
+                            LatLng(event.speciali[i].waypointInizio.lat,
+                                event.speciali[i].waypointInizio.lng),
+                            'PS${i + 1}',
+                            event.speciali[i].color,
+                            true,
+                          ),
+                          _psMarker(
+                            LatLng(event.speciali[i].waypointFine.lat,
+                                event.speciali[i].waypointFine.lng),
+                            'PS${i + 1}',
+                            event.speciali[i].color,
+                            false,
+                          ),
+                        ],
+                      ],
+                    ),
+                  // Fuel point marker
+                  if (event?.fuelPoint != null)
+                    MarkerLayer(markers: [
+                      Marker(
+                        point: LatLng(event!.fuelPoint!.lat,
+                            event.fuelPoint!.lng),
+                        width: 40,
+                        height: 48,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 30,
+                              height: 30,
+                              decoration: BoxDecoration(
+                                color: Colors.yellow.shade700,
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                    color: Colors.orange, width: 2),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.yellow
+                                        .withValues(alpha: 0.5),
+                                    blurRadius: 6,
+                                  ),
+                                ],
+                              ),
+                              child: const Icon(Icons.local_gas_station,
+                                  size: 16, color: Colors.white),
+                            ),
+                            Container(
+                                width: 2,
+                                height: 8,
+                                color: Colors.orange
+                                    .withValues(alpha: 0.7)),
+                          ],
+                        ),
                       ),
                     ]),
                   // Accuracy circle
@@ -366,9 +553,12 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                         borderStrokeWidth: 1,
                       ),
                     ]),
-                  // Remaining waypoint markers
+                  // Remaining waypoints (control points hidden)
                   MarkerLayer(
-                    markers: gps.remainingWaypoints.map((wp) {
+                    markers: gps.remainingWaypoints
+                        .where(
+                            (wp) => wp.type != WaypointType.intermedio)
+                        .map((wp) {
                       final isNear = gps.mode == GpsMode.nearWaypoint;
                       return Marker(
                         point: LatLng(wp.lat, wp.lng),
@@ -383,25 +573,23 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                       );
                     }).toList(),
                   ),
-                  // Current position marker
+                  // Current position: bearing arrow
                   if (pos != null)
                     MarkerLayer(markers: [
                       Marker(
                         point: curPos,
-                        width: 28,
-                        height: 28,
-                        child: Container(
-                          decoration: BoxDecoration(
+                        width: 36,
+                        height: 36,
+                        child: Transform.rotate(
+                          angle: _calcBearing(gps.localTrack),
+                          child: Icon(
+                            Icons.navigation,
                             color: AppColors.accent,
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                                color: Colors.white, width: 2.5),
-                            boxShadow: [
-                              BoxShadow(
-                                color: AppColors.accent
-                                    .withValues(alpha: 0.6),
-                                blurRadius: 10,
-                                spreadRadius: 3,
+                            size: 32,
+                            shadows: const [
+                              Shadow(
+                                color: Colors.black54,
+                                blurRadius: 6,
                               ),
                             ],
                           ),
@@ -558,24 +746,37 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           color: AppColors.cardBackground,
           child: Row(
             children: [
-              // STOP button
+              // FINE GARA button — abilitato solo quando tutti i waypoint sono passati
               Expanded(
                 flex: 2,
                 child: SizedBox(
                   height: 52,
-                  child: ElevatedButton.icon(
-                    onPressed: _toggleRecording,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.cardBackground,
-                      foregroundColor: AppColors.textPrimary,
-                      side: const BorderSide(color: AppColors.border),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
+                  child: Tooltip(
+                    message: gps.remainingWaypoints.isEmpty
+                        ? ''
+                        : 'Completa tutte le speciali prima di terminare',
+                    child: ElevatedButton.icon(
+                      onPressed: gps.remainingWaypoints.isEmpty
+                          ? _toggleRecording
+                          : null,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.cardBackground,
+                        foregroundColor: gps.remainingWaypoints.isEmpty
+                            ? AppColors.textPrimary
+                            : AppColors.textSecondary,
+                        side: BorderSide(
+                          color: gps.remainingWaypoints.isEmpty
+                              ? AppColors.border
+                              : AppColors.border.withValues(alpha: 0.3),
+                        ),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
+                      ),
+                      icon: const Icon(Icons.flag_circle_outlined, size: 20),
+                      label: const Text('FINE GARA',
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold, letterSpacing: 1)),
                     ),
-                    icon: const Icon(Icons.stop_circle_outlined, size: 20),
-                    label: const Text('STOP',
-                        style: TextStyle(
-                            fontWeight: FontWeight.bold, letterSpacing: 1)),
                   ),
                 ),
               ),
