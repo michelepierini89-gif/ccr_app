@@ -71,6 +71,17 @@ service cloud.firestore {
       }
     }
 
+    // ── User notifications ────────────────────────────────────────────────────
+
+    match /user_notifications/{userId} {
+      match /items/{itemId} {
+        // Users read and update (mark read) their own notifications
+        allow read, update, delete: if isOwner(userId);
+        // Any authenticated user (including admin) can create notifications for others
+        allow create: if isAuthenticated();
+      }
+    }
+
     // ── Tracking ──────────────────────────────────────────────────────────────
 
     match /tracking/{eventId} {
