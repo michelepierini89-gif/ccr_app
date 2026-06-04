@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/models/event_model.dart';
 import '../../../core/models/registration_model.dart';
+import '../../../core/providers/offline_provider.dart';
 import '../../../core/services/gps_service.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../admin/providers/admin_provider.dart';
@@ -38,5 +39,8 @@ final myRegistrationStreamProvider =
 });
 
 final gpsServiceProvider = ChangeNotifierProvider<GpsService>((ref) {
-  return GpsService(ref.watch(firestoreServiceProvider));
+  return GpsService(
+    ref.watch(firestoreServiceProvider),
+    ref.watch(offlineQueueProvider),
+  );
 });

@@ -8,6 +8,7 @@ import 'package:latlong2/latlong.dart';
 import '../../../core/models/registration_model.dart';
 import '../../../core/models/special_model.dart';
 import '../../../core/models/team_model.dart';
+import '../../../core/providers/offline_provider.dart';
 import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
@@ -364,6 +365,7 @@ class _PilotRegistrationSection extends ConsumerStatefulWidget {
 class _PilotRegistrationSectionState
     extends ConsumerState<_PilotRegistrationSection> {
   bool _isLoading = false;
+  bool _savedOffline = false;
 
   Future<void> _joinTeamAndRegister(
       TeamModel team, String userId, String nome, String cognome) async {
@@ -384,13 +386,17 @@ class _PilotRegistrationSectionState
           backgroundColor: AppColors.success,
         ));
       }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Errore: $e'),
-          backgroundColor: AppColors.error,
-        ));
-      }
+    } catch (_) {
+      // Save offline — will sync when connectivity is restored
+      await ref.read(offlineQueueProvider).queueRegistration(
+            eventId: widget.eventId,
+            userId: userId,
+            nome: nome,
+            cognome: cognome,
+            squadraId: team.id,
+            createdAt: DateTime.now(),
+          );
+      if (mounted) setState(() => _savedOffline = true);
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -423,13 +429,16 @@ class _PilotRegistrationSectionState
           backgroundColor: AppColors.success,
         ));
       }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Errore: $e'),
-          backgroundColor: AppColors.error,
-        ));
-      }
+    } catch (_) {
+      // Save offline without squadraId (team creation may have failed too)
+      await ref.read(offlineQueueProvider).queueRegistration(
+            eventId: widget.eventId,
+            userId: userId,
+            nome: nome,
+            cognome: cognome,
+            createdAt: DateTime.now(),
+          );
+      if (mounted) setState(() => _savedOffline = true);
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -522,6 +531,30 @@ class _PilotRegistrationSectionState
               fontWeight: FontWeight.bold,
             ),
           ),
+          if (_savedOffline) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.warning.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppColors.warning),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.cloud_off, color: AppColors.warning, size: 18),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Iscrizione salvata offline — verrà inviata automaticamente quando la connessione sarà ripristinata.',
+                      style: TextStyle(
+                          color: AppColors.warning, fontSize: 12, height: 1.4),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           const SizedBox(height: 16),
           userAsync.when(
             loading: () => const Center(

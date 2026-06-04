@@ -9,6 +9,7 @@ import '../models/special_model.dart';
 import '../constants/app_constants.dart';
 import '../services/waypoint_detector.dart';
 import '../services/firestore_service.dart';
+import '../services/offline_queue_service.dart';
 
 enum GpsMode { idle, transfer, inSpecial, nearWaypoint }
 
@@ -43,7 +44,9 @@ class SpecialEntry {
 
 class GpsService extends ChangeNotifier {
   final FirestoreService _firestoreService;
-  GpsService(this._firestoreService);
+  final OfflineQueueService _offlineQueue;
+
+  GpsService(this._firestoreService, this._offlineQueue);
 
   bool _isRecording = false;
   GpsMode _mode = GpsMode.idle;
@@ -101,6 +104,10 @@ class GpsService extends ChangeNotifier {
     if (_isRecording) return;
     final hasPermission = await requestPermissions();
     if (!hasPermission) throw Exception('Permesso GPS negato');
+    // Try to flush any data queued during previous offline sessions
+    if (_offlineQueue.hasPending) {
+      _offlineQueue.syncPending(_firestoreService).ignore();
+    }
 
     _activeEventId = eventId;
     _activeUserId = userId;
@@ -194,13 +201,23 @@ class GpsService extends ChangeNotifier {
       }
 
       if (_activeEventId != null && _activeUserId != null) {
-        await _firestoreService.recordWaypointPassage(
-          eventId: _activeEventId!,
-          userId: _activeUserId!,
-          waypointId: wp.id,
-          waypointNome: wp.nome,
-          timestamp: passage.timestamp,
-        );
+        try {
+          await _firestoreService.recordWaypointPassage(
+            eventId: _activeEventId!,
+            userId: _activeUserId!,
+            waypointId: wp.id,
+            waypointNome: wp.nome,
+            timestamp: passage.timestamp,
+          );
+        } catch (_) {
+          await _offlineQueue.queuePassage(
+            eventId: _activeEventId!,
+            userId: _activeUserId!,
+            waypointId: wp.id,
+            waypointNome: wp.nome,
+            timestamp: passage.timestamp,
+          );
+        }
       }
     }
 
@@ -222,9 +239,9 @@ class GpsService extends ChangeNotifier {
       _startPositionStream(newInterval);
     }
 
-    // Push to Firestore
+    // Push live tracking to Firestore — skip silently if offline
     if (_activeEventId != null && _activeUserId != null) {
-      await _firestoreService.updatePilotTracking(GpsPointModel(
+      _firestoreService.updatePilotTracking(GpsPointModel(
         userId: _activeUserId!,
         eventId: _activeEventId!,
         lat: pos.latitude,
@@ -234,7 +251,7 @@ class GpsService extends ChangeNotifier {
         timestamp: DateTime.now(),
         specialeId: _currentSpecialId,
         waypointPassati: _passedWaypoints.toList(),
-      ));
+      )).ignore();
     }
 
     notifyListeners();
