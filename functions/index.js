@@ -6,37 +6,32 @@ const { getMessaging } = require('firebase-admin/messaging');
 initializeApp();
 
 // ── Trigger 1: cambio stato iscrizione ──────────────────────────────────────
-// Invia FCM al pilota quando l'admin approva o rifiuta l'iscrizione.
 exports.onRegistrationStatusChange = onDocumentUpdated(
-  'events/{eventId}/iscritti/{userId}',
+  {
+    document: 'events/{eventId}/iscritti/{userId}',
+    region: 'europe-west1',
+  },
   async (event) => {
     const before = event.data.before.data();
     const after = event.data.after.data();
-
-    if (!before || !after) return null;
-    if (before.stato === after.stato) return null;
+    if (!before || !after || before.stato === after.stato) return;
 
     const stato = after.stato;
-    if (stato !== 'approvato' && stato !== 'rifiutato') return null;
+    if (stato !== 'approvato' && stato !== 'rifiutato') return;
 
-    const userId = event.params.userId;
-    const eventId = event.params.eventId;
+    const { userId, eventId } = event.params;
+    const db = getFirestore();
 
-    const userDoc = await getFirestore()
-      .collection('users')
-      .doc(userId)
-      .get();
+    const [userDoc, eventDoc] = await Promise.all([
+      db.collection('users').doc(userId).get(),
+      db.collection('events').doc(eventId).get(),
+    ]);
+
     const fcmToken = userDoc.data()?.fcmToken;
-    if (!fcmToken) return null;
+    if (!fcmToken) return;
 
-    const approved = stato === 'approvato';
-
-    // Recupera il nome evento per il body
-    const eventDoc = await getFirestore()
-      .collection('events')
-      .doc(eventId)
-      .get();
     const eventName = eventDoc.data()?.nome ?? 'evento';
+    const approved = stato === 'approvato';
 
     await getMessaging().send({
       token: fcmToken,
@@ -46,53 +41,41 @@ exports.onRegistrationStatusChange = onDocumentUpdated(
           ? `La tua iscrizione a "${eventName}" è stata approvata!`
           : `La tua iscrizione a "${eventName}" è stata rifiutata.`,
       },
-      data: {
-        type: approved ? 'registrationApproved' : 'registrationRejected',
-        eventId,
-      },
+      data: { type: approved ? 'registrationApproved' : 'registrationRejected', eventId },
       android: { priority: 'high' },
       apns: { payload: { aps: { sound: 'default' } } },
     });
-
-    return null;
   }
 );
 
 // ── Trigger 2: admin abilita la partenza ────────────────────────────────────
-// Invia FCM a tutti i piloti approvati quando startEnabled diventa true.
 exports.onStartEnabled = onDocumentUpdated(
-  'events/{eventId}',
+  {
+    document: 'events/{eventId}',
+    region: 'europe-west1',
+  },
   async (event) => {
     const before = event.data.before.data();
     const after = event.data.after.data();
+    if (!before || !after) return;
+    if (before.startEnabled === after.startEnabled || !after.startEnabled) return;
 
-    if (!before || !after) return null;
-    if (before.startEnabled === after.startEnabled) return null;
-    if (!after.startEnabled) return null;
-
-    const eventId = event.params.eventId;
+    const { eventId } = event.params;
     const eventName = after.nome ?? 'evento';
+    const db = getFirestore();
 
-    // Recupera tutti i piloti approvati
-    const regsSnap = await getFirestore()
-      .collection('events')
-      .doc(eventId)
-      .collection('iscritti')
+    const regsSnap = await db
+      .collection('events').doc(eventId).collection('iscritti')
       .where('stato', '==', 'approvato')
       .get();
 
-    if (regsSnap.empty) return null;
+    if (regsSnap.empty) return;
 
-    // Recupera i token FCM in parallelo
-    const tokenPromises = regsSnap.docs.map((regDoc) =>
-      getFirestore().collection('users').doc(regDoc.id).get()
+    const userDocs = await Promise.all(
+      regsSnap.docs.map((d) => db.collection('users').doc(d.id).get())
     );
-    const userDocs = await Promise.all(tokenPromises);
-    const tokens = userDocs
-      .map((d) => d.data()?.fcmToken)
-      .filter(Boolean);
-
-    if (tokens.length === 0) return null;
+    const tokens = userDocs.map((d) => d.data()?.fcmToken).filter(Boolean);
+    if (tokens.length === 0) return;
 
     await getMessaging().sendEachForMulticast({
       tokens,
@@ -104,7 +87,5 @@ exports.onStartEnabled = onDocumentUpdated(
       android: { priority: 'high' },
       apns: { payload: { aps: { sound: 'default' } } },
     });
-
-    return null;
   }
 );

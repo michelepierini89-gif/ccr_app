@@ -10,5 +10,6 @@ class AppConstants {
   // FCM VAPID key per web push.
   // Generare da: Firebase Console → Project Settings → Cloud Messaging
   // → Web Push certificates → Generate key pair
-  static const String fcmWebVapidKey = 'YOUR_VAPID_KEY_HERE';
+  static const String fcmWebVapidKey =
+      'BARNRoOWDjXW2o0-pCTa_EH-9-h888qnSh9XTP-ZZB9jfQ5e1O1knkmx1naZjHknhvy02ANm4sjiC9VIRWXqHiU';
 }
