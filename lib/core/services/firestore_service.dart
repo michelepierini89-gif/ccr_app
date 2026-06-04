@@ -24,6 +24,11 @@ class FirestoreService {
       .doc(event.id)
       .update(event.toFirestore());
 
+  Future<void> deleteEvent(String eventId) => _db
+      .collection(FirebaseConstants.events)
+      .doc(eventId)
+      .delete();
+
   Stream<List<EventModel>> getEvents({String? createdBy}) {
     Query q = _db
         .collection(FirebaseConstants.events)

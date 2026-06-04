@@ -100,6 +100,73 @@ class _EventManagementScreenState
     }
   }
 
+  Future<void> _deleteEvent(BuildContext context, EventModel event) async {
+    final first = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: const Text('Elimina evento',
+            style: TextStyle(color: AppColors.textPrimary)),
+        content: Text(
+          'Vuoi eliminare "${event.nome}"? Questa azione non può essere annullata.',
+          style: const TextStyle(color: AppColors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annulla',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Continua',
+                style: TextStyle(color: AppColors.error)),
+          ),
+        ],
+      ),
+    );
+    if (first != true || !context.mounted) return;
+
+    final second = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: const Text('Conferma eliminazione',
+            style: TextStyle(color: AppColors.error)),
+        content: const Text(
+          'Sei sicuro? L\'evento e tutti i suoi dati verranno eliminati definitivamente.',
+          style: TextStyle(color: AppColors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annulla',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.error),
+            child: const Text('Elimina definitivamente'),
+          ),
+        ],
+      ),
+    );
+    if (second != true || !context.mounted) return;
+
+    try {
+      await ref.read(firestoreServiceProvider).deleteEvent(event.id);
+      if (context.mounted) context.go('/admin');
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Errore eliminazione: $e'),
+          backgroundColor: AppColors.error,
+        ));
+      }
+    }
+  }
+
   Future<void> _updateStatus(
       BuildContext context, EventModel event, EventStatus newStatus) async {
     try {
@@ -261,6 +328,13 @@ class _EventManagementScreenState
               icon: const Icon(Icons.arrow_back),
               onPressed: () => context.pop(),
             ),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.delete_outline, color: AppColors.error),
+                tooltip: 'Elimina evento',
+                onPressed: () => _deleteEvent(context, event),
+              ),
+            ],
             bottom: TabBar(
               controller: _tabController,
               onTap: (index) {
