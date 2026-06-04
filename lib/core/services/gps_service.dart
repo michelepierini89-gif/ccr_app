@@ -239,9 +239,9 @@ class GpsService extends ChangeNotifier {
       _startPositionStream(newInterval);
     }
 
-    // Push live tracking to Firestore — skip silently if offline
+    // Push live tracking to Firestore — queue offline if unavailable
     if (_activeEventId != null && _activeUserId != null) {
-      _firestoreService.updatePilotTracking(GpsPointModel(
+      final point = GpsPointModel(
         userId: _activeUserId!,
         eventId: _activeEventId!,
         lat: pos.latitude,
@@ -251,7 +251,10 @@ class GpsService extends ChangeNotifier {
         timestamp: DateTime.now(),
         specialeId: _currentSpecialId,
         waypointPassati: _passedWaypoints.toList(),
-      )).ignore();
+      );
+      _firestoreService.updatePilotTracking(point).catchError((_) {
+        _offlineQueue.queueTracking(point).ignore();
+      });
     }
 
     notifyListeners();

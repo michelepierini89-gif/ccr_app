@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../core/providers/offline_provider.dart';
 import '../../../core/services/gps_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/location_utils.dart';
 import '../../../core/widgets/notification_listener_widget.dart';
 import '../../auth/providers/auth_provider.dart';
+import '../../admin/providers/admin_provider.dart';
 import '../providers/pilot_provider.dart';
 import 'event_list_screen.dart';
 import 'gps_recording_screen.dart';
@@ -24,6 +26,8 @@ class _PilotHomeScreenState extends ConsumerState<PilotHomeScreen> {
   Widget build(BuildContext context) {
     final gps = ref.watch(gpsServiceProvider);
     final userAsync = ref.watch(currentUserModelProvider);
+    final offlineQueue = ref.watch(offlineQueueProvider);
+    final pendingCount = offlineQueue.totalPendingCount;
 
     final screens = [
       const EventListScreen(),
@@ -61,6 +65,46 @@ class _PilotHomeScreenState extends ConsumerState<PilotHomeScreen> {
       ),
       body: Column(
         children: [
+          // Offline pending banner
+          if (pendingCount > 0)
+            Container(
+              width: double.infinity,
+              color: AppColors.warning.withValues(alpha: 0.12),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.cloud_upload_outlined,
+                      color: AppColors.warning, size: 16),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '$pendingCount element${pendingCount == 1 ? "o" : "i"} in attesa di sincronizzazione',
+                      style: const TextStyle(
+                          color: AppColors.warning, fontSize: 12),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => ref
+                        .read(offlineQueueProvider)
+                        .syncPending(ref.read(firestoreServiceProvider))
+                        .ignore(),
+                    style: TextButton.styleFrom(
+                      minimumSize: Size.zero,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: const Text('Sincronizza',
+                        style: TextStyle(
+                            color: AppColors.warning,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold)),
+                  ),
+                ],
+              ),
+            ),
+
           // Recording status banner
           if (gps.isRecording)
             Container(
@@ -112,8 +156,24 @@ class _PilotHomeScreenState extends ConsumerState<PilotHomeScreen> {
         unselectedItemColor: AppColors.textSecondary,
         type: BottomNavigationBarType.fixed,
         items: [
-          const BottomNavigationBarItem(
-            icon: Icon(Icons.event),
+          BottomNavigationBarItem(
+            icon: Stack(
+              children: [
+                const Icon(Icons.event),
+                if (pendingCount > 0)
+                  Positioned(
+                    right: 0,
+                    top: 0,
+                    child: Container(
+                      width: 8,
+                      height: 8,
+                      decoration: const BoxDecoration(
+                          color: AppColors.warning,
+                          shape: BoxShape.circle),
+                    ),
+                  ),
+              ],
+            ),
             label: 'Gare',
           ),
           BottomNavigationBarItem(

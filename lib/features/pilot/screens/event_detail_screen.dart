@@ -161,8 +161,21 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
               onPressed: () => context.pop(),
             ),
           ),
-          body: SingleChildScrollView(
-            child: Column(
+          body: RefreshIndicator(
+            color: AppColors.accent,
+            backgroundColor: AppColors.cardBackground,
+            onRefresh: () async {
+              setState(() {
+                _parsedTrack = null;
+                _loadedTrackUrl = null;
+              });
+              if (event.trackUrl != null) {
+                await _autoLoadTrack(event.trackUrl!);
+              }
+            },
+            child: SingleChildScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 // Event header
@@ -340,6 +353,7 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
               ],
             ),
           ),
+          ),
         );
       },
     );
@@ -387,15 +401,20 @@ class _PilotRegistrationSectionState
         ));
       }
     } catch (_) {
-      // Save offline — will sync when connectivity is restored
-      await ref.read(offlineQueueProvider).queueRegistration(
-            eventId: widget.eventId,
-            userId: userId,
-            nome: nome,
-            cognome: cognome,
-            squadraId: team.id,
-            createdAt: DateTime.now(),
-          );
+      final queue = ref.read(offlineQueueProvider);
+      await queue.queueJoinTeam(
+        eventId: widget.eventId,
+        teamId: team.id,
+        userId: userId,
+      );
+      await queue.queueRegistration(
+        eventId: widget.eventId,
+        userId: userId,
+        nome: nome,
+        cognome: cognome,
+        squadraId: team.id,
+        createdAt: DateTime.now(),
+      );
       if (mounted) setState(() => _savedOffline = true);
     } finally {
       if (mounted) setState(() => _isLoading = false);

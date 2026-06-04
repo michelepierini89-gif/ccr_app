@@ -6,6 +6,7 @@ final sharedPreferencesProvider = Provider<SharedPreferences>((ref) {
   throw UnimplementedError('SharedPreferences not initialized — override in main');
 });
 
-final offlineQueueProvider = Provider<OfflineQueueService>((ref) {
+final offlineQueueProvider =
+    ChangeNotifierProvider<OfflineQueueService>((ref) {
   return OfflineQueueService(ref.watch(sharedPreferencesProvider));
 });

@@ -7,7 +7,7 @@ import '../../auth/providers/auth_provider.dart';
 import '../../classifica/providers/classifica_provider.dart';
 import '../../pilot/providers/pilot_provider.dart';
 
-class TimingScreen extends ConsumerWidget {
+class TimingScreen extends ConsumerStatefulWidget {
   final String eventId;
   final bool adminView;
 
@@ -18,8 +18,17 @@ class TimingScreen extends ConsumerWidget {
   });
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final classAv = ref.watch(classificaProvider(eventId));
+  ConsumerState<TimingScreen> createState() => _TimingScreenState();
+}
+
+class _TimingScreenState extends ConsumerState<TimingScreen> {
+  Future<void> _onRefresh() async {
+    ref.invalidate(classificaProvider(widget.eventId));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final classAv = ref.watch(classificaProvider(widget.eventId));
 
     return classAv.when(
       loading: () => const Center(
@@ -28,11 +37,16 @@ class TimingScreen extends ConsumerWidget {
           child: Text('Errore: $e',
               style: const TextStyle(color: AppColors.error))),
       data: (entries) {
-        if (adminView) {
+        if (widget.adminView) {
           return _AdminTimingView(
-              eventId: eventId, entries: entries);
+              eventId: widget.eventId,
+              entries: entries,
+              onRefresh: _onRefresh);
         }
-        return _PilotTimingView(eventId: eventId, entries: entries);
+        return _PilotTimingView(
+            eventId: widget.eventId,
+            entries: entries,
+            onRefresh: _onRefresh);
       },
     );
   }
@@ -43,8 +57,13 @@ class TimingScreen extends ConsumerWidget {
 class _AdminTimingView extends ConsumerWidget {
   final String eventId;
   final List<ClassificaEntry> entries;
+  final Future<void> Function() onRefresh;
 
-  const _AdminTimingView({required this.eventId, required this.entries});
+  const _AdminTimingView({
+    required this.eventId,
+    required this.entries,
+    required this.onRefresh,
+  });
 
   String _buildCsv() {
     final buf = StringBuffer();
@@ -128,11 +147,16 @@ class _AdminTimingView extends ConsumerWidget {
         ),
         const Divider(height: 1, color: AppColors.border),
         Expanded(
-          child: ListView.builder(
-            padding: const EdgeInsets.only(top: 8, bottom: 24),
-            itemCount: entries.length,
-            itemBuilder: (ctx, i) =>
-                _TimingEntryCard(entry: entries[i]),
+          child: RefreshIndicator(
+            color: AppColors.accent,
+            backgroundColor: AppColors.cardBackground,
+            onRefresh: onRefresh,
+            child: ListView.builder(
+              padding: const EdgeInsets.only(top: 8, bottom: 24),
+              itemCount: entries.length,
+              itemBuilder: (ctx, i) =>
+                  _TimingEntryCard(entry: entries[i]),
+            ),
           ),
         ),
       ],
@@ -145,8 +169,13 @@ class _AdminTimingView extends ConsumerWidget {
 class _PilotTimingView extends ConsumerWidget {
   final String eventId;
   final List<ClassificaEntry> entries;
+  final Future<void> Function() onRefresh;
 
-  const _PilotTimingView({required this.eventId, required this.entries});
+  const _PilotTimingView({
+    required this.eventId,
+    required this.entries,
+    required this.onRefresh,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -192,7 +221,12 @@ class _PilotTimingView extends ConsumerWidget {
     final totalSpeciali = entry.totaleSpeciali;
     final completate = entry.specialiCompletati.length;
 
-    return SingleChildScrollView(
+    return RefreshIndicator(
+      color: AppColors.accent,
+      backgroundColor: AppColors.cardBackground,
+      onRefresh: onRefresh,
+      child: SingleChildScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -226,6 +260,7 @@ class _PilotTimingView extends ConsumerWidget {
               (s) => _SpecialTimingRow(special: s),
             ),
         ],
+      ),
       ),
     );
   }
