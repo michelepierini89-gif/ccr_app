@@ -5,7 +5,6 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/csv_export.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../classifica/providers/classifica_provider.dart';
-import '../../admin/providers/admin_provider.dart';
 import '../../pilot/providers/pilot_provider.dart';
 
 class TimingScreen extends ConsumerWidget {
@@ -46,13 +45,6 @@ class _AdminTimingView extends ConsumerWidget {
   final List<ClassificaEntry> entries;
 
   const _AdminTimingView({required this.eventId, required this.entries});
-
-  String _formatTempo(Duration d) {
-    final m = d.inMinutes;
-    final s = d.inSeconds % 60;
-    final cs = (d.inMilliseconds % 1000) ~/ 10;
-    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}.${cs.toString().padLeft(2, '0')}';
-  }
 
   String _buildCsv() {
     final buf = StringBuffer();

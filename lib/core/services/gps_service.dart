@@ -31,8 +31,7 @@ class SpecialEntry {
     this.exitTime,
   });
 
-  Duration? get elapsed =>
-      exitTime != null ? exitTime!.difference(entryTime) : null;
+  Duration? get elapsed => exitTime?.difference(entryTime);
 
   SpecialEntry withExit(DateTime t) => SpecialEntry(
         specialeId: specialeId,

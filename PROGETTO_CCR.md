@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 04 giugno 2026  
+**Data aggiornamento:** 04 giugno 2026 (aggiornato)  
 **Branch:** main  
 **Versione:** 1.0.0+1
 
@@ -256,6 +256,14 @@ ccr_app/
 - `csv_export`: utility multi-piattaforma con conditional import (web/io/stub)
 - **Regole Firestore complete** in `firestore.rules`: lettura/scrittura autenticati, write eventi solo admin, write tracking solo owner, write passages solo owner
 
+### Step 7b — Notifiche in-app e salvataggio traccia parziale ✅
+- Notifiche in-app per piloti: cambio stato iscrizione, abilitazione partenza, approvazione admin
+- `AppNotificationModel`: modello con tipo, testo, read/unread, timestamp
+- `FirestoreService`: stream notifiche non lette per utente, mark as read
+- Salvataggio traccia GPS parziale su Firestore al momento del ritiro del pilota
+- `GpsService`: flush punti accumulati a Firebase al ritiro anche se la registrazione non è conclusa
+- PWA manifest aggiornato: nome app, colori brand, icone per installazione su mobile
+
 ### CORS Firebase Storage ✅
 CORS applicato sul bucket `ccr-enduro.firebasestorage.app` tramite `cors.json`.  
 Origini abilitate: `http://localhost:8080`, `http://localhost:*`, `https://ccr-enduro.web.app`, `https://ccr-enduro.firebaseapp.com`.
@@ -293,6 +301,7 @@ gsutil cors get gs://ccr-enduro.firebasestorage.app
 | SpecialModel senza control points | `SpecialModel` non aveva campo `controlPoints` | Aggiunto `controlPoints: List<WaypointModel>` con serializzazione Firestore |
 | Nomi membri come UID | `TeamScreen` mostrava gli UID grezzi dei membri | Risolti nome/cognome tramite lookup nelle registrazioni |
 | Porta 8080 occupata al riavvio | Processo Flutter precedente non terminato | `lsof -ti:8080 | xargs kill -9` poi riavvio con nohup |
+| WSL2 OOM crash durante Gradle build | Nessun limite memoria su WSL2 → Ubuntu usa tutta la RAM | Creato `/mnt/c/Users/admin/.wslconfig` con `memory=4GB processors=2 swap=2GB`; riavviare WSL2 con `wsl --shutdown` |
 
 ---
 
@@ -301,10 +310,13 @@ gsutil cors get gs://ccr-enduro.firebasestorage.app
 ### Step 8 — Deploy e test
 - [x] CORS Firebase Storage ✅
 - [x] Regole Firestore complete ✅
+- [x] Notifiche in-app + traccia parziale al ritiro ✅
 - [ ] Deploy su Firebase Hosting (`firebase deploy`)
+- [ ] Build APK Android (richede WSL2 riavviato con nuovo `.wslconfig`)
 - [ ] Test su Android con GPS reale
 - [ ] Configurare regole Firebase Storage
 - [ ] Test end-to-end classifica e timing con più piloti
+- [ ] Widget test suite (`test/features/admin/event_management_screen_test.dart`) — creato, da validare con `flutter test`
 
 ### Step 9 — Possibili evoluzioni
 - Notifiche push piloti (FCM) per cambio stato iscrizione e abilitazione partenza
