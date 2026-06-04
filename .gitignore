@@ -47,7 +47,6 @@ app.*.map.json
 # Firebase config (add manually after cloning)
 android/app/google-services.json
 ios/Runner/GoogleService-Info.plist
-lib/firebase_options.dart
 
 # Desktop platforms (not supported)
 macos/
