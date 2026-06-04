@@ -24,41 +24,67 @@ class WaypointMarkersLayer extends StatelessWidget {
     return AppColors.textSecondary;
   }
 
+  /// Returns (label, isStart) for a waypoint that belongs to a special.
+  /// Returns null if the waypoint is not an inizio/fine of any special.
+  (String, bool)? _labelFor(WaypointModel wp) {
+    for (var i = 0; i < specials.length; i++) {
+      final s = specials[i];
+      final psLabel = 'PS${i + 1}';
+      if (s.waypointInizio.id == wp.id) return (psLabel, true);
+      if (s.waypointFine.id == wp.id) return (psLabel, false);
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     return MarkerLayer(
-      markers: waypoints
-          .map((wp) => Marker(
-                point: wp.latLng,
-                width: 40,
-                height: 40,
-                child: GestureDetector(
-                  onTap: () => onTap?.call(wp),
-                  child: Column(
-                    children: [
-                      Container(
-                        width: 24,
-                        height: 24,
-                        decoration: BoxDecoration(
-                          color: _colorForWaypoint(wp),
-                          shape: BoxShape.circle,
-                          border:
-                              Border.all(color: Colors.white, width: 2),
-                        ),
-                        child: const Icon(Icons.flag,
-                            color: Colors.white, size: 14),
-                      ),
-                      Text(
-                        wp.nome,
-                        style: const TextStyle(
-                            color: Colors.white, fontSize: 8),
-                        overflow: TextOverflow.ellipsis,
-                      ),
+      markers: waypoints.map((wp) {
+        final labelInfo = _labelFor(wp);
+        final color = _colorForWaypoint(wp);
+        final label = labelInfo?.$1 ?? wp.nome;
+        final isStart = labelInfo?.$2 ?? true;
+        return Marker(
+          point: wp.latLng,
+          width: 48,
+          height: 48,
+          child: GestureDetector(
+            onTap: () => onTap?.call(wp),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 28,
+                  height: 28,
+                  decoration: BoxDecoration(
+                    color: color,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 2),
+                    boxShadow: [
+                      BoxShadow(
+                          color: color.withValues(alpha: 0.5),
+                          blurRadius: 4)
                     ],
                   ),
+                  child: Icon(
+                    isStart ? Icons.play_arrow : Icons.stop,
+                    color: Colors.white,
+                    size: 16,
+                  ),
                 ),
-              ))
-          .toList(),
+                Text(
+                  label,
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 8,
+                      fontWeight: FontWeight.bold,
+                      shadows: [Shadow(color: Colors.black, blurRadius: 2)]),
+                ),
+              ],
+            ),
+          ),
+        );
+      }).toList(),
     );
   }
 }
