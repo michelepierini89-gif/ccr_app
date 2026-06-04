@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 04 giugno 2026 (Step 8 completato)  
+**Data aggiornamento:** 04 giugno 2026 (Step 9 completato)  
 **Branch:** main  
 **Versione:** 1.0.0+1
 
@@ -260,6 +260,34 @@ ccr_app/
 - Cloud Functions Gen 2, deploy su eur3, VAPID key configurata
 - Notifiche push a piloti per cambio stato iscrizione e abilitazione partenza
 
+### Step 9 — Deploy, Storage rules, UX offline ✅
+
+**Deploy Firebase Hosting:**
+- Build web release (`flutter build web --release`) deployata su https://ccr-enduro.web.app
+- `firebase deploy --only hosting`
+
+**Regole Firebase Storage (`storage.rules`):**
+- Admin: legge e scrive tutto il bucket
+- Piloti: leggono solo `tracks/{eventId}/*` se `firestore.exists(events/{eventId}/iscritti/{userId})`
+- Deploy con `firebase deploy --only storage`; `firebase.json` aggiornato con sezione `storage`
+
+**UX offline avanzata (`OfflineQueueService`):**
+- Estende `ChangeNotifier`; provider aggiornato a `ChangeNotifierProvider` per reattività Riverpod
+- `queueJoinTeam()`: nuovo metodo; in `_joinTeamAndRegister` ora mette in coda joinTeam + registrazione
+- `queueTracking()`: salva solo l'ultima posizione per coppia `eventId/userId` (nessun accumulo)
+- `GpsService`: `updatePilotTracking` usa `.catchError` → `queueTracking` invece di ignorare silenziosamente
+- Backoff esponenziale per le sync: 30s → 60s → 120s → … → max 1 ora; ogni item conserva `retryCount` e `nextRetryAt`
+- `_syncList()`: helper generico con backoff; `_syncTrackingMap()`: sync separata per il Map tracking
+
+**Banner e badge offline (`PilotHomeScreen`):**
+- Banner giallo con contatore "N elementi in attesa di sincronizzazione" visibile quando `offlineQueueProvider.totalPendingCount > 0`
+- Pulsante "Sincronizza" manuale nel banner (chiama `syncPending` direttamente)
+- Badge giallo (pallino 8×8px) sull'icona "Gare" nella bottom nav quando ci sono dati pending
+
+**Pull-to-refresh:**
+- `EventDetailScreen`: `RefreshIndicator` che cancella la cache del tracciato e richiama `_autoLoadTrack`; `AlwaysScrollableScrollPhysics` per garantire lo swipe anche con poco contenuto
+- `TimingScreen`: convertito da `ConsumerWidget` a `ConsumerStatefulWidget`; `RefreshIndicator` su admin ListView e su pilota `SingleChildScrollView`; refresh invalida `classificaProvider(eventId)`
+
 ### Step 8 — Offline, Ottimizzazioni, Test, Documentazione ✅
 
 **Offline support (SharedPreferences queue):**
@@ -335,22 +363,24 @@ gsutil cors get gs://ccr-enduro.firebasestorage.app
 
 ## Prossimi Step
 
-### Step 8 — Deploy e test
-- [x] CORS Firebase Storage ✅
-- [x] Regole Firestore complete ✅
-- [x] Notifiche in-app + traccia parziale al ritiro ✅
-- [x] Notifiche push FCM (Cloud Functions) ✅
-- [x] Offline support con SharedPreferences ✅
-- [x] Ottimizzazioni (loading states, const, zero warning) ✅
-- [x] Test suite 43 test (widget + flusso pilota) ✅
-- [ ] Deploy su Firebase Hosting (`firebase deploy`)
+### Step 9 — Deploy e UX offline ✅ (04 giugno 2026)
+- [x] Deploy su Firebase Hosting (`firebase deploy --only hosting`) ✅
+- [x] Regole Firebase Storage (`storage.rules`, deploy `--only storage`) ✅
+- [x] Banner offline con badge in PilotHomeScreen ✅
+- [x] Sync offline per `joinTeam` e `updatePilotTracking` ✅
+- [x] Backoff esponenziale per retry sync ✅
+- [x] Pull-to-refresh su EventDetailScreen e TimingScreen ✅
 - [ ] Build APK Android (richiede WSL2 riavviato con `.wslconfig` memory=4GB)
 - [ ] Test su Android con GPS reale
-- [ ] Configurare regole Firebase Storage
 - [ ] Test end-to-end classifica e timing con più piloti
+- [ ] Test flusso offline: spegnere connessione durante tracking, verificare sync al ritorno
 
-### Step 9 — Possibili evoluzioni
-- Export PDF risultati post-gara
-- Mappa live admin con trail percorso per ogni pilota
+### Step 10 — Possibili evoluzioni
+- Export PDF risultati post-gara (logo CCR, classifica finale, tempi speciali)
+- Mappa live admin con trail percorso per ogni pilota (attualmente solo posizione istantanea)
 - Dashboard admin con statistiche gara (passaggi speciali, ritiri, progressi)
-- Modalità offline completa con sync bidirezionale Firestore
+- Gestione esplicita iscrizione duplicata (Firestore error se documento già esiste)
+- Schermata "Profilo pilota" con modifica nome/cognome
+- Animazioni di transizione tra schermate
+- Coverage test su GpsService e ClassificaEngine
+- GitHub Actions CI (flutter test + flutter analyze)
