@@ -15,6 +15,43 @@ import '../widgets/special_tile.dart';
 
 enum _SelectionMode { none, inizio, fine, controlPoint }
 
+class _SliderStepBtn extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final bool enabled;
+  final VoidCallback onTap;
+  const _SliderStepBtn({
+    required this.icon,
+    required this.color,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: enabled ? onTap : null,
+      child: Container(
+        width: 26,
+        height: 26,
+        margin: const EdgeInsets.symmetric(horizontal: 2),
+        decoration: BoxDecoration(
+          color: enabled
+              ? color.withValues(alpha: 0.15)
+              : AppColors.border.withValues(alpha: 0.3),
+          shape: BoxShape.circle,
+          border: Border.all(
+              color: enabled ? color.withValues(alpha: 0.5) : AppColors.border,
+              width: 1),
+        ),
+        child: Icon(icon,
+            size: 14,
+            color: enabled ? color : AppColors.textSecondary),
+      ),
+    );
+  }
+}
+
 class SpecialsEditorScreen extends ConsumerStatefulWidget {
   final String eventId;
   final ParsedTrack parsedTrack;
@@ -1037,27 +1074,45 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
           ],
         ),
         if (totalPts > 0)
-          SliderTheme(
-            data: SliderThemeData(
-              activeTrackColor: color,
-              inactiveTrackColor: AppColors.border,
-              thumbColor: color,
-              overlayColor: color.withValues(alpha: 0.2),
-              thumbShape:
-                  const RoundSliderThumbShape(enabledThumbRadius: 8),
-              trackHeight: 3,
-              showValueIndicator: ShowValueIndicator.onlyForDiscrete,
-            ),
-            child: Slider(
-              value:
-                  currentIdx >= 0 ? currentIdx.toDouble() : 0.0,
-              min: 0,
-              max: (totalPts - 1).toDouble(),
-              label: hasValue ? '${currentIdx + 1}/$totalPts' : '–',
-              onChanged: onSliderChanged != null
-                  ? (v) => onSliderChanged(v.round())
-                  : null,
-            ),
+          Row(
+            children: [
+              _SliderStepBtn(
+                icon: Icons.remove,
+                color: color,
+                enabled: onSliderChanged != null && currentIdx > 0,
+                onTap: () => onSliderChanged!(currentIdx - 1),
+              ),
+              Expanded(
+                child: SliderTheme(
+                  data: SliderThemeData(
+                    activeTrackColor: color,
+                    inactiveTrackColor: AppColors.border,
+                    thumbColor: color,
+                    overlayColor: color.withValues(alpha: 0.2),
+                    thumbShape:
+                        const RoundSliderThumbShape(enabledThumbRadius: 8),
+                    trackHeight: 3,
+                    showValueIndicator: ShowValueIndicator.onlyForDiscrete,
+                  ),
+                  child: Slider(
+                    value:
+                        currentIdx >= 0 ? currentIdx.toDouble() : 0.0,
+                    min: 0,
+                    max: (totalPts - 1).toDouble(),
+                    label: hasValue ? '${currentIdx + 1}/$totalPts' : '–',
+                    onChanged: onSliderChanged != null
+                        ? (v) => onSliderChanged(v.round())
+                        : null,
+                  ),
+                ),
+              ),
+              _SliderStepBtn(
+                icon: Icons.add,
+                color: color,
+                enabled: onSliderChanged != null && currentIdx < totalPts - 1,
+                onTap: () => onSliderChanged!(currentIdx + 1),
+              ),
+            ],
           )
         else
           const Padding(
@@ -1217,25 +1272,49 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
                           ),
                         ],
                       ),
-                      SliderTheme(
-                        data: SliderThemeData(
-                          activeTrackColor: contrast,
-                          inactiveTrackColor: AppColors.border,
-                          thumbColor: contrast,
-                          overlayColor: contrast.withValues(alpha: 0.2),
-                          thumbShape: const RoundSliderThumbShape(
-                              enabledThumbRadius: 6),
-                          trackHeight: 2,
-                        ),
-                        child: Slider(
-                          value: cpIdx.clamp(cpLo, cpHi).toDouble(),
-                          min: cpLo.toDouble(),
-                          max: cpHi.toDouble(),
-                          onChanged: (v) => setState(() {
-                            _editingControlIdxs[j] = v.round();
-                            _selectionMode = _SelectionMode.none;
-                          }),
-                        ),
+                      Row(
+                        children: [
+                          _SliderStepBtn(
+                            icon: Icons.remove,
+                            color: contrast,
+                            enabled: cpIdx > cpLo,
+                            onTap: () => setState(() {
+                              _editingControlIdxs[j] = (cpIdx - 1).clamp(cpLo, cpHi);
+                              _selectionMode = _SelectionMode.none;
+                            }),
+                          ),
+                          Expanded(
+                            child: SliderTheme(
+                              data: SliderThemeData(
+                                activeTrackColor: contrast,
+                                inactiveTrackColor: AppColors.border,
+                                thumbColor: contrast,
+                                overlayColor: contrast.withValues(alpha: 0.2),
+                                thumbShape: const RoundSliderThumbShape(
+                                    enabledThumbRadius: 6),
+                                trackHeight: 2,
+                              ),
+                              child: Slider(
+                                value: cpIdx.clamp(cpLo, cpHi).toDouble(),
+                                min: cpLo.toDouble(),
+                                max: cpHi.toDouble(),
+                                onChanged: (v) => setState(() {
+                                  _editingControlIdxs[j] = v.round();
+                                  _selectionMode = _SelectionMode.none;
+                                }),
+                              ),
+                            ),
+                          ),
+                          _SliderStepBtn(
+                            icon: Icons.add,
+                            color: contrast,
+                            enabled: cpIdx < cpHi,
+                            onTap: () => setState(() {
+                              _editingControlIdxs[j] = (cpIdx + 1).clamp(cpLo, cpHi);
+                              _selectionMode = _SelectionMode.none;
+                            }),
+                          ),
+                        ],
                       ),
                     ],
                   ),
