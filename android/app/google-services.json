@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "688005570976",
+    "project_id": "ccr-enduro",
+    "storage_bucket": "ccr-enduro.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:688005570976:android:a7ec569d78cdfbf72b84c5",
+        "android_client_info": {
+          "package_name": "com.ccr.ccr_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCpZdlyS-oFIheRmwQHrGTDLz1jGNsOLa8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -45,7 +45,6 @@ app.*.map.json
 /android/app/release
 
 # Firebase config (add manually after cloning)
-android/app/google-services.json
 ios/Runner/GoogleService-Info.plist
 
 # Desktop platforms (not supported)
