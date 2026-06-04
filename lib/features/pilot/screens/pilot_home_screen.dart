@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import '../../../core/services/gps_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/location_utils.dart';
+import '../../../core/widgets/notification_listener_widget.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../providers/pilot_provider.dart';
 import 'event_list_screen.dart';
@@ -35,7 +36,8 @@ class _PilotHomeScreenState extends ConsumerState<PilotHomeScreen> {
       ),
     ];
 
-    return Scaffold(
+    return NotificationListenerWidget(
+      child: Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
         title: const Row(
@@ -147,7 +149,7 @@ class _PilotHomeScreenState extends ConsumerState<PilotHomeScreen> {
           ),
         ],
       ),
-    );
+    ));
   }
 }
 

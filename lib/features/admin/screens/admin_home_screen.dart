@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import '../../../core/models/event_model.dart';
 import '../../../core/models/registration_model.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/widgets/notification_listener_widget.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../providers/admin_provider.dart';
 import '../widgets/event_card_admin.dart';
@@ -15,7 +16,8 @@ class AdminHomeScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final eventsAsync = ref.watch(adminEventsProvider);
 
-    return Scaffold(
+    return NotificationListenerWidget(
+      child: Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
         title: const Row(
@@ -108,7 +110,7 @@ class AdminHomeScreen extends ConsumerWidget {
           );
         },
       ),
-    );
+    ));
   }
 }
 

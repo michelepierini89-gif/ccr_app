@@ -186,6 +186,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     final gps = ref.read(gpsServiceProvider);
     final user = ref.read(authStateProvider).valueOrNull;
     final eventId = widget.eventId;
+    final partialTrack = List.of(gps.localTrack);
     await gps.stopRecording();
     setState(() => _elapsed = Duration.zero);
 
@@ -193,7 +194,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
       try {
         await ref
             .read(firestoreServiceProvider)
-            .recordWithdrawal(eventId, user.uid);
+            .recordWithdrawal(eventId, user.uid, partialTrack: partialTrack);
       } catch (_) {}
     }
 

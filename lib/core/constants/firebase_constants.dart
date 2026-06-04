@@ -10,4 +10,6 @@ class FirebaseConstants {
   static const String passages = 'passages';
   static const String notifications = 'notifications';
   static const String withdrawals = 'withdrawals';
+  static const String userNotifications = 'user_notifications';
+  static const String items = 'items';
 }

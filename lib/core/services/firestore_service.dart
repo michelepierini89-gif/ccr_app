@@ -1,5 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:latlong2/latlong.dart';
 import '../constants/firebase_constants.dart';
+import '../models/app_notification_model.dart';
 import '../models/event_model.dart';
 import '../models/registration_model.dart';
 import '../models/team_model.dart';
@@ -97,13 +99,25 @@ class FirestoreService {
     String eventId,
     String userId,
     RegistrationStatus stato,
-  ) =>
-      _db
-          .collection(FirebaseConstants.events)
-          .doc(eventId)
-          .collection(FirebaseConstants.iscritti)
-          .doc(userId)
-          .update({'stato': stato.name});
+  ) async {
+    await _db
+        .collection(FirebaseConstants.events)
+        .doc(eventId)
+        .collection(FirebaseConstants.iscritti)
+        .doc(userId)
+        .update({'stato': stato.name});
+    final approved = stato == RegistrationStatus.approvato;
+    await _sendUserNotification(
+      recipientId: userId,
+      type: approved
+          ? NotificationType.registrationApproved
+          : NotificationType.registrationRejected,
+      title: approved ? 'Iscrizione approvata' : 'Iscrizione rifiutata',
+      body: approved
+          ? 'La tua iscrizione all\'evento è stata approvata!'
+          : 'La tua iscrizione all\'evento è stata rifiutata.',
+    );
+  }
 
   Stream<List<RegistrationModel>> getRegistrations(String eventId) => _db
       .collection(FirebaseConstants.events)
@@ -190,7 +204,8 @@ class FirestoreService {
           .doc(eventId)
           .update({'startEnabled': enabled});
 
-  Future<void> recordWithdrawal(String eventId, String userId) async {
+  Future<void> recordWithdrawal(String eventId, String userId,
+      {List<LatLng> partialTrack = const []}) async {
     await _db
         .collection(FirebaseConstants.events)
         .doc(eventId)
@@ -199,6 +214,10 @@ class FirestoreService {
         .set({
       'userId': userId,
       'timestamp': Timestamp.fromDate(DateTime.now()),
+      if (partialTrack.isNotEmpty)
+        'partialTrack': partialTrack
+            .map((p) => {'lat': p.latitude, 'lng': p.longitude})
+            .toList(),
     });
     await _createNotification(eventId, {
       'type': 'withdrawal',
@@ -233,6 +252,45 @@ class FirestoreService {
         'createdAt': Timestamp.fromDate(DateTime.now()),
         'read': false,
       });
+
+  Future<void> _sendUserNotification({
+    required String recipientId,
+    required NotificationType type,
+    required String title,
+    required String body,
+  }) =>
+      _db
+          .collection(FirebaseConstants.userNotifications)
+          .doc(recipientId)
+          .collection(FirebaseConstants.items)
+          .add({
+        'type': type.name,
+        'title': title,
+        'body': body,
+        'createdAt': Timestamp.fromDate(DateTime.now()),
+        'read': false,
+      });
+
+  Stream<List<AppNotificationModel>> getUnreadNotificationsStream(
+          String userId) =>
+      _db
+          .collection(FirebaseConstants.userNotifications)
+          .doc(userId)
+          .collection(FirebaseConstants.items)
+          .where('read', isEqualTo: false)
+          .orderBy('createdAt', descending: true)
+          .snapshots()
+          .map((s) => s.docs
+              .map((d) => AppNotificationModel.fromFirestore(d))
+              .toList());
+
+  Future<void> markNotificationRead(String userId, String notifId) =>
+      _db
+          .collection(FirebaseConstants.userNotifications)
+          .doc(userId)
+          .collection(FirebaseConstants.items)
+          .doc(notifId)
+          .update({'read': true});
 
   Future<void> recordWaypointPassage({
     required String eventId,
