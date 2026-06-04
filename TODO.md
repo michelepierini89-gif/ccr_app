@@ -7,8 +7,8 @@
 ## Alta priorità (necessari per produzione)
 
 ### Deploy
-- [ ] `firebase deploy` — deploy su Firebase Hosting
-- [ ] Configurare regole Firebase Storage (attualmente aperto o mancante)
+- [x] `firebase deploy` — deploy su Firebase Hosting ✅ (04/06/2026)
+- [x] Configurare regole Firebase Storage ✅ — admin R/W, piloti R solo eventi iscritti
 - [ ] Build APK Android (richede WSL2 con `memory=4GB` in `.wslconfig`)
 - [ ] Test con GPS reale su Android
 
@@ -20,20 +20,20 @@
 
 ## Media priorità (miglioramenti UX)
 
-### Offline
-- [ ] Banner visibile nell'app quando ci sono dati in coda offline (badge nel navigatore o snackbar persistente)
-- [ ] Sync offline per `joinTeam` (attualmente solo `registerForEvent` viene messo in coda)
-- [ ] Sync offline per `updatePilotTracking` (attualmente ignorato offline, potrebbe essere utile per l'ultima posizione)
+### Offline ✅ (04/06/2026)
+- [x] Banner visibile nell'app quando ci sono dati in coda offline (badge + banner giallo in PilotHomeScreen)
+- [x] Sync offline per `joinTeam` (queueJoinTeam, sincronizzato prima della registrazione)
+- [x] Sync offline per `updatePilotTracking` (queueTracking, solo ultima posizione per event/user)
+- [x] Retry automatico con backoff esponenziale: 30s, 60s, 120s, ... max 1 ora
 
 ### Gestione errori
-- [ ] Retry automatico con backoff esponenziale per le sync offline
 - [ ] Gestione esplicita del caso "iscrizione duplicata" (Firestore lancia un errore se il documento esiste già)
 
 ### UX
 - [ ] Schermata "Profilo pilota" con modifica nome/cognome
 - [ ] Pulsante logout visibile anche nella PilotHomeScreen
 - [ ] Animazione di transizione tra le schermate (attualmente nessuna)
-- [ ] Pull-to-refresh su EventDetailScreen e TimingScreen
+- [x] Pull-to-refresh su EventDetailScreen (ricarica tracciato) e TimingScreen (invalida classificaProvider) ✅
 
 ---
 
