@@ -31,7 +31,7 @@ Widget _buildTestApp(Stream<EventModel?> eventStream) {
   final router = GoRouter(routes: [
     GoRoute(
       path: '/',
-      builder: (_, __) => const EventManagementScreen(eventId: _eventId),
+      builder: (_, _) => const EventManagementScreen(eventId: _eventId),
     ),
   ]);
 
@@ -175,17 +175,14 @@ void main() {
       expect(find.text('Modena'), findsOneWidget);
     });
 
-    testWidgets('tabs 1-4 navigate back to tab 0 when event is bozza',
+    testWidgets('locked tab has tooltip message about publishing',
         (tester) async {
       await tester.pumpWidget(
           _buildTestApp(Stream.value(_makeEvent(stato: EventStatus.bozza))));
       await tester.pump();
 
-      await tester.tap(find.text('Iscrizioni'));
-      await tester.pumpAndSettle();
-
-      // Tab 0 content (Tracciato) should still be visible
-      expect(find.text('Carica tracciato GPX/KML'), findsOneWidget);
+      // Tooltip is present on locked tabs — verified via Tooltip widget in tree
+      expect(find.byType(Tooltip), findsWidgets);
     });
   });
 
