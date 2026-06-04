@@ -1,18 +1,43 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:latlong2/latlong.dart';
 import '../../../core/models/gps_point_model.dart';
 import '../../../core/models/registration_model.dart';
+import '../../../core/services/gpx_parser.dart';
+import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../providers/admin_provider.dart';
 import '../../classifica/providers/classifica_provider.dart';
 
-class LiveTrackingScreen extends ConsumerWidget {
+class LiveTrackingScreen extends ConsumerStatefulWidget {
   final String eventId;
   const LiveTrackingScreen({super.key, required this.eventId});
 
+  @override
+  ConsumerState<LiveTrackingScreen> createState() =>
+      _LiveTrackingScreenState();
+}
+
+class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
+  List<LatLng> _eventTrackPoints = [];
+  String? _loadedTrackUrl;
+
   static const _onlineThreshold = Duration(seconds: 60);
+
+  Future<void> _loadTrack(String url) async {
+    if (url == _loadedTrackUrl) return;
+    _loadedTrackUrl = url;
+    try {
+      final bytes = await StorageService().downloadTrack(url);
+      final content = utf8.decode(bytes);
+      final pts = url.contains('.kml')
+          ? GpxParser.parseKml(content).points
+          : GpxParser.parseGpx(content).points;
+      if (mounted) setState(() => _eventTrackPoints = pts);
+    } catch (_) {}
+  }
 
   bool _isOnline(GpsPointModel p) =>
       DateTime.now().difference(p.timestamp) < _onlineThreshold;
@@ -30,9 +55,9 @@ class LiveTrackingScreen extends ConsumerWidget {
   }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final trackingAsync = ref.watch(liveTrackingProvider(eventId));
-    final regsAsync = ref.watch(registrationsProvider(eventId));
+  Widget build(BuildContext context) {
+    final trackingAsync = ref.watch(liveTrackingProvider(widget.eventId));
+    final regsAsync = ref.watch(registrationsProvider(widget.eventId));
 
     return trackingAsync.when(
       loading: () => const Center(
@@ -43,8 +68,12 @@ class LiveTrackingScreen extends ConsumerWidget {
       data: (pilots) {
         final regs = regsAsync.valueOrNull ?? [];
         final event =
-            ref.watch(eventStreamProvider(eventId)).valueOrNull;
+            ref.watch(eventStreamProvider(widget.eventId)).valueOrNull;
         final startEnabled = event?.startEnabled ?? false;
+
+        // Load event GPX track when available
+        if (event?.trackUrl != null) _loadTrack(event!.trackUrl!);
+
         final onlinePilots = pilots.where(_isOnline).toList();
         final offlinePilots = pilots.where((p) => !_isOnline(p)).toList();
 
@@ -175,7 +204,7 @@ class LiveTrackingScreen extends ConsumerWidget {
                       try {
                         await ref
                             .read(firestoreServiceProvider)
-                            .setStartEnabled(eventId, !startEnabled);
+                            .setStartEnabled(widget.eventId, !startEnabled);
                       } catch (e) {
                         if (context.mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(
@@ -245,6 +274,15 @@ class LiveTrackingScreen extends ConsumerWidget {
                               'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                           userAgentPackageName: 'com.ccr.ccr_app',
                         ),
+                        // Event GPX track in red
+                        if (_eventTrackPoints.length >= 2)
+                          PolylineLayer(polylines: [
+                            Polyline(
+                              points: _eventTrackPoints,
+                              color: Colors.red,
+                              strokeWidth: 3.0,
+                            ),
+                          ]),
                         MarkerLayer(markers: markers),
                       ],
                     ),
@@ -271,7 +309,7 @@ class LiveTrackingScreen extends ConsumerWidget {
                 ),
               ),
             // Pilot status table
-            _PilotStatusSection(eventId: eventId, regs: regs, pilots: pilots),
+            _PilotStatusSection(eventId: widget.eventId, regs: regs, pilots: pilots),
           ],
         );
       },
