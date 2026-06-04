@@ -107,7 +107,18 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       letterSpacing: 1.5,
                     ),
                   ),
-                  const SizedBox(height: 56),
+                  const SizedBox(height: 10),
+                  const Text(
+                    'manca m\'ai chen...',
+                    style: TextStyle(
+                      color: Color(0xFF6B7280),
+                      fontSize: 13,
+                      fontStyle: FontStyle.italic,
+                      fontWeight: FontWeight.w300,
+                      letterSpacing: 0.8,
+                    ),
+                  ),
+                  const SizedBox(height: 46),
                   CcrTextField(
                     label: 'Email',
                     controller: _emailCtrl,
