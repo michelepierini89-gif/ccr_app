@@ -9,7 +9,7 @@ import '../models/gps_point_model.dart';
 import '../models/classifica_model.dart';
 
 class FirestoreService {
-  final _db = FirebaseFirestore.instance;
+  FirebaseFirestore get _db => FirebaseFirestore.instance;
 
   // Events
   Future<String> createEvent(EventModel event) async {
