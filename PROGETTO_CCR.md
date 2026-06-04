@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 04 giugno 2026 (aggiornato)  
+**Data aggiornamento:** 04 giugno 2026 (Step 8 completato)  
 **Branch:** main  
 **Versione:** 1.0.0+1
 
@@ -256,6 +256,30 @@ ccr_app/
 - `csv_export`: utility multi-piattaforma con conditional import (web/io/stub)
 - **Regole Firestore complete** in `firestore.rules`: lettura/scrittura autenticati, write eventi solo admin, write tracking solo owner, write passages solo owner
 
+### Step 7c — FCM (Notifiche Push) ✅
+- Cloud Functions Gen 2, deploy su eur3, VAPID key configurata
+- Notifiche push a piloti per cambio stato iscrizione e abilitazione partenza
+
+### Step 8 — Offline, Ottimizzazioni, Test, Documentazione ✅
+
+**Offline support (SharedPreferences queue):**
+- `OfflineQueueService`: coda locale per waypoint passages e registrazioni
+- `GpsService`: cattura errori Firestore, salva passaggi offline; tracking live ignorato silenziosamente
+- `EventDetailScreen`: iscrizione salvata offline con banner informativo
+- Sync automatica dei dati in coda all'avvio della registrazione GPS
+- `FirestoreService._db`: getter lazy (non campo final) per compatibilità test
+
+**Ottimizzazioni:**
+- `EventListScreen` → `ConsumerStatefulWidget`, loading state per quick register con `_loadingEventId`
+- `EventCardPilot`: parametro `isLoading`, spinner nel pulsante Iscriviti
+- `_RegistrationList` → `ConsumerStatefulWidget`: loading su Approva/Rifiuta, rimosso `ref` come parametro costruttore
+- `flutter analyze` a zero warning su tutto il codebase
+
+**Test (43 test):**
+- `test/routes_test.dart`: LoginScreen, RegisterScreen, AdminHome, EventList, EventDetail, EventManagement, GpsRecording
+- `test/features/pilot/pilot_flow_test.dart`: flusso completo login→evento→iscrizione→GPS→tempi
+- `test/features/admin/event_management_screen_test.dart`: aggiornato con SharedPreferences
+
 ### Step 7b — Notifiche in-app e salvataggio traccia parziale ✅
 - Notifiche in-app per piloti: cambio stato iscrizione, abilitazione partenza, approvazione admin
 - `AppNotificationModel`: modello con tipo, testo, read/unread, timestamp
@@ -302,6 +326,10 @@ gsutil cors get gs://ccr-enduro.firebasestorage.app
 | Nomi membri come UID | `TeamScreen` mostrava gli UID grezzi dei membri | Risolti nome/cognome tramite lookup nelle registrazioni |
 | Porta 8080 occupata al riavvio | Processo Flutter precedente non terminato | `lsof -ti:8080 | xargs kill -9` poi riavvio con nohup |
 | WSL2 OOM crash durante Gradle build | Nessun limite memoria su WSL2 → Ubuntu usa tutta la RAM | Creato `/mnt/c/Users/admin/.wslconfig` con `memory=4GB processors=2 swap=2GB`; riavviare WSL2 con `wsl --shutdown` |
+| Test crash su FirestoreService | `FirebaseFirestore.instance` chiamato a costruzione → fallisce senza Firebase init | Cambiato da campo `final _db` a getter `FirebaseFirestore get _db` (lazy init) |
+| Test crash su GpsService | GpsService crea FirestoreService che fallisce senza Firebase | Risolto dal getter lazy sopra; aggiunto override `sharedPreferencesProvider` in tutti i test |
+| `LocaleDataException` nei test | `DateFormat` usato in EventDetailScreen senza locale inizializzato | Aggiunto `setUpAll(() => initializeDateFormatting('it_IT'))` |
+| `unnecessary_underscores` lint nei test | GoRoute builder con `(_, __)` trigger lint Dart 3 | Sostituito con `(_, _)` (wildcard multipli validi in Dart 3) |
 
 ---
 
@@ -311,15 +339,18 @@ gsutil cors get gs://ccr-enduro.firebasestorage.app
 - [x] CORS Firebase Storage ✅
 - [x] Regole Firestore complete ✅
 - [x] Notifiche in-app + traccia parziale al ritiro ✅
+- [x] Notifiche push FCM (Cloud Functions) ✅
+- [x] Offline support con SharedPreferences ✅
+- [x] Ottimizzazioni (loading states, const, zero warning) ✅
+- [x] Test suite 43 test (widget + flusso pilota) ✅
 - [ ] Deploy su Firebase Hosting (`firebase deploy`)
-- [ ] Build APK Android (richede WSL2 riavviato con nuovo `.wslconfig`)
+- [ ] Build APK Android (richiede WSL2 riavviato con `.wslconfig` memory=4GB)
 - [ ] Test su Android con GPS reale
 - [ ] Configurare regole Firebase Storage
 - [ ] Test end-to-end classifica e timing con più piloti
-- [ ] Widget test suite (`test/features/admin/event_management_screen_test.dart`) — creato, da validare con `flutter test`
 
 ### Step 9 — Possibili evoluzioni
-- Notifiche push piloti (FCM) per cambio stato iscrizione e abilitazione partenza
 - Export PDF risultati post-gara
 - Mappa live admin con trail percorso per ogni pilota
 - Dashboard admin con statistiche gara (passaggi speciali, ritiri, progressi)
+- Modalità offline completa con sync bidirezionale Firestore
