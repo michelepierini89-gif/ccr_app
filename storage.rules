@@ -1,0 +1,21 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isAdmin() {
+      return request.auth != null &&
+        firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function isRegisteredForEvent(eventId) {
+      return request.auth != null &&
+        firestore.exists(/databases/(default)/documents/events/$(eventId)/iscritti/$(request.auth.uid));
+    }
+
+    match /tracks/{eventId}/{fileName} {
+      allow read: if isAdmin() || isRegisteredForEvent(eventId);
+      allow write: if isAdmin();
+    }
+  }
+}
