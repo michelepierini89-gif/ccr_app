@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 03 giugno 2026  
+**Data aggiornamento:** 04 giugno 2026  
 **Branch:** main  
 **Versione:** 1.0.0+1
 
@@ -100,6 +100,13 @@ ccr_app/
 │   │       ├── screens/track_map_screen.dart
 │   │       └── widgets/ (track_layer, waypoint_marker)
 │
+│   │   ├── classifica/
+│   │   │   ├── providers/classifica_provider.dart    # Provider.family, combina event+passages+regs+teams
+│   │   │   └── screens/classifica_screen.dart        # Card espandibili, badge oro/argento/bronzo, LIVE
+│   │   │
+│   │   └── timing/
+│   │       └── screens/timing_screen.dart             # I miei tempi (pilota) / tutti i tempi + CSV (admin)
+│
 ├── android/                        # Config Android + google-services.json
 ├── ios/                            # Config iOS
 ├── web/                            # Config Flutter web
@@ -107,6 +114,7 @@ ccr_app/
 ├── cors.json                       # Configurazione CORS Firebase Storage
 ├── set-storage-cors.js             # Script Node.js per applicare CORS
 ├── firestore.indexes.json          # Indici Firestore dichiarativi
+├── firestore.rules                 # Regole sicurezza Firestore complete
 ├── firebase.json                   # Config deploy Firebase Hosting
 └── pubspec.yaml
 ```
@@ -123,9 +131,12 @@ ccr_app/
   /admin/event/:id  → EventManagementScreen
     /admin/event/:id/registrations
     /admin/event/:id/live          → LiveTrackingScreen
+    /admin/event/:id/timing        → TimingScreen (admin)
 /pilot              → PilotHomeScreen
   /pilot/event/:id  → EventDetailScreen
     /pilot/event/:id/team          → TeamScreen
+    /pilot/event/:id/classifica    → ClassificaScreen
+    /pilot/event/:id/timing        → TimingScreen (pilota)
   /pilot/gps        → GpsRecordingScreen
 ```
 
@@ -191,6 +202,60 @@ ccr_app/
 - I waypoint vengono caricati dai `speciali` dell'evento all'avvio della registrazione
 - Inclusi i `controlPoints` di ogni speciale nel set di waypoint passati a `startRecording()`
 
+### Step 5b — Lunghezze, punto ristoro, edit evento da gestione ✅
+- `SpecialTile` dentro `EventManagementScreen`: mostra i km calcolati con Haversine sui punti reali (stesso algoritmo di SpecialsEditor)
+- Badge lunghezza traccia totale accanto al contatore punti GPS
+- **Punto ristoro:** dialog con `FlutterMap` tap-to-place; marker giallo `local_gas_station` salvato come `fuelPoint: WaypointModel?` in Firestore; visibile sulla mappa tramite `TrackMapScreen`; rimovibile con pulsante X
+- Modifica dimensione squadra (min/max stepper) con vincoli e salvataggio debounced 800ms
+- Modifica tipologia punteggio (`DropdownButton`) con salvataggio debounced 800ms
+- `EventModel`: aggiunto campo `fuelPoint` con serializzazione Firestore e `copyWith(clearFuelPoint: bool)`
+- `TrackMapScreen`: parametro opzionale `fuelPoint` per rendering marker ristoro
+- `_TracciatoTab` convertito a `ConsumerStatefulWidget`
+
+### Step 5c — Logica pilota completa ✅
+- `EventDetailScreen`: lista squadre con posti disponibili, pulsanti Unisciti/Crea nuova squadra, squadre piene in grigio
+- Flusso iscrizione con selezione squadra (join o create) e notifica admin
+- Stato iscrizione in tempo reale via stream (inAttesa/approvato/rifiutato)
+- Pulsante AVVIA GPS visibile solo dopo approvazione
+- `GpsRecordingScreen`: START disabilitato finché admin non abilita la partenza; messaggio "In attesa del via dell'organizzatore"
+- Pulsante RITIRO con doppia conferma durante il tracking attivo
+- `LiveTrackingScreen` (admin): toggle Abilita/Blocca partenza in tempo reale
+- `EventModel.startEnabled`, `FirestoreService.setStartEnabled()`, `FirestoreService.recordWithdrawal()`
+
+### Step 5d — Tracking GPS attivo (mappa live) ✅
+- `GpsService`: accumulo track locale (`List<LatLng>`), calcolo distanza progressiva, `remainingWaypoints` getter
+- `GpsRecordingScreen`: due viste — pre-partenza (big button) e tracking attivo (mappa live)
+- Mappa live: polyline traccia percorsa, marker posizione attuale con cerchio accuratezza, pin waypoint rimanenti
+- Auto-follow posizione con disattivazione su drag utente e pulsante re-center (⊕)
+- Strip statistiche: velocità, distanza, tempo, precisione GPS con indicatore colore accuratezza
+- Banner modalità (TRASFERIMENTO / IN SPECIALE / WAYPOINT VICINO) colorato live
+- Log ultimo waypoint passato con contatore totale
+- Pulsanti STOP e RITIRO sempre visibili senza scroll
+
+### Step 6 — Classifica piloti in tempo reale ✅
+- `ClassificaModel`: `WaypointPassageRecord`, `SpecialTempo`, `ClassificaEntry` con tie-handling
+- `ClassificaEngine`: calcolo ranking per team con due tipologie:
+  - Somma dei tempi (ascending)
+  - Punteggio speciale stile F1 (25/20/16/13/11/10/9/8/7/6); validazione control points; rilevamento ritirati
+- `FirestoreService`: stream `passages` (`tracking/{id}/passages`) e stream `withdrawals`
+- `classificaProvider`: `Provider.family`, combina event + passages + regs + teams + live tracking, ricomputa ad ogni update Firestore
+- `ClassificaScreen`: card espandibili per team, badge posizione oro/argento/bronzo, indicatore LIVE, progress dots SS, breakdown per speciale con tempo formattato `mm:ss.cc`
+- Integrazione admin: 4° tab "Classifica" in `EventManagementScreen`
+- Integrazione pilota: pulsante CLASSIFICA in `EventDetailScreen` + route `/pilot/event/:id/classifica`
+
+### Step 7 — Timing, GPS speciali, stato piloti, regole Firestore ✅
+- `GpsService`: rilevamento entry/exit speciali (`inSpecial` mode) con beacon precisi
+- `GpsRecordingScreen`: passa `specials` al servizio, banner speciale corrente colorato
+- `TimingScreen`: vista dual-mode
+  - **Pilota:** I miei tempi per speciale con format mm:ss.cc
+  - **Admin:** Tutti i tempi per tutti i team, ordinati, con pulsante export CSV
+- `EventManagementScreen`: 5° tab "Tempi"
+- `EventDetailScreen`: pulsante "I miei tempi" visibile solo a piloti approvati
+- `LiveTrackingScreen`: stato piloti in real-time (IN GARA / OFFLINE / RIT / N.P.)
+- `AdminHomeScreen`: badge giallo con count iscrizioni in attesa per ogni evento
+- `csv_export`: utility multi-piattaforma con conditional import (web/io/stub)
+- **Regole Firestore complete** in `firestore.rules`: lettura/scrittura autenticati, write eventi solo admin, write tracking solo owner, write passages solo owner
+
 ### CORS Firebase Storage ✅
 CORS applicato sul bucket `ccr-enduro.firebasestorage.app` tramite `cors.json`.  
 Origini abilitate: `http://localhost:8080`, `http://localhost:*`, `https://ccr-enduro.web.app`, `https://ccr-enduro.firebaseapp.com`.
@@ -227,19 +292,22 @@ gsutil cors get gs://ccr-enduro.firebasestorage.app
 | SpecialsEditor solo linea retta | Tracciato speciale era una retta tra due punti arbitrari | Polyline calcolata sui punti GPS reali tra gli indici inizio/fine |
 | SpecialModel senza control points | `SpecialModel` non aveva campo `controlPoints` | Aggiunto `controlPoints: List<WaypointModel>` con serializzazione Firestore |
 | Nomi membri come UID | `TeamScreen` mostrava gli UID grezzi dei membri | Risolti nome/cognome tramite lookup nelle registrazioni |
+| Porta 8080 occupata al riavvio | Processo Flutter precedente non terminato | `lsof -ti:8080 | xargs kill -9` poi riavvio con nohup |
 
 ---
 
 ## Prossimi Step
 
-### Step 6 — Deploy e test
+### Step 8 — Deploy e test
 - [x] CORS Firebase Storage ✅
+- [x] Regole Firestore complete ✅
 - [ ] Deploy su Firebase Hosting (`firebase deploy`)
 - [ ] Test su Android con GPS reale
-- [ ] Configurare regole Firestore (autenticati, admin per write eventi)
 - [ ] Configurare regole Firebase Storage
+- [ ] Test end-to-end classifica e timing con più piloti
 
-### Step 7 — Possibili evoluzioni
-- Classifica live calcolata da punti GPS (per tipologia classifica impostata in CreateEvent)
-- Notifiche push piloti (FCM) per cambio stato iscrizione
-- Export PDF/CSV risultati post-gara
+### Step 9 — Possibili evoluzioni
+- Notifiche push piloti (FCM) per cambio stato iscrizione e abilitazione partenza
+- Export PDF risultati post-gara
+- Mappa live admin con trail percorso per ogni pilota
+- Dashboard admin con statistiche gara (passaggi speciali, ritiri, progressi)
