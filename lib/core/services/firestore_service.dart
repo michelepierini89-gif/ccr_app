@@ -292,6 +292,12 @@ class FirestoreService {
           .doc(notifId)
           .update({'read': true});
 
+  Future<void> saveUserFcmToken(String userId, String token) =>
+      _db.collection(FirebaseConstants.users).doc(userId).set(
+        {FirebaseConstants.fcmToken: token},
+        SetOptions(merge: true),
+      );
+
   Future<void> recordWaypointPassage({
     required String eventId,
     required String userId,

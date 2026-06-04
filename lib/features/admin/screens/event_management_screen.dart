@@ -57,11 +57,14 @@ class _EventManagementScreenState
       child: Tooltip(
         message: 'Pubblica l\'evento per attivare questa sezione',
         child: Row(
-          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text(text,
-                style: const TextStyle(
-                    color: AppColors.textSecondary, fontSize: 13)),
+            Flexible(
+              child: Text(text,
+                  style: const TextStyle(
+                      color: AppColors.textSecondary, fontSize: 13),
+                  overflow: TextOverflow.ellipsis),
+            ),
             const SizedBox(width: 4),
             const Icon(Icons.lock_outline,
                 size: 11, color: AppColors.textSecondary),

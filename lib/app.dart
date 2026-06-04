@@ -2,7 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'core/models/user_model.dart';
+import 'core/services/fcm_service.dart';
 import 'core/theme/app_theme.dart';
+import 'core/widgets/notification_listener_widget.dart';
+import 'features/admin/providers/admin_provider.dart';
 import 'features/auth/providers/auth_provider.dart';
 import 'features/auth/screens/login_screen.dart';
 import 'features/auth/screens/register_screen.dart';
@@ -143,18 +146,40 @@ final _routerProvider = Provider<GoRouter>((ref) {
   );
 });
 
-class CcrApp extends ConsumerWidget {
+class CcrApp extends ConsumerStatefulWidget {
   const CcrApp({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<CcrApp> createState() => _CcrAppState();
+}
+
+class _CcrAppState extends ConsumerState<CcrApp> {
+  @override
+  void initState() {
+    super.initState();
+    // Inizializza FCM quando l'utente è loggato
+    ref.listenManual(authStateProvider, (_, next) {
+      final user = next.valueOrNull;
+      if (user != null) {
+        FcmService.initialize(
+          user.uid,
+          ref.read(firestoreServiceProvider),
+        );
+      }
+    }, fireImmediately: true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final router = ref.watch(_routerProvider);
 
-    return MaterialApp.router(
-      title: 'CCR - Coppa Canta Rally',
-      debugShowCheckedModeBanner: false,
-      theme: AppTheme.darkTheme,
-      routerConfig: router,
+    return NotificationListenerWidget(
+      child: MaterialApp.router(
+        title: 'CCR - Coppa Canta Rally',
+        debugShowCheckedModeBanner: false,
+        theme: AppTheme.darkTheme,
+        routerConfig: router,
+      ),
     );
   }
 }

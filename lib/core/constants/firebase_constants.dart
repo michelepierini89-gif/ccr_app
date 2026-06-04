@@ -12,4 +12,5 @@ class FirebaseConstants {
   static const String withdrawals = 'withdrawals';
   static const String userNotifications = 'user_notifications';
   static const String items = 'items';
+  static const String fcmToken = 'fcmToken';
 }
