@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import '../models/waypoint_model.dart';
 import '../models/gps_point_model.dart';
 import '../models/special_model.dart';
@@ -73,6 +74,7 @@ class GpsService extends ChangeNotifier {
   double _totalDistanceKm = 0.0;
 
   bool get isRecording => _isRecording;
+  String? get activeEventId => _activeEventId;
   GpsMode get mode => _mode;
   Position? get lastPosition => _lastPosition;
   List<WaypointPassage> get passages => List.unmodifiable(_passages);
@@ -134,6 +136,7 @@ class GpsService extends ChangeNotifier {
     _isRecording = true;
     _mode = GpsMode.transfer;
     _recordingStart = DateTime.now();
+    WakelockPlus.enable().ignore();
     notifyListeners();
 
     _startPositionStream(AppConstants.gpsIntervalTransferMs);
@@ -153,9 +156,11 @@ class GpsService extends ChangeNotifier {
         distanceFilter: 2,
         intervalDuration: Duration(milliseconds: intervalMs),
         foregroundNotificationConfig: const ForegroundNotificationConfig(
-          notificationText: 'CCR Rally — GPS attivo',
+          notificationText: 'CCR Rally — GPS attivo in background',
           notificationTitle: 'Registrazione GPS',
           enableWakeLock: true,
+          setOngoing: true,
+          notificationChannelName: 'CCR GPS Tracking',
         ),
       );
     } else {
@@ -304,6 +309,7 @@ class GpsService extends ChangeNotifier {
     _currentSpecialId = null;
     _currentSpecialNome = null;
     _recordingStart = null;
+    WakelockPlus.disable().ignore();
     notifyListeners();
   }
 

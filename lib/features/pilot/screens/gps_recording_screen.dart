@@ -6,6 +6,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../../core/models/event_model.dart';
 import '../../../core/models/waypoint_model.dart';
 import '../../../core/services/gps_service.dart';
@@ -64,6 +65,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
       vsync: this,
       duration: const Duration(milliseconds: 500),
     )..addListener(_onMarkerAnimTick);
+    WakelockPlus.enable().ignore();
     _startElapsedTimer();
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadEventTrack());
   }
@@ -82,6 +84,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
 
   @override
   void dispose() {
+    WakelockPlus.disable().ignore();
     _elapsedTimer?.cancel();
     _pulseController.dispose();
     _markerController.dispose();
