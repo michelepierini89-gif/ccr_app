@@ -501,9 +501,11 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         // Mode banner
         _ModeBanner(color: modeColor, label: _modeLabel(gps.mode)),
 
-        // Live map
+        // Live map — RepaintBoundary isola la mappa: rivernicia solo quando
+        // cambia la posizione GPS, non quando il timer stats scatta ogni secondo
         Expanded(
-          child: Stack(
+          child: RepaintBoundary(
+            child: Stack(
             children: [
               FlutterMap(
                 mapController: _mapController,
@@ -708,10 +710,11 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
               ),
             ],
           ),
+          ), // RepaintBoundary
         ),
 
-        // Stats strip
-        Container(
+        // Stats strip — RepaintBoundary isola le statistiche dalla mappa
+        RepaintBoundary(child: Container(
           color: AppColors.cardBackground,
           padding:
               const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -755,7 +758,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
               ),
             ],
           ),
-        ),
+        )), // Container + RepaintBoundary
 
         // Current special entry info
         if (gps.currentSpecialNome != null)
