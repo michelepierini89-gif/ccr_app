@@ -56,23 +56,25 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final trackingAsync = ref.watch(liveTrackingProvider(widget.eventId));
     final regsAsync = ref.watch(registrationsProvider(widget.eventId));
+    final event = ref.watch(eventStreamProvider(widget.eventId)).valueOrNull;
+    final startEnabled = event?.startEnabled ?? false;
+    if (event?.trackUrl != null) _loadTrack(event!.trackUrl!);
 
-    return trackingAsync.when(
-      loading: () => const Center(
-          child: CircularProgressIndicator(color: AppColors.accent)),
-      error: (e, _) => Center(
-          child: Text('Errore: $e',
-              style: const TextStyle(color: AppColors.error))),
-      data: (pilots) {
+    return StreamBuilder<List<GpsPointModel>>(
+      stream: ref.read(firestoreServiceProvider).getPilotTracking(widget.eventId),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData && snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(
+              child: CircularProgressIndicator(color: AppColors.accent));
+        }
+        if (snapshot.hasError) {
+          return Center(
+              child: Text('Errore: ${snapshot.error}',
+                  style: const TextStyle(color: AppColors.error)));
+        }
+        final pilots = snapshot.data ?? [];
         final regs = regsAsync.valueOrNull ?? [];
-        final event =
-            ref.watch(eventStreamProvider(widget.eventId)).valueOrNull;
-        final startEnabled = event?.startEnabled ?? false;
-
-        // Load event GPX track when available
-        if (event?.trackUrl != null) _loadTrack(event!.trackUrl!);
 
         final onlinePilots = pilots.where(_isOnline).toList();
         final offlinePilots = pilots.where((p) => !_isOnline(p)).toList();

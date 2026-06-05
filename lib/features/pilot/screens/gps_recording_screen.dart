@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import '../../../core/models/event_model.dart';
 import '../../../core/models/waypoint_model.dart';
@@ -34,6 +35,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   late Animation<double> _pulseAnimation;
 
   late final MapController _mapController;
+  late final Stream<Position> _gpsStream;
   bool _followMode = true;
   double _mapZoom = 15.0;
   bool _programmaticMove = false;
@@ -45,6 +47,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   void initState() {
     super.initState();
     _mapController = MapController();
+    _gpsStream = ref.read(gpsServiceProvider).positionStream;
     _pulseController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 800),
@@ -311,20 +314,6 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     final isWithdrawn =
         authUser != null && withdrawnIds.contains(authUser.uid);
 
-    // Auto-follow: move map whenever position updates during recording
-    ref.listen(gpsServiceProvider, (prev, next) {
-      if (!mounted || !_followMode || !next.isRecording) return;
-      final p = next.lastPosition;
-      if (p == null) return;
-      final latLng = LatLng(p.latitude, p.longitude);
-      _programmaticMove = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _followMode) {
-          _mapController.move(latLng, _mapZoom);
-        }
-      });
-    });
-
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
@@ -417,12 +406,34 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   // ── Active tracking view ────────────────────────────────────────────────────
 
   Widget _buildActiveTracking(GpsService gps, dynamic pos, EventModel? event) {
-    final curPos = pos != null
-        ? LatLng(pos.latitude, pos.longitude)
-        : const LatLng(44.0, 11.0);
     final modeColor = _modeColor(gps.mode);
-    final lastPassage =
-        gps.passages.isNotEmpty ? gps.passages.last : null;
+    final lastPassage = gps.passages.isNotEmpty ? gps.passages.last : null;
+
+    return StreamBuilder<Position>(
+      stream: _gpsStream,
+      builder: (context, snap) {
+        // Live position from stream; fall back to last known from GpsService
+        final liveData = snap.data;
+        final curPos = liveData != null
+            ? LatLng(liveData.latitude, liveData.longitude)
+            : pos != null
+                ? LatLng(pos.latitude, pos.longitude)
+                : const LatLng(44.0, 11.0);
+
+        // Camera follow on every stream emission
+        if (liveData != null && _followMode) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _followMode) {
+              _programmaticMove = true;
+              _mapController.move(curPos, _mapZoom);
+            }
+          });
+        }
+
+        final bearing = _calcBearing(gps.localTrack);
+        final hasPos = liveData != null || pos != null;
+        final speed = liveData?.speed ?? pos?.speed ?? 0.0;
+        final accuracy = liveData?.accuracy ?? pos?.accuracy ?? 0.0;
 
     return Column(
       children: [
@@ -541,11 +552,11 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                       ),
                     ]),
                   // Accuracy circle
-                  if (pos != null)
+                  if (hasPos)
                     CircleLayer(circles: [
                       CircleMarker(
                         point: curPos,
-                        radius: pos.accuracy.clamp(5.0, 500.0),
+                        radius: accuracy.clamp(5.0, 500.0),
                         useRadiusInMeter: true,
                         color: AppColors.accent.withValues(alpha: 0.12),
                         borderColor:
@@ -573,25 +584,28 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                       );
                     }).toList(),
                   ),
-                  // Current position: bearing arrow
-                  if (pos != null)
+                  // Current position: bearing arrow — NON const, si aggiorna ad ogni emit
+                  if (hasPos)
                     MarkerLayer(markers: [
                       Marker(
                         point: curPos,
                         width: 36,
                         height: 36,
-                        child: Transform.rotate(
-                          angle: _calcBearing(gps.localTrack),
-                          child: Icon(
-                            Icons.navigation,
-                            color: AppColors.accent,
-                            size: 32,
-                            shadows: const [
-                              Shadow(
-                                color: Colors.black54,
-                                blurRadius: 6,
-                              ),
-                            ],
+                        child: RotatedBox(
+                          quarterTurns: 0,
+                          child: Transform.rotate(
+                            angle: bearing,
+                            child: Icon(
+                              Icons.navigation,
+                              color: AppColors.accent,
+                              size: 32,
+                              shadows: [
+                                Shadow(
+                                  color: Colors.black54,
+                                  blurRadius: 6,
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       ),
@@ -627,8 +641,8 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
               _StatCell(
                 icon: Icons.speed,
                 label: 'VEL',
-                value: pos != null
-                    ? '${(pos.speed * 3.6).clamp(0, 300).toStringAsFixed(0)} km/h'
+                value: hasPos
+                    ? '${(speed * 3.6).clamp(0, 300).toStringAsFixed(0)} km/h'
                     : '—',
                 color: AppColors.accent,
               ),
@@ -652,12 +666,10 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
               _StatCell(
                 icon: Icons.gps_fixed,
                 label: 'PREC',
-                value: pos != null
-                    ? '±${pos.accuracy.toStringAsFixed(0)}m'
-                    : '—',
-                color: pos != null && pos.accuracy < 10
+                value: hasPos ? '±${accuracy.toStringAsFixed(0)}m' : '—',
+                color: hasPos && accuracy < 10
                     ? AppColors.success
-                    : pos != null && pos.accuracy < 30
+                    : hasPos && accuracy < 30
                         ? AppColors.warning
                         : AppColors.error,
               ),
@@ -814,6 +826,8 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         ),
       ],
     );
+      }, // StreamBuilder builder
+    );   // StreamBuilder
   }
 
   Widget _vDivider() => Container(

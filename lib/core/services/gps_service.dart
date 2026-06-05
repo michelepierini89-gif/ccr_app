@@ -48,6 +48,11 @@ class GpsService extends ChangeNotifier {
 
   GpsService(this._firestoreService, this._offlineQueue);
 
+  final StreamController<Position> _posStreamCtrl =
+      StreamController<Position>.broadcast();
+
+  Stream<Position> get positionStream => _posStreamCtrl.stream;
+
   bool _isRecording = false;
   GpsMode _mode = GpsMode.idle;
   Position? _lastPosition;
@@ -163,6 +168,7 @@ class GpsService extends ChangeNotifier {
 
   void _onPosition(Position pos) async {
     _lastPosition = pos;
+    _posStreamCtrl.add(pos);
     final latLng = LatLng(pos.latitude, pos.longitude);
     if (_localTrack.isNotEmpty) {
       _totalDistanceKm += _haversineKm(_localTrack.last, latLng);
@@ -276,6 +282,7 @@ class GpsService extends ChangeNotifier {
   @override
   void dispose() {
     _positionSub?.cancel();
+    _posStreamCtrl.close();
     super.dispose();
   }
 }
