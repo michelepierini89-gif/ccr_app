@@ -722,7 +722,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                   ),
                 ),
                 Text(
-                  LocationUtils.formatTimestamp(lastPassage.timestamp),
+                  _passageTimeDisplay(gps, lastPassage),
                   style: const TextStyle(
                     color: AppColors.accent,
                     fontSize: 12,
@@ -828,6 +828,22 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     );
       }, // StreamBuilder builder
     );   // StreamBuilder
+  }
+
+  String _passageTimeDisplay(GpsService gps, WaypointPassage passage) {
+    if (passage.waypoint.type == WaypointType.fine) {
+      for (int i = gps.specialEntries.length - 1; i >= 0; i--) {
+        final e = gps.specialEntries[i];
+        if (e.exitTime != null && e.elapsed != null) {
+          final d = e.elapsed!;
+          final m = d.inMinutes;
+          final s = d.inSeconds % 60;
+          final tenths = (d.inMilliseconds % 1000) ~/ 100;
+          return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}.$tenths';
+        }
+      }
+    }
+    return LocationUtils.formatTimestamp(passage.timestamp);
   }
 
   bool _allSpecialsCompleted(GpsService gps, EventModel? event) {
