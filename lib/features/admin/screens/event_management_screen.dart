@@ -13,6 +13,7 @@ import '../../../core/models/waypoint_model.dart';
 import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/utils/firebase_error_handler.dart';
 import '../../map/screens/track_map_screen.dart';
 import '../providers/admin_provider.dart';
 import '../widgets/special_tile.dart';
@@ -160,7 +161,7 @@ class _EventManagementScreenState
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Errore eliminazione: $e'),
+          content: Text(FirebaseErrorHandler.getMessage(e)),
           backgroundColor: AppColors.error,
         ));
       }
@@ -177,7 +178,7 @@ class _EventManagementScreenState
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text('Errore: $e'),
+              content: Text(FirebaseErrorHandler.getMessage(e)),
               backgroundColor: AppColors.error),
         );
       }
@@ -202,7 +203,7 @@ class _EventManagementScreenState
       if (mounted) {
         setState(() => _loadedTrackUrl = null);
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Errore caricamento tracciato: $e'),
+          content: Text(FirebaseErrorHandler.getMessage(e)),
           backgroundColor: AppColors.error,
           duration: const Duration(seconds: 8),
           action: SnackBarAction(
@@ -259,7 +260,7 @@ class _EventManagementScreenState
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Errore caricamento tracciato: $e'),
+          content: Text(FirebaseErrorHandler.getMessage(e)),
           backgroundColor: AppColors.error,
         ),
       );
@@ -621,7 +622,7 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
           .catchError((e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Errore salvataggio: $e'),
+            content: Text(FirebaseErrorHandler.getMessage(e)),
             backgroundColor: AppColors.error,
           ));
         }
@@ -640,7 +641,7 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
           .catchError((e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Errore salvataggio: $e'),
+            content: Text(FirebaseErrorHandler.getMessage(e)),
             backgroundColor: AppColors.error,
           ));
         }
@@ -689,7 +690,7 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Errore rimozione: $e'),
+          content: Text(FirebaseErrorHandler.getMessage(e)),
           backgroundColor: AppColors.error,
         ));
       }

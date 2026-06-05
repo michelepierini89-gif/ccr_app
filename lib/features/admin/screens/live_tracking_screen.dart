@@ -8,6 +8,7 @@ import '../../../core/models/registration_model.dart';
 import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/utils/firebase_error_handler.dart';
 import '../providers/admin_provider.dart';
 import '../../classifica/providers/classifica_provider.dart';
 
@@ -220,7 +221,7 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
                         if (context.mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
-                              content: Text('Errore: $e'),
+                              content: Text(FirebaseErrorHandler.getMessage(e)),
                               backgroundColor: AppColors.error,
                             ),
                           );

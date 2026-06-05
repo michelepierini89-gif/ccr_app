@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/models/penalty_settings_model.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/utils/firebase_error_handler.dart';
 import '../providers/admin_provider.dart';
 
 class PenaltySettingsScreen extends ConsumerStatefulWidget {
@@ -32,7 +33,7 @@ class _PenaltySettingsScreenState
           await ref.read(firestoreServiceProvider).getPenaltySettings();
       if (mounted) setState(() { _settings = s; _loading = false; });
     } catch (e) {
-      if (mounted) setState(() { _errorMsg = '$e'; _loading = false; });
+      if (mounted) setState(() { _errorMsg = FirebaseErrorHandler.getMessage(e); _loading = false; });
     }
   }
 
@@ -50,7 +51,7 @@ class _PenaltySettingsScreenState
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Errore: $e'),
+          content: Text(FirebaseErrorHandler.getMessage(e)),
           backgroundColor: AppColors.error,
         ));
       }

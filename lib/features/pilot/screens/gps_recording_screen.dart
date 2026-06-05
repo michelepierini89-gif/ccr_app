@@ -13,6 +13,7 @@ import '../../../core/services/gps_service.dart';
 import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/utils/firebase_error_handler.dart';
 import '../../../core/utils/location_utils.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../admin/providers/admin_provider.dart';
@@ -220,7 +221,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Errore: $e'),
+        content: Text(FirebaseErrorHandler.getMessage(e)),
         backgroundColor: AppColors.error,
       ));
     }

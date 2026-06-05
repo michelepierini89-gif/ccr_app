@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/models/user_model.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/utils/firebase_error_handler.dart';
 import '../providers/auth_provider.dart';
 import '../widgets/ccr_button.dart';
 import '../widgets/ccr_text_field.dart';
@@ -60,7 +61,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Errore registrazione: ${e.toString()}'),
+          content: Text(FirebaseErrorHandler.getMessage(e)),
           backgroundColor: AppColors.error,
         ),
       );

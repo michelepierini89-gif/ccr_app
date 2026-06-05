@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/utils/firebase_error_handler.dart';
 import '../../../core/models/user_model.dart';
 import '../providers/auth_provider.dart';
 import '../widgets/ccr_button.dart';
@@ -65,7 +66,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Errore di accesso: ${e.toString()}'),
+          content: Text(FirebaseErrorHandler.getMessage(e)),
           backgroundColor: AppColors.error,
         ),
       );
