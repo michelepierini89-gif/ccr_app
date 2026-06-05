@@ -42,6 +42,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
 
   List<LatLng> _eventTrackPoints = [];
   bool _eventTrackLoaded = false;
+  bool _headingMode = false;
 
   @override
   void initState() {
@@ -420,17 +421,22 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                 ? LatLng(pos.latitude, pos.longitude)
                 : const LatLng(44.0, 11.0);
 
-        // Camera follow on every stream emission
+        // Camera follow and optional map rotation on every stream emission
         if (liveData != null && _followMode) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted && _followMode) {
-              _programmaticMove = true;
-              _mapController.move(curPos, _mapZoom);
+            if (!mounted || !_followMode) return;
+            _programmaticMove = true;
+            _mapController.move(curPos, _mapZoom);
+            if (_headingMode) {
+              final b = _calcBearing(gps.localTrack);
+              _mapController.rotate(-(b * 180 / pi));
             }
           });
         }
 
         final bearing = _calcBearing(gps.localTrack);
+        // In HEADING mode the map rotates → arrow stays fixed pointing up
+        final arrowAngle = _headingMode ? 0.0 : bearing;
         final hasPos = liveData != null || pos != null;
         final speed = liveData?.speed ?? pos?.speed ?? 0.0;
         final accuracy = liveData?.accuracy ?? pos?.accuracy ?? 0.0;
@@ -594,7 +600,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                         child: RotatedBox(
                           quarterTurns: 0,
                           child: Transform.rotate(
-                            angle: bearing,
+                            angle: arrowAngle,
                             child: Icon(
                               Icons.navigation,
                               color: AppColors.accent,
@@ -613,6 +619,35 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                 ],
               ),
 
+              // Heading mode toggle (bottom-left)
+              Positioned(
+                left: 12,
+                bottom: 12,
+                child: Material(
+                  color: AppColors.cardBackground,
+                  borderRadius: BorderRadius.circular(8),
+                  elevation: 4,
+                  child: InkWell(
+                    onTap: () {
+                      setState(() {
+                        _headingMode = !_headingMode;
+                        if (!_headingMode) _mapController.rotate(0);
+                      });
+                    },
+                    borderRadius: BorderRadius.circular(8),
+                    child: Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: Icon(
+                        _headingMode ? Icons.navigation : Icons.explore,
+                        color: _headingMode
+                            ? AppColors.accent
+                            : AppColors.textSecondary,
+                        size: 20,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
               // Re-center FAB
               if (!_followMode)
                 Positioned(
