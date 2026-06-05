@@ -320,12 +320,16 @@ class FirestoreService {
       .delete();
 
   Stream<List<ChampionshipModel>> getChampionships({String? createdBy}) {
-    Query q = _db
-        .collection(FirebaseConstants.championships)
-        .orderBy('stagione', descending: true);
+    // Nota: orderBy('stagione') + where('createdBy') richiede un indice composito.
+    // Filtriamo solo per createdBy in Firestore e ordiniamo per stagione in Dart.
+    Query q = _db.collection(FirebaseConstants.championships);
     if (createdBy != null) q = q.where('createdBy', isEqualTo: createdBy);
-    return q.snapshots().map((s) =>
-        s.docs.map((d) => ChampionshipModel.fromFirestore(d)).toList());
+    return q.snapshots().map((s) {
+      final list =
+          s.docs.map((d) => ChampionshipModel.fromFirestore(d)).toList();
+      list.sort((a, b) => b.stagione.compareTo(a.stagione));
+      return list;
+    });
   }
 
   Stream<ChampionshipModel?> getChampionshipById(String id) => _db

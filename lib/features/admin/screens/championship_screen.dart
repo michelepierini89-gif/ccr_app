@@ -26,6 +26,67 @@ final _championshipByIdProvider =
 class ChampionshipScreen extends ConsumerWidget {
   const ChampionshipScreen({super.key});
 
+  Future<void> _confirmDelete(
+      BuildContext context, WidgetRef ref, ChampionshipModel c) async {
+    final first = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: const Text('Elimina campionato',
+            style: TextStyle(color: AppColors.textPrimary)),
+        content: Text(
+          'Sei sicuro di voler eliminare "${c.nome}"?',
+          style: const TextStyle(color: AppColors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annulla',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.error,
+                foregroundColor: Colors.white),
+            child: const Text('Continua'),
+          ),
+        ],
+      ),
+    );
+    if (first != true || !context.mounted) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: const Text('Conferma eliminazione',
+            style: TextStyle(color: AppColors.error)),
+        content: const Text(
+          'L\'operazione non è reversibile.\nI dati del campionato verranno cancellati.',
+          style: TextStyle(color: AppColors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annulla',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.error,
+                foregroundColor: Colors.white),
+            child: const Text('ELIMINA'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && context.mounted) {
+      await ref.read(firestoreServiceProvider).deleteChampionship(c.id);
+    }
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final listAsync = ref.watch(_adminChampionshipsProvider);
@@ -134,8 +195,19 @@ class ChampionshipScreen extends ConsumerWidget {
                     style:
                         const TextStyle(color: AppColors.textSecondary, fontSize: 12),
                   ),
-                  trailing: const Icon(Icons.chevron_right,
-                      color: AppColors.textSecondary),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.delete_outline,
+                            color: AppColors.error, size: 20),
+                        tooltip: 'Elimina',
+                        onPressed: () => _confirmDelete(context, ref, c),
+                      ),
+                      const Icon(Icons.chevron_right,
+                          color: AppColors.textSecondary),
+                    ],
+                  ),
                   onTap: () =>
                       context.push('/admin/championships/${c.id}'),
                 ),
