@@ -9,6 +9,7 @@ class RegistrationModel {
   final String cognome;
   final RegistrationStatus stato;
   final String? squadraId;
+  final String? teamName;
   final DateTime createdAt;
 
   const RegistrationModel({
@@ -18,6 +19,7 @@ class RegistrationModel {
     required this.cognome,
     required this.stato,
     this.squadraId,
+    this.teamName,
     required this.createdAt,
   });
 
@@ -36,6 +38,7 @@ class RegistrationModel {
         orElse: () => RegistrationStatus.inAttesa,
       ),
       squadraId: d['squadraId'],
+      teamName: d['teamName'],
       createdAt: (d['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
     );
   }
@@ -45,6 +48,7 @@ class RegistrationModel {
         'cognome': cognome,
         'stato': stato.name,
         'squadraId': squadraId,
+        if (teamName != null) 'teamName': teamName,
         'createdAt': Timestamp.fromDate(createdAt),
       };
 }

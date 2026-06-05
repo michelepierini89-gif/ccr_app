@@ -417,6 +417,7 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
                 // Pilot registration section
                 _PilotRegistrationSection(
                   eventId: widget.eventId,
+                  eventNome: event.nome,
                   maxSquadra: event.maxSquadra,
                 ),
               ],
@@ -433,10 +434,12 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
 
 class _PilotRegistrationSection extends ConsumerStatefulWidget {
   final String eventId;
+  final String eventNome;
   final int maxSquadra;
 
   const _PilotRegistrationSection({
     required this.eventId,
+    required this.eventNome,
     required this.maxSquadra,
   });
 
@@ -450,38 +453,66 @@ class _PilotRegistrationSectionState
   bool _isLoading = false;
   bool _savedOffline = false;
 
-  Future<void> _joinTeamAndRegister(
-      TeamModel team, String userId, String nome, String cognome) async {
+  Future<void> _doRegister({
+    required String userId,
+    required String nome,
+    required String cognome,
+    TeamModel? existingTeam,
+    String? newTeamName,
+  }) async {
     setState(() => _isLoading = true);
     try {
       final service = ref.read(firestoreServiceProvider);
-      await service.joinTeam(widget.eventId, team.id, userId);
+      String? squadraId;
+      String? teamName;
+
+      if (existingTeam != null) {
+        await service.joinTeam(widget.eventId, existingTeam.id, userId);
+        squadraId = existingTeam.id;
+        teamName = existingTeam.nome;
+      } else if (newTeamName != null && newTeamName.trim().isNotEmpty) {
+        final team = TeamModel(
+          id: '',
+          nome: newTeamName.trim(),
+          membriIds: [userId],
+          createdBy: userId,
+          eventId: widget.eventId,
+        );
+        squadraId = await service.createTeam(team);
+        teamName = newTeamName.trim();
+      }
+
       await service.registerForEvent(
         eventId: widget.eventId,
         userId: userId,
         nome: nome,
         cognome: cognome,
-        squadraId: team.id,
+        squadraId: squadraId,
+        teamName: teamName,
       );
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Richiesta di iscrizione inviata all\'admin!'),
+          content: Text('Richiesta di iscrizione inviata all\'organizzatore!'),
           backgroundColor: AppColors.success,
         ));
       }
     } catch (_) {
       final queue = ref.read(offlineQueueProvider);
-      await queue.queueJoinTeam(
-        eventId: widget.eventId,
-        teamId: team.id,
-        userId: userId,
-      );
+      if (existingTeam != null) {
+        await queue.queueJoinTeam(
+          eventId: widget.eventId,
+          teamId: existingTeam.id,
+          userId: userId,
+        );
+      }
       await queue.queueRegistration(
         eventId: widget.eventId,
         userId: userId,
         nome: nome,
         cognome: cognome,
-        squadraId: team.id,
+        squadraId: existingTeam?.id,
+        teamName: existingTeam?.nome ?? newTeamName?.trim(),
         createdAt: DateTime.now(),
       );
       if (mounted) setState(() => _savedOffline = true);
@@ -490,93 +521,29 @@ class _PilotRegistrationSectionState
     }
   }
 
-  Future<void> _createTeamAndRegister(
-      String teamName, String userId, String nome, String cognome) async {
-    if (teamName.trim().isEmpty) return;
-    setState(() => _isLoading = true);
-    try {
-      final service = ref.read(firestoreServiceProvider);
-      final team = TeamModel(
-        id: '',
-        nome: teamName.trim(),
-        membriIds: [userId],
-        createdBy: userId,
+  Future<void> _openRegistrationDialog(
+      String userId, String nome, String cognome) async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => _RegistrationDialog(
         eventId: widget.eventId,
-      );
-      final teamId = await service.createTeam(team);
-      await service.registerForEvent(
-        eventId: widget.eventId,
+        eventNome: widget.eventNome,
+        maxSquadra: widget.maxSquadra,
         userId: userId,
-        nome: nome,
-        cognome: cognome,
-        squadraId: teamId,
-      );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Squadra creata e richiesta inviata all\'admin!'),
-          backgroundColor: AppColors.success,
-        ));
-      }
-    } catch (_) {
-      // Save offline without squadraId (team creation may have failed too)
-      await ref.read(offlineQueueProvider).queueRegistration(
-            eventId: widget.eventId,
+        userNome: nome,
+        userCognome: cognome,
+        onConfirm: (existingTeam, newTeamName) async {
+          Navigator.of(ctx).pop();
+          await _doRegister(
             userId: userId,
             nome: nome,
             cognome: cognome,
-            createdAt: DateTime.now(),
+            existingTeam: existingTeam,
+            newTeamName: newTeamName,
           );
-      if (mounted) setState(() => _savedOffline = true);
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  Future<void> _showCreateTeamDialog(
-      String userId, String nome, String cognome) async {
-    final ctrl = TextEditingController();
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.cardBackground,
-        title: const Text('Nuova squadra',
-            style: TextStyle(color: AppColors.textPrimary)),
-        content: TextField(
-          controller: ctrl,
-          style: const TextStyle(color: AppColors.textPrimary),
-          decoration: InputDecoration(
-            labelText: 'Nome squadra',
-            labelStyle: const TextStyle(color: AppColors.textSecondary),
-            enabledBorder: OutlineInputBorder(
-              borderSide: const BorderSide(color: AppColors.border),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderSide:
-                  const BorderSide(color: AppColors.accent, width: 2),
-              borderRadius: BorderRadius.circular(8),
-            ),
-          ),
-          autofocus: true,
-          textCapitalization: TextCapitalization.words,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Annulla',
-                style: TextStyle(color: AppColors.textSecondary)),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('Crea'),
-          ),
-        ],
+        },
       ),
     );
-    if (confirmed == true && ctrl.text.trim().isNotEmpty) {
-      await _createTeamAndRegister(ctrl.text, userId, nome, cognome);
-    }
-    ctrl.dispose();
   }
 
   Color _statusColor(RegistrationStatus s) => switch (s) {
@@ -675,11 +642,25 @@ class _PilotRegistrationSectionState
                                   color: color, size: 24),
                               const SizedBox(width: 12),
                               Expanded(
-                                child: Text(
-                                  _statusLabel(reg.stato),
-                                  style: TextStyle(
-                                      color: color,
-                                      fontWeight: FontWeight.w600),
+                                child: Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      _statusLabel(reg.stato),
+                                      style: TextStyle(
+                                          color: color,
+                                          fontWeight: FontWeight.w600),
+                                    ),
+                                    if (reg.teamName != null)
+                                      Text(
+                                        'Squadra: ${reg.teamName}',
+                                        style: TextStyle(
+                                            color: color.withValues(
+                                                alpha: 0.7),
+                                            fontSize: 12),
+                                      ),
+                                  ],
                                 ),
                               ),
                             ],
@@ -690,7 +671,7 @@ class _PilotRegistrationSectionState
                           const SizedBox(height: 12),
                           teamsAsync.when(
                             loading: () => const SizedBox(),
-                            error: (e2, st) => const SizedBox(),
+                            error: (e2, _) => const SizedBox(),
                             data: (teams) {
                               final team = teams
                                   .where((t) => t.id == reg.squadraId)
@@ -764,9 +745,10 @@ class _PilotRegistrationSectionState
                               onPressed: () => Navigator.push(
                                 context,
                                 MaterialPageRoute(
-                                  builder: (_) => Scaffold(
+                                  builder: (ctx) => Scaffold(
                                     appBar: AppBar(
-                                        title: const Text('I miei tempi')),
+                                        title:
+                                            const Text('I miei tempi')),
                                     backgroundColor: AppColors.background,
                                     body: TimingScreen(
                                         eventId: widget.eventId,
@@ -795,176 +777,558 @@ class _PilotRegistrationSectionState
                     );
                   }
 
-                  // ── Not registered: show team list ───────────────────
-                  return teamsAsync.when(
-                    loading: () => const Center(
-                        child: CircularProgressIndicator(
-                            color: AppColors.accent)),
-                    error: (e, _) => const SizedBox(),
-                    data: (teams) => Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (teams.isNotEmpty) ...[
-                          const Text(
-                            'Squadre disponibili',
-                            style: TextStyle(
-                              color: AppColors.textSecondary,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
+                  // ── Not registered: single register button ───────────
+                  return Column(
+                    children: [
+                      SizedBox(
+                        width: double.infinity,
+                        height: 54,
+                        child: ElevatedButton.icon(
+                          onPressed: _isLoading
+                              ? null
+                              : () => _openRegistrationDialog(
+                                    user.id,
+                                    user.nome,
+                                    user.cognome,
+                                  ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.accent,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
                             ),
                           ),
-                          const SizedBox(height: 10),
-                          ...teams.map((team) {
-                            final isFull =
-                                team.membriIds.length >= widget.maxSquadra;
-                            final freeSpots =
-                                widget.maxSquadra - team.membriIds.length;
-                            return Container(
-                              margin: const EdgeInsets.only(bottom: 8),
-                              decoration: BoxDecoration(
-                                color: isFull
-                                    ? AppColors.background
-                                    : AppColors.cardBackground,
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(
-                                    color: isFull
-                                        ? AppColors.border
-                                            .withValues(alpha: 0.4)
-                                        : AppColors.border),
-                              ),
-                              child: ListTile(
-                                leading: Icon(
-                                  Icons.group,
-                                  color: isFull
-                                      ? AppColors.textSecondary
-                                          .withValues(alpha: 0.4)
-                                      : AppColors.textSecondary,
-                                  size: 22,
-                                ),
-                                title: Text(
-                                  team.nome,
-                                  style: TextStyle(
-                                    color: isFull
-                                        ? AppColors.textSecondary
-                                            .withValues(alpha: 0.5)
-                                        : AppColors.textPrimary,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 14,
-                                  ),
-                                ),
-                                subtitle: Text(
-                                  isFull
-                                      ? '${team.membriIds.length}/${widget.maxSquadra} · Squadra al completo'
-                                      : '${team.membriIds.length}/${widget.maxSquadra} · $freeSpots post${freeSpots == 1 ? "o libero" : "i liberi"}',
-                                  style: TextStyle(
-                                    color: isFull
-                                        ? AppColors.textSecondary
-                                            .withValues(alpha: 0.4)
-                                        : AppColors.textSecondary,
-                                    fontSize: 12,
-                                  ),
-                                ),
-                                trailing: isFull
-                                    ? Container(
-                                        padding: const EdgeInsets.symmetric(
-                                            horizontal: 10, vertical: 6),
-                                        decoration: BoxDecoration(
-                                          color: AppColors.border
-                                              .withValues(alpha: 0.3),
-                                          borderRadius:
-                                              BorderRadius.circular(8),
-                                        ),
-                                        child: const Text(
-                                          'Piena',
-                                          style: TextStyle(
-                                            color: AppColors.textSecondary,
-                                            fontSize: 12,
-                                          ),
-                                        ),
-                                      )
-                                    : ElevatedButton(
-                                        onPressed: _isLoading
-                                            ? null
-                                            : () =>
-                                                _joinTeamAndRegister(
-                                                  team,
-                                                  user.id,
-                                                  user.nome,
-                                                  user.cognome,
-                                                ),
-                                        style: ElevatedButton.styleFrom(
-                                          minimumSize: Size.zero,
-                                          padding:
-                                              const EdgeInsets.symmetric(
-                                                  horizontal: 14,
-                                                  vertical: 8),
-                                          tapTargetSize:
-                                              MaterialTapTargetSize
-                                                  .shrinkWrap,
-                                        ),
-                                        child: const Text('Unisciti',
-                                            style:
-                                                TextStyle(fontSize: 12)),
-                                      ),
-                              ),
-                            );
-                          }),
-                          const SizedBox(height: 12),
-                          const Divider(color: AppColors.border),
-                          const SizedBox(height: 12),
-                        ],
-                        SizedBox(
-                          width: double.infinity,
-                          height: 50,
-                          child: OutlinedButton.icon(
-                            onPressed: _isLoading
-                                ? null
-                                : () => _showCreateTeamDialog(
-                                      user.id,
-                                      user.nome,
-                                      user.cognome,
-                                    ),
-                            icon: const Icon(Icons.group_add),
-                            label: const Text('Crea nuova squadra'),
+                          icon: _isLoading
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white),
+                                )
+                              : const Icon(Icons.how_to_reg),
+                          label: const Text(
+                            'ISCRIVITI',
+                            style: TextStyle(
+                                fontWeight: FontWeight.w900,
+                                fontSize: 16,
+                                letterSpacing: 1),
                           ),
                         ),
-                        if (_isLoading) ...[
-                          const SizedBox(height: 16),
-                          const Center(
-                            child: CircularProgressIndicator(
-                                color: AppColors.accent),
-                          ),
-                        ],
-                      ],
-                    ),
+                      ),
+                    ],
                   );
                 },
               );
             },
           ),
-        // Classifica button — always visible
-        const SizedBox(height: 8),
-        const Divider(color: AppColors.border),
-        const SizedBox(height: 8),
-        SizedBox(
-          width: double.infinity,
-          height: 46,
-          child: OutlinedButton.icon(
-            onPressed: () =>
-                context.push('/pilot/event/${widget.eventId}/classifica'),
+          // Classifica button — always visible
+          const SizedBox(height: 8),
+          const Divider(color: AppColors.border),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            height: 46,
+            child: OutlinedButton.icon(
+              onPressed: () =>
+                  context.push('/pilot/event/${widget.eventId}/classifica'),
+              style: OutlinedButton.styleFrom(
+                side: BorderSide(
+                    color: AppColors.accent.withValues(alpha: 0.6)),
+                foregroundColor: AppColors.accent,
+              ),
+              icon: const Icon(Icons.leaderboard, size: 18),
+              label: const Text('CLASSIFICA',
+                  style: TextStyle(
+                      fontWeight: FontWeight.bold, letterSpacing: 0.5)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── 2-step registration dialog ────────────────────────────────────────────────
+
+class _RegistrationDialog extends ConsumerStatefulWidget {
+  final String eventId;
+  final String eventNome;
+  final int maxSquadra;
+  final String userId;
+  final String userNome;
+  final String userCognome;
+  final Future<void> Function(TeamModel? existingTeam, String? newTeamName)
+      onConfirm;
+
+  const _RegistrationDialog({
+    required this.eventId,
+    required this.eventNome,
+    required this.maxSquadra,
+    required this.userId,
+    required this.userNome,
+    required this.userCognome,
+    required this.onConfirm,
+  });
+
+  @override
+  ConsumerState<_RegistrationDialog> createState() =>
+      _RegistrationDialogState();
+}
+
+class _RegistrationDialogState extends ConsumerState<_RegistrationDialog> {
+  int _step = 0;
+  TeamModel? _selectedTeam;
+  String? _newTeamName;
+  bool _isCreatingNew = false;
+  final _teamNameCtrl = TextEditingController();
+  bool _confirming = false;
+
+  @override
+  void dispose() {
+    _teamNameCtrl.dispose();
+    super.dispose();
+  }
+
+  String get _chosenTeamLabel {
+    if (_isCreatingNew) {
+      return _newTeamName?.isNotEmpty == true
+          ? _newTeamName!
+          : '(nuova squadra)';
+    }
+    return _selectedTeam?.nome ?? '';
+  }
+
+  Widget _buildStep0(List<TeamModel> teams) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Scegli la tua squadra',
+          style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 18,
+              fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'Seleziona una squadra esistente o creane una nuova.',
+          style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+        ),
+        const SizedBox(height: 16),
+        if (teams.isEmpty)
+          const Text(
+            'Nessuna squadra ancora — crea la prima!',
+            style: TextStyle(
+                color: AppColors.textSecondary, fontStyle: FontStyle.italic),
+          )
+        else ...[
+          ...teams.map((team) {
+            final isFull =
+                team.membriIds.length >= widget.maxSquadra;
+            final free = widget.maxSquadra - team.membriIds.length;
+            return Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              decoration: BoxDecoration(
+                color: isFull
+                    ? AppColors.background
+                    : AppColors.cardBackground,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: isFull
+                      ? AppColors.border.withValues(alpha: 0.4)
+                      : AppColors.border,
+                ),
+              ),
+              child: ListTile(
+                dense: true,
+                leading: Icon(Icons.group,
+                    color: isFull
+                        ? AppColors.textSecondary.withValues(alpha: 0.4)
+                        : AppColors.textSecondary,
+                    size: 20),
+                title: Text(
+                  team.nome,
+                  style: TextStyle(
+                    color: isFull
+                        ? AppColors.textSecondary.withValues(alpha: 0.5)
+                        : AppColors.textPrimary,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+                subtitle: Text(
+                  isFull
+                      ? '${team.membriIds.length}/${widget.maxSquadra} · Al completo'
+                      : '${team.membriIds.length}/${widget.maxSquadra} · $free post${free == 1 ? "o" : "i"} liberi',
+                  style: TextStyle(
+                    color: isFull
+                        ? AppColors.textSecondary.withValues(alpha: 0.4)
+                        : AppColors.textSecondary,
+                    fontSize: 11,
+                  ),
+                ),
+                trailing: isFull
+                    ? const Text('Piena',
+                        style: TextStyle(
+                            color: AppColors.textSecondary, fontSize: 11))
+                    : ElevatedButton(
+                        onPressed: () {
+                          setState(() {
+                            _selectedTeam = team;
+                            _isCreatingNew = false;
+                            _newTeamName = null;
+                            _step = 1;
+                          });
+                        },
+                        style: ElevatedButton.styleFrom(
+                          minimumSize: Size.zero,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 6),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          backgroundColor: AppColors.accent,
+                          foregroundColor: Colors.white,
+                        ),
+                        child: const Text('Scegli',
+                            style: TextStyle(fontSize: 12)),
+                      ),
+              ),
+            );
+          }),
+          const Divider(color: AppColors.border, height: 20),
+        ],
+        // Create new team option
+        if (!_isCreatingNew)
+          OutlinedButton.icon(
+            onPressed: () => setState(() => _isCreatingNew = true),
+            icon: const Icon(Icons.group_add, size: 18),
+            label: const Text('Crea nuova squadra'),
             style: OutlinedButton.styleFrom(
+              foregroundColor: AppColors.accent,
               side: BorderSide(
                   color: AppColors.accent.withValues(alpha: 0.6)),
-              foregroundColor: AppColors.accent,
             ),
-            icon: const Icon(Icons.leaderboard, size: 18),
-            label: const Text('CLASSIFICA',
-                style: TextStyle(
-                    fontWeight: FontWeight.bold, letterSpacing: 0.5)),
+          )
+        else
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Nome della nuova squadra',
+                  style: TextStyle(
+                      color: AppColors.textSecondary, fontSize: 12)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: _teamNameCtrl,
+                autofocus: true,
+                textCapitalization: TextCapitalization.words,
+                style: const TextStyle(color: AppColors.textPrimary),
+                decoration: InputDecoration(
+                  hintText: 'es. Team Rossi',
+                  hintStyle:
+                      const TextStyle(color: AppColors.textSecondary),
+                  enabledBorder: OutlineInputBorder(
+                    borderSide: const BorderSide(color: AppColors.border),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderSide: const BorderSide(
+                        color: AppColors.accent, width: 2),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 10),
+                ),
+                onChanged: (v) => setState(() => _newTeamName = v),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => setState(() {
+                      _isCreatingNew = false;
+                      _teamNameCtrl.clear();
+                      _newTeamName = null;
+                    }),
+                    child: const Text('Annulla',
+                        style:
+                            TextStyle(color: AppColors.textSecondary)),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    onPressed: (_newTeamName?.trim().isNotEmpty == true)
+                        ? () {
+                            setState(() {
+                              _selectedTeam = null;
+                              _step = 1;
+                            });
+                          }
+                        : null,
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.accent,
+                        foregroundColor: Colors.white),
+                    child: const Text('Continua'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+      ],
+    );
+  }
+
+  Widget _buildStep1() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Conferma iscrizione',
+          style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 18,
+              fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 16),
+        _buildSummaryRow(
+            Icons.flag, 'Evento', widget.eventNome),
+        const SizedBox(height: 10),
+        _buildSummaryRow(
+            Icons.group, 'Squadra', _chosenTeamLabel),
+        const SizedBox(height: 10),
+        _buildSummaryRow(
+            Icons.person, 'Ruolo', 'Pilota principale'),
+        const SizedBox(height: 10),
+        _buildSummaryRow(
+            Icons.badge,
+            'Pilota',
+            '${widget.userNome} ${widget.userCognome}'),
+        const SizedBox(height: 20),
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: AppColors.accent.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(8),
+            border:
+                Border.all(color: AppColors.accent.withValues(alpha: 0.3)),
+          ),
+          child: const Row(
+            children: [
+              Icon(Icons.info_outline, color: AppColors.accent, size: 16),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'La richiesta sarà in attesa di approvazione da parte dell\'organizzatore.',
+                  style: TextStyle(
+                      color: AppColors.accent, fontSize: 11, height: 1.4),
+                ),
+              ),
+            ],
           ),
         ),
       ],
-    ),
-  );
+    );
+  }
+
+  Widget _buildSummaryRow(IconData icon, String label, String value) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.cardBackground,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: AppColors.textSecondary, size: 16),
+          const SizedBox(width: 10),
+          Text('$label: ',
+              style: const TextStyle(
+                  color: AppColors.textSecondary, fontSize: 12)),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final teamsAsync = ref.watch(teamsProvider(widget.eventId));
+
+    return Dialog(
+      backgroundColor: AppColors.cardBackground,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 480, maxHeight: 600),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Step indicator
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+              child: Row(
+                children: [
+                  _StepDot(active: _step == 0, done: _step > 0, label: '1'),
+                  Expanded(
+                    child: Container(
+                      height: 1,
+                      color: _step > 0
+                          ? AppColors.accent
+                          : AppColors.border,
+                    ),
+                  ),
+                  _StepDot(active: _step == 1, done: false, label: '2'),
+                ],
+              ),
+            ),
+            const SizedBox(height: 4),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text('Squadra',
+                      style: TextStyle(
+                          color: _step == 0
+                              ? AppColors.accent
+                              : AppColors.textSecondary,
+                          fontSize: 10)),
+                  Text('Conferma',
+                      style: TextStyle(
+                          color: _step == 1
+                              ? AppColors.accent
+                              : AppColors.textSecondary,
+                          fontSize: 10)),
+                ],
+              ),
+            ),
+            const Divider(color: AppColors.border, height: 16),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 0),
+                child: _step == 0
+                    ? teamsAsync.when(
+                        loading: () => const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 32),
+                          child: Center(
+                            child: CircularProgressIndicator(
+                                color: AppColors.accent),
+                          ),
+                        ),
+                        error: (e, _) => Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          child: Text('Errore caricamento squadre: $e',
+                              style: const TextStyle(
+                                  color: AppColors.error)),
+                        ),
+                        data: _buildStep0,
+                      )
+                    : _buildStep1(),
+              ),
+            ),
+            const Divider(color: AppColors.border, height: 1),
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: _confirming
+                        ? null
+                        : () {
+                            if (_step == 1) {
+                              setState(() {
+                                _step = 0;
+                                _selectedTeam = null;
+                              });
+                            } else {
+                              Navigator.of(context).pop();
+                            }
+                          },
+                    child: Text(
+                      _step == 0 ? 'Annulla' : 'Indietro',
+                      style: const TextStyle(color: AppColors.textSecondary),
+                    ),
+                  ),
+                  if (_step == 1) ...[
+                    const SizedBox(width: 8),
+                    ElevatedButton.icon(
+                      onPressed: _confirming
+                          ? null
+                          : () async {
+                              setState(() => _confirming = true);
+                              await widget.onConfirm(
+                                _isCreatingNew ? null : _selectedTeam,
+                                _isCreatingNew ? _newTeamName : null,
+                              );
+                            },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.accent,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 20, vertical: 12),
+                      ),
+                      icon: _confirming
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: Colors.white),
+                            )
+                          : const Icon(Icons.send, size: 16),
+                      label: const Text('Invia richiesta'),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StepDot extends StatelessWidget {
+  final bool active;
+  final bool done;
+  final String label;
+  const _StepDot(
+      {required this.active, required this.done, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 28,
+      height: 28,
+      decoration: BoxDecoration(
+        color: active
+            ? AppColors.accent
+            : done
+                ? AppColors.success
+                : AppColors.border,
+        shape: BoxShape.circle,
+      ),
+      child: Center(
+        child: done
+            ? const Icon(Icons.check, color: Colors.white, size: 14)
+            : Text(label,
+                style: TextStyle(
+                    color: active ? Colors.white : AppColors.textSecondary,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12)),
+      ),
+    );
   }
 }

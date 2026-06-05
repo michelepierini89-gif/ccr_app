@@ -3,59 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/widgets/skeleton_loader.dart';
-import '../../auth/providers/auth_provider.dart';
-import '../../admin/providers/admin_provider.dart';
 import '../providers/pilot_provider.dart';
 import '../widgets/event_card_pilot.dart';
 
-class EventListScreen extends ConsumerStatefulWidget {
+class EventListScreen extends ConsumerWidget {
   const EventListScreen({super.key});
-
-  @override
-  ConsumerState<EventListScreen> createState() => _EventListScreenState();
-}
-
-class _EventListScreenState extends ConsumerState<EventListScreen> {
-  String? _loadingEventId;
-
-  Future<void> _quickRegister(String eventId) async {
-    final user = ref.read(currentUserModelProvider).valueOrNull;
-    if (user == null) return;
-    setState(() => _loadingEventId = eventId);
-    try {
-      await ref.read(firestoreServiceProvider).registerForEvent(
-            eventId: eventId,
-            userId: user.id,
-            nome: user.nome,
-            cognome: user.cognome,
-          );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Iscrizione inviata! In attesa di approvazione.'),
-            backgroundColor: AppColors.success,
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-                'Impossibile inviare l\'iscrizione: controlla la connessione e riprova.'),
-            backgroundColor: AppColors.error,
-            action: SnackBarAction(
-              label: 'Riprova',
-              textColor: Colors.white,
-              onPressed: () => _quickRegister(eventId),
-            ),
-          ),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _loadingEventId = null);
-    }
-  }
 
   Widget _buildSkeleton() {
     return ListView.builder(
@@ -87,7 +39,7 @@ class _EventListScreenState extends ConsumerState<EventListScreen> {
     );
   }
 
-  Widget _buildError(Object e) {
+  Widget _buildError(Object e, WidgetRef ref) {
     return ListView(
       children: [
         const SizedBox(height: 60),
@@ -136,7 +88,7 @@ class _EventListScreenState extends ConsumerState<EventListScreen> {
     );
   }
 
-  Widget _buildEmpty() {
+  Widget _buildEmpty(WidgetRef ref) {
     return ListView(
       children: [
         const SizedBox(height: 80),
@@ -196,7 +148,7 @@ class _EventListScreenState extends ConsumerState<EventListScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final eventsAsync = ref.watch(openEventsProvider);
     final myRegsAsync = ref.watch(myRegistrationsProvider);
 
@@ -206,9 +158,9 @@ class _EventListScreenState extends ConsumerState<EventListScreen> {
       onRefresh: () async => ref.invalidate(openEventsProvider),
       child: eventsAsync.when(
         loading: _buildSkeleton,
-        error: (e, _) => _buildError(e),
+        error: (e, _) => _buildError(e, ref),
         data: (events) {
-          if (events.isEmpty) return _buildEmpty();
+          if (events.isEmpty) return _buildEmpty(ref);
 
           final myRegs = myRegsAsync.valueOrNull ?? [];
 
@@ -223,10 +175,11 @@ class _EventListScreenState extends ConsumerState<EventListScreen> {
               return EventCardPilot(
                 event: event,
                 registration: reg,
-                isLoading: _loadingEventId == event.id,
+                isLoading: false,
                 onTap: () => context.push('/pilot/event/${event.id}'),
+                // Navigate to event detail where the 2-step dialog is shown
                 onRegister: reg == null
-                    ? () => _quickRegister(event.id)
+                    ? () => context.push('/pilot/event/${event.id}')
                     : null,
               );
             },

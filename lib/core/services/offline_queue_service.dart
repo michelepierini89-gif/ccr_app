@@ -73,6 +73,7 @@ class OfflineQueueService extends ChangeNotifier {
     required String nome,
     required String cognome,
     String? squadraId,
+    String? teamName,
     required DateTime createdAt,
   }) async {
     final entry = <String, dynamic>{
@@ -83,6 +84,7 @@ class OfflineQueueService extends ChangeNotifier {
       'createdAt': createdAt.toIso8601String(),
     };
     if (squadraId != null) entry['squadraId'] = squadraId;
+    if (teamName != null) entry['teamName'] = teamName;
     final list = _getList(_kRegistrationsKey)..add(entry);
     await _saveList(_kRegistrationsKey, list);
     debugPrint('OfflineQueue: registration queued (${list.length} pending)');
@@ -166,6 +168,7 @@ class OfflineQueueService extends ChangeNotifier {
           nome: r['nome'] as String,
           cognome: r['cognome'] as String,
           squadraId: r['squadraId'] as String?,
+          teamName: r['teamName'] as String?,
         ),
       );
 

@@ -66,6 +66,7 @@ class FirestoreService {
     required String nome,
     required String cognome,
     String? squadraId,
+    String? teamName,
   }) async {
     final reg = RegistrationModel(
       userId: userId,
@@ -74,6 +75,7 @@ class FirestoreService {
       cognome: cognome,
       stato: RegistrationStatus.inAttesa,
       squadraId: squadraId,
+      teamName: teamName,
       createdAt: DateTime.now(),
     );
     await _db
