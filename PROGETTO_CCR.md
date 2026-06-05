@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 04 giugno 2026 (Step 10 in corso)  
+**Data aggiornamento:** 05 giugno 2026 (Step 11 completato)  
 **Branch:** main  
 **Versione:** 1.0.0+1
 
@@ -55,9 +55,9 @@ ccr_app/
 │   │   ├── services/
 │   │   │   ├── auth_service.dart
 │   │   │   ├── firestore_service.dart    # + getEventById() stream
-│   │   │   ├── gps_service.dart
+│   │   │   ├── gps_service.dart              # + positionStream (StreamController broadcast)
 │   │   │   ├── gpx_parser.dart           # Parser GPX + KML (web-safe, no dart:io)
-│   │   │   ├── storage_service.dart
+│   │   │   ├── storage_service.dart          # downloadTrack via SDK (refFromURL+getData, autenticato)
 │   │   │   └── waypoint_detector.dart
 │   │   ├── theme/
 │   │   │   ├── app_colors.dart
@@ -79,7 +79,7 @@ ccr_app/
 │   │   │   │   ├── admin_home_screen.dart
 │   │   │   │   ├── create_event_screen.dart       # dimensione squadra + tipologia classifica
 │   │   │   │   ├── event_management_screen.dart   # tab responsive, bloccate in BOZZA
-│   │   │   │   ├── live_tracking_screen.dart      # mappa multi-pilota real-time
+│   │   │   │   ├── live_tracking_screen.dart      # mappa multi-pilota real-time + GPX evento
 │   │   │   │   ├── registrations_screen.dart      # filtri, approva/rifiuta, team info
 │   │   │   │   └── specials_editor_screen.dart    # slider GPS + polyline reale + control points
 │   │   │   └── widgets/
@@ -92,7 +92,7 @@ ccr_app/
 │   │   │   │   ├── pilot_home_screen.dart          # bottom nav, GPS banner
 │   │   │   │   ├── event_detail_screen.dart        # mappa tracciato da Storage
 │   │   │   │   ├── event_list_screen.dart
-│   │   │   │   ├── gps_recording_screen.dart       # START/STOP, waypoint da speciali
+│   │   │   │   ├── gps_recording_screen.dart       # START/FINE GARA, mappa live GPX+PS+ristoro, freccia bearing
 │   │   │   │   └── team_screen.dart                # nomi membri da registrazioni
 │   │   │   └── widgets/ (event_card_pilot, gps_status_widget)
 │   │   │
@@ -358,6 +358,9 @@ gsutil cors get gs://ccr-enduro.firebasestorage.app
 | Test crash su GpsService | GpsService crea FirestoreService che fallisce senza Firebase | Risolto dal getter lazy sopra; aggiunto override `sharedPreferencesProvider` in tutti i test |
 | `LocaleDataException` nei test | `DateFormat` usato in EventDetailScreen senza locale inizializzato | Aggiunto `setUpAll(() => initializeDateFormatting('it_IT'))` |
 | `unnecessary_underscores` lint nei test | GoRoute builder con `(_, __)` trigger lint Dart 3 | Sostituito con `(_, _)` (wildcard multipli validi in Dart 3) |
+| `firebase_storage/unauthorized` su browser | `downloadTrack` usava `http.get` anonimo senza credenziali Auth | `FirebaseStorage.instance.refFromURL(url).getData()` porta il token automaticamente |
+| Freccia pilota ferma al punto di avvio | `ref.listen` muoveva solo camera, non richiedeva `setState`; marker con `const` non si ricostruiva | `GpsService.positionStream` + `StreamBuilder` in `_buildActiveTracking`; `RotatedBox+Transform.rotate` non-const |
+| Marker admin non aggiornati in real-time | `liveTrackingProvider` cacheato non triggera rebuild Riverpod su ogni emit Firestore | `StreamBuilder` diretto su `firestoreService.getPilotTracking()` bypassa la cache |
 
 ---
 
@@ -375,7 +378,7 @@ gsutil cors get gs://ccr-enduro.firebasestorage.app
 - [ ] Test end-to-end classifica e timing con più piloti
 - [ ] Test flusso offline: spegnere connessione durante tracking, verificare sync al ritorno
 
-### Step 10 — Fix & UX miglioramenti (04 giugno 2026)
+### Step 10 — Fix & UX miglioramenti (04 giugno 2026) ✅
 - [x] **Fix Firestore rules**: aggiunta regola `user_notifications/{userId}/items` → admin può inviare notifiche ai piloti senza permission-denied ✅
 - [x] **Icona app Android**: coppa stilizzata rossa `#e53e1e` su sfondo nero per mipmap-mdpi/hdpi/xhdpi/xxhdpi/xxxhdpi ✅
 - [x] **Slider con frecce**: pulsanti `–` e `+` accanto a ogni slider (inizio, fine, punti di controllo) in `SpecialsEditorScreen` ✅
@@ -383,12 +386,48 @@ gsutil cors get gs://ccr-enduro.firebasestorage.app
 - [x] **Elimina evento**: pulsante cestino rosso nell'AppBar di `EventManagementScreen` con doppia conferma, elimina da Firestore e torna a `/admin` ✅
 - [x] **Frase logo**: `"manca m'ai chen..."` in corsivo grigio chiaro sotto il logo CCR nella schermata di login ✅
 
-### Step 11 — Possibili evoluzioni
+### Step 11 — GPS real-time, mappe avanzate, fix Storage (05 giugno 2026) ✅
+
+**Fix `firebase_storage/unauthorized`:**
+- `storage_service.dart`: `downloadTrack` usa `FirebaseStorage.instance.refFromURL(url).getData()` invece di `http.get` anonimo — il SDK porta automaticamente il token Firebase Auth
+- `storage.rules` + `firestore.rules`: regole permissive per sviluppo (`allow read, write: if request.auth != null`)
+- ⚠️ **Prima della produzione** ripristinare regole granulari (presenti in git history commit `25ad689`)
+
+**Mappa pilota live (`gps_recording_screen.dart`):**
+- Traccia GPX evento sovrapposta in rosso (caricata da Storage in background all'avvio)
+- Marcatori PS1/PS2 ▶/■ con colore per speciale e etichetta inizio/fine, da `event.speciali`
+- Marker ristoro giallo `local_gas_station` da `event.fuelPoint`
+- Punti di controllo nascosti dalla mappa (filtro `WaypointType.intermedio`)
+- Posizione pilota: freccia `Icons.navigation` rotante via `RotatedBox(quarterTurns:0) + Transform.rotate(angle: bearing)` — **non const**, si ricostruisce ad ogni emit GPS
+
+**Real-time freccia pilota:**
+- `GpsService`: aggiunto `StreamController<Position>.broadcast()` → `positionStream` getter; emette in `_onPosition` prima di `notifyListeners()`
+- `GpsRecordingScreen`: `_gpsStream` inizializzato in `initState`; `_buildActiveTracking` wrappato in `StreamBuilder<Position>` — ad ogni emit: calcola `bearing` con `atan2`, chiama `MapController.move()` via `addPostFrameCallback`, ricostruisce marker non-const
+
+**Blocco permanente dopo ritiro:**
+- `build()` guarda `withdrawalsStreamProvider(eventId)` e calcola `isWithdrawn`
+- `_buildPreStart`: se `isWithdrawn == true` mostra schermata "Sei ritirato da questa gara" con `Icons.flag` rosso e disabilita permanentemente il pulsante START
+
+**STOP → FINE GARA:**
+- Pulsante rinominato `FINE GARA` con `Icons.flag_circle_outlined`
+- Abilitato solo quando `gps.remainingWaypoints.isEmpty` (tutti i waypoint di tutte le speciali passati)
+- `Tooltip`: "Completa tutte le speciali prima di terminare" quando disabilitato
+
+**Live admin (`live_tracking_screen.dart`):**
+- Convertito a `ConsumerStatefulWidget`; carica traccia GPX evento e la mostra in rosso sulla mappa admin
+- `build()` usa `StreamBuilder<List<GpsPointModel>>` diretto su `firestoreService.getPilotTracking()` invece di `ref.watch(liveTrackingProvider)` — marker piloti si aggiornano senza cache Riverpod
+
+**Deploy:**
+- `firebase deploy --only hosting` su https://ccr-enduro.web.app
+- `git push origin main` → GitHub Actions genera APK Android automaticamente
+
+### Step 12 — Possibili evoluzioni
+- Ripristinare regole Firestore/Storage granulari per produzione
+- Test GPS reale su device Android (freccia bearing, speciali, waypoint)
+- Test end-to-end classifica e timing con più piloti
 - Export PDF risultati post-gara (logo CCR, classifica finale, tempi speciali)
-- Mappa live admin con trail percorso per ogni pilota (attualmente solo posizione istantanea)
+- Trail percorso per ogni pilota nella mappa admin live (attualmente solo posizione istantanea)
 - Dashboard admin con statistiche gara (passaggi speciali, ritiri, progressi)
-- Gestione esplicita iscrizione duplicata (Firestore error se documento già esiste)
 - Schermata "Profilo pilota" con modifica nome/cognome
-- Animazioni di transizione tra schermate
 - Coverage test su GpsService e ClassificaEngine
-- GitHub Actions CI (flutter test + flutter analyze)
+- GitHub Actions CI completo (flutter test + flutter analyze)
