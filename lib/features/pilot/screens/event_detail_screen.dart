@@ -12,6 +12,7 @@ import '../../../core/providers/offline_provider.dart';
 import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/widgets/skeleton_loader.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../admin/providers/admin_provider.dart';
 import '../../map/screens/track_map_screen.dart';
@@ -85,6 +86,32 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
     return minIdx;
   }
 
+  Widget _buildEventSkeleton() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SkeletonBox(width: double.infinity, height: 28),
+          const SizedBox(height: 14),
+          SkeletonBox(width: 200, height: 14),
+          const SizedBox(height: 8),
+          SkeletonBox(width: 150, height: 14),
+          const SizedBox(height: 24),
+          SkeletonBox(width: double.infinity, height: 200, radius: 12),
+          const SizedBox(height: 24),
+          SkeletonBox(width: 140, height: 20),
+          const SizedBox(height: 12),
+          SkeletonBox(width: double.infinity, height: 50, radius: 10),
+          const SizedBox(height: 8),
+          SkeletonBox(width: double.infinity, height: 50, radius: 10),
+          const SizedBox(height: 8),
+          SkeletonBox(width: double.infinity, height: 50, radius: 10),
+        ],
+      ),
+    );
+  }
+
   double? _specialLengthKm(SpecialModel s, List<LatLng> pts) {
     if (pts.isEmpty) return null;
     final startIdx = _indexFromId(s.waypointInizio.id) ??
@@ -106,10 +133,16 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
     final eventAsync = ref.watch(eventStreamProvider(widget.eventId));
 
     return eventAsync.when(
-      loading: () => const Scaffold(
+      loading: () => Scaffold(
         backgroundColor: AppColors.background,
-        body: Center(
-            child: CircularProgressIndicator(color: AppColors.accent)),
+        appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: () => context.pop(),
+          ),
+          title: const Text('Caricamento...'),
+        ),
+        body: _buildEventSkeleton(),
       ),
       error: (e, _) => Scaffold(
         backgroundColor: AppColors.background,
@@ -118,10 +151,46 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
             icon: const Icon(Icons.arrow_back),
             onPressed: () => context.pop(),
           ),
+          title: const Text('Errore'),
         ),
         body: Center(
-          child: Text('Errore: $e',
-              style: const TextStyle(color: AppColors.error)),
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.error_outline,
+                    color: AppColors.error, size: 56),
+                const SizedBox(height: 16),
+                const Text(
+                  'Impossibile caricare l\'evento',
+                  style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Controlla la connessione e riprova.',
+                  style: TextStyle(color: AppColors.textSecondary),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton.icon(
+                  onPressed: () =>
+                      ref.invalidate(eventStreamProvider(widget.eventId)),
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Riprova'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.accent,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
       data: (event) {

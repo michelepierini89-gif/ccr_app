@@ -22,6 +22,43 @@ class PilotHomeScreen extends ConsumerStatefulWidget {
 class _PilotHomeScreenState extends ConsumerState<PilotHomeScreen> {
   int _selectedIndex = 0;
 
+  static const _tabTitles = ['Le mie gare', 'GPS', 'Profilo'];
+
+  Future<bool> _onWillPop() async {
+    if (_selectedIndex != 0) {
+      setState(() => _selectedIndex = 0);
+      return false;
+    }
+    final leave = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: const Text('Uscire dall\'app?',
+            style: TextStyle(color: AppColors.textPrimary)),
+        content: const Text(
+          'Sei sicuro di voler uscire?',
+          style: TextStyle(color: AppColors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('No',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.accent,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Esci'),
+          ),
+        ],
+      ),
+    );
+    return leave ?? false;
+  }
+
   @override
   Widget build(BuildContext context) {
     final gps = ref.watch(gpsServiceProvider);
@@ -40,176 +77,232 @@ class _PilotHomeScreenState extends ConsumerState<PilotHomeScreen> {
       ),
     ];
 
-    return NotificationListenerWidget(
-      child: Scaffold(
-      backgroundColor: AppColors.background,
-      appBar: AppBar(
-        title: const Row(
-          children: [
-            Text('CCR ',
-                style: TextStyle(
-                    color: AppColors.accent,
-                    fontWeight: FontWeight.w900)),
-            Text('Pilota'),
-          ],
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: () async {
-              await ref.read(authServiceProvider).signOut();
-              if (context.mounted) context.go('/login');
-            },
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          // Offline pending banner
-          if (pendingCount > 0)
-            Container(
-              width: double.infinity,
-              color: AppColors.warning.withValues(alpha: 0.12),
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Row(
-                children: [
-                  const Icon(Icons.cloud_upload_outlined,
-                      color: AppColors.warning, size: 16),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      '$pendingCount element${pendingCount == 1 ? "o" : "i"} in attesa di sincronizzazione',
-                      style: const TextStyle(
-                          color: AppColors.warning, fontSize: 12),
-                    ),
-                  ),
-                  TextButton(
-                    onPressed: () => ref
-                        .read(offlineQueueProvider)
-                        .syncPending(ref.read(firestoreServiceProvider))
-                        .ignore(),
-                    style: TextButton.styleFrom(
-                      minimumSize: Size.zero,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 4),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                    child: const Text('Sincronizza',
-                        style: TextStyle(
-                            color: AppColors.warning,
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold)),
-                  ),
-                ],
-              ),
-            ),
+    final profileLabel = userAsync.valueOrNull?.nome ?? 'Profilo';
 
-          // Recording status banner
-          if (gps.isRecording)
-            Container(
-              width: double.infinity,
-              color: AppColors.accent.withValues(alpha: 0.15),
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              child: Row(
-                children: [
-                  Container(
-                    width: 8,
-                    height: 8,
-                    decoration: const BoxDecoration(
-                        color: AppColors.accent, shape: BoxShape.circle),
-                  ),
-                  const SizedBox(width: 8),
-                  const Text(
-                    'GPS attivo  ',
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        final leave = await _onWillPop();
+        if (leave && context.mounted) {
+          Navigator.of(context).pop();
+        }
+      },
+      child: NotificationListenerWidget(
+        child: Scaffold(
+          backgroundColor: AppColors.background,
+          appBar: AppBar(
+            automaticallyImplyLeading: false,
+            title: Row(
+              children: [
+                const Text('CCR ',
                     style: TextStyle(
-                        color: AppColors.accent, fontWeight: FontWeight.bold),
-                  ),
-                  Text(
-                    LocationUtils.formatDuration(gps.elapsed),
-                    style: const TextStyle(
                         color: AppColors.accent,
-                        fontFamily: 'monospace',
-                        fontWeight: FontWeight.bold),
-                  ),
-                  const Spacer(),
-                  _ModeChip(mode: gps.mode),
-                  const SizedBox(width: 8),
-                  GestureDetector(
-                    onTap: () => setState(() => _selectedIndex = 1),
-                    child: const Text('Dettagli',
-                        style: TextStyle(
-                            color: AppColors.accent, fontSize: 12)),
-                  ),
-                ],
+                        fontWeight: FontWeight.w900)),
+                Text(_tabTitles[_selectedIndex]),
+              ],
+            ),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.logout),
+                tooltip: 'Logout',
+                onPressed: () async {
+                  await ref.read(authServiceProvider).signOut();
+                  if (context.mounted) context.go('/login');
+                },
               ),
-            ),
-          Expanded(child: screens[_selectedIndex]),
-        ],
-      ),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _selectedIndex,
-        onTap: (i) => setState(() => _selectedIndex = i),
-        backgroundColor: AppColors.cardBackground,
-        selectedItemColor: AppColors.accent,
-        unselectedItemColor: AppColors.textSecondary,
-        type: BottomNavigationBarType.fixed,
-        items: [
-          BottomNavigationBarItem(
-            icon: Stack(
-              children: [
-                const Icon(Icons.event),
-                if (pendingCount > 0)
-                  Positioned(
-                    right: 0,
-                    top: 0,
-                    child: Container(
-                      width: 8,
-                      height: 8,
-                      decoration: const BoxDecoration(
-                          color: AppColors.warning,
-                          shape: BoxShape.circle),
-                    ),
+            ],
+          ),
+          body: Column(
+            children: [
+              // Offline pending banner
+              if (pendingCount > 0)
+                Container(
+                  width: double.infinity,
+                  color: AppColors.warning.withValues(alpha: 0.12),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.cloud_upload_outlined,
+                          color: AppColors.warning, size: 16),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '$pendingCount element${pendingCount == 1 ? "o" : "i"} in attesa di sincronizzazione',
+                          style: const TextStyle(
+                              color: AppColors.warning, fontSize: 12),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () => ref
+                            .read(offlineQueueProvider)
+                            .syncPending(
+                                ref.read(firestoreServiceProvider))
+                            .ignore(),
+                        style: TextButton.styleFrom(
+                          minimumSize: Size.zero,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 4),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: const Text('Sincronizza',
+                            style: TextStyle(
+                                color: AppColors.warning,
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold)),
+                      ),
+                    ],
                   ),
-              ],
-            ),
-            label: 'Gare',
-          ),
-          BottomNavigationBarItem(
-            icon: Stack(
-              children: [
-                const Icon(Icons.gps_fixed),
-                if (gps.isRecording)
-                  Positioned(
-                    right: 0,
-                    top: 0,
-                    child: Container(
-                      width: 8,
-                      height: 8,
-                      decoration: const BoxDecoration(
-                          color: AppColors.accent, shape: BoxShape.circle),
-                    ),
+                ),
+
+              // Recording status banner
+              if (gps.isRecording)
+                Container(
+                  width: double.infinity,
+                  color: AppColors.accent.withValues(alpha: 0.15),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 10),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: const BoxDecoration(
+                            color: AppColors.accent,
+                            shape: BoxShape.circle),
+                      ),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'GPS attivo  ',
+                        style: TextStyle(
+                            color: AppColors.accent,
+                            fontWeight: FontWeight.bold),
+                      ),
+                      Text(
+                        LocationUtils.formatDuration(gps.elapsed),
+                        style: const TextStyle(
+                            color: AppColors.accent,
+                            fontFamily: 'monospace',
+                            fontWeight: FontWeight.bold),
+                      ),
+                      const Spacer(),
+                      _ModeChip(mode: gps.mode),
+                      const SizedBox(width: 8),
+                      GestureDetector(
+                        onTap: () =>
+                            setState(() => _selectedIndex = 1),
+                        child: const Text('Dettagli',
+                            style: TextStyle(
+                                color: AppColors.accent, fontSize: 12)),
+                      ),
+                    ],
                   ),
-              ],
-            ),
-            label: 'GPS',
+                ),
+              Expanded(child: screens[_selectedIndex]),
+            ],
           ),
-          BottomNavigationBarItem(
-            icon: userAsync.when(
-              data: (u) => const Icon(Icons.person),
-              loading: () => const SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 2, color: AppColors.textSecondary)),
-              error: (e, st) => const Icon(Icons.person),
-            ),
-            label: userAsync.valueOrNull?.nome ?? 'Profilo',
+          bottomNavigationBar: BottomNavigationBar(
+            currentIndex: _selectedIndex,
+            onTap: (i) => setState(() => _selectedIndex = i),
+            backgroundColor: AppColors.cardBackground,
+            selectedItemColor: AppColors.accent,
+            unselectedItemColor: AppColors.textSecondary,
+            type: BottomNavigationBarType.fixed,
+            selectedFontSize: 12,
+            unselectedFontSize: 11,
+            elevation: 8,
+            items: [
+              BottomNavigationBarItem(
+                icon: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    const Icon(Icons.flag_outlined),
+                    if (pendingCount > 0)
+                      Positioned(
+                        right: -2,
+                        top: -2,
+                        child: Container(
+                          width: 8,
+                          height: 8,
+                          decoration: const BoxDecoration(
+                              color: AppColors.warning,
+                              shape: BoxShape.circle),
+                        ),
+                      ),
+                  ],
+                ),
+                activeIcon: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    const Icon(Icons.flag),
+                    if (pendingCount > 0)
+                      Positioned(
+                        right: -2,
+                        top: -2,
+                        child: Container(
+                          width: 8,
+                          height: 8,
+                          decoration: const BoxDecoration(
+                              color: AppColors.warning,
+                              shape: BoxShape.circle),
+                        ),
+                      ),
+                  ],
+                ),
+                label: 'Gare',
+              ),
+              BottomNavigationBarItem(
+                icon: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    const Icon(Icons.gps_not_fixed),
+                    if (gps.isRecording)
+                      Positioned(
+                        right: -2,
+                        top: -2,
+                        child: Container(
+                          width: 8,
+                          height: 8,
+                          decoration: const BoxDecoration(
+                              color: AppColors.accent,
+                              shape: BoxShape.circle),
+                        ),
+                      ),
+                  ],
+                ),
+                activeIcon: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    const Icon(Icons.gps_fixed),
+                    if (gps.isRecording)
+                      Positioned(
+                        right: -2,
+                        top: -2,
+                        child: Container(
+                          width: 8,
+                          height: 8,
+                          decoration: const BoxDecoration(
+                              color: AppColors.accent,
+                              shape: BoxShape.circle),
+                        ),
+                      ),
+                  ],
+                ),
+                label: 'GPS',
+              ),
+              BottomNavigationBarItem(
+                icon: const Icon(Icons.person_outline),
+                activeIcon: const Icon(Icons.person),
+                label: profileLabel.length > 10
+                    ? profileLabel.substring(0, 10)
+                    : profileLabel,
+              ),
+            ],
           ),
-        ],
+        ),
       ),
-    ));
+    );
   }
 }
 
@@ -291,7 +384,7 @@ class _ProfilePage extends ConsumerWidget {
               Container(
                 width: 80,
                 height: 80,
-                decoration: BoxDecoration(
+                decoration: const BoxDecoration(
                   color: AppColors.accent,
                   shape: BoxShape.circle,
                 ),
