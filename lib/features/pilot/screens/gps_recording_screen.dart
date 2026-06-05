@@ -481,12 +481,12 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                         strokeWidth: 3.0,
                       ),
                     ]),
-                  // Pilot's recorded track
+                  // Pilot's recorded track (blue to distinguish from red GPX event track)
                   if (gps.localTrack.length >= 2)
                     PolylineLayer(polylines: [
                       Polyline(
                         points: gps.localTrack,
-                        color: AppColors.accent,
+                        color: const Color(0xFF2196F3),
                         strokeWidth: 4.0,
                       ),
                     ]),
