@@ -835,7 +835,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
               Expanded(
                 flex: 2,
                 child: SizedBox(
-                  height: 52,
+                  height: 56,
                   child: Tooltip(
                     message: _allSpecialsCompleted(gps, event)
                         ? ''
@@ -876,7 +876,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                     child: child,
                   ),
                   child: SizedBox(
-                    height: 52,
+                    height: 56,
                     child: ElevatedButton.icon(
                       onPressed: _confirmWithdrawal,
                       style: ElevatedButton.styleFrom(
@@ -886,10 +886,15 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                             borderRadius: BorderRadius.circular(12)),
                       ),
                       icon: const Icon(Icons.flag, size: 20),
-                      label: const Text('RITIRO',
-                          style: TextStyle(
-                              fontWeight: FontWeight.w900,
-                              letterSpacing: 1.5)),
+                      label: const Text(
+                        'RITIRO',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1.5,
+                        ),
+                        overflow: TextOverflow.visible,
+                      ),
                     ),
                   ),
                 ),
