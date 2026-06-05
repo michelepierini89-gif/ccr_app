@@ -531,6 +531,49 @@ gsutil cors get gs://ccr-enduro.firebasestorage.app
 
 ---
 
+### Step 16 — Sicurezza, stabilità e performance (05 giugno 2026) ✅
+
+**1 — Persistenza offline Firestore nativa:**
+- `main.dart`: `FirebaseFirestore.instance.settings = Settings(persistenceEnabled: true, cacheSizeBytes: UNLIMITED)` immediatamente dopo `Firebase.initializeApp()`
+- Sostituisce la gestione manuale con SharedPreferences per i dati Firestore
+- Funziona su Android, iOS e Web (IndexedDB)
+
+**2 — Regole Firestore sicure per produzione:**
+- `events`: lettura tutti gli autenticati; scrittura solo admin
+- `championships` / `penalty_settings`: lettura tutti; scrittura solo admin
+- `tracking/{eventId}/pilots/{userId}`: scrittura solo proprio pilota; lettura solo admin (privacy GPS)
+- `tracking/{eventId}/passages`: tutti gli autenticati (necessario per classifica)
+- `users`: solo proprio utente o admin
+- `user_notifications`: proprio utente (admin scrive per approvazioni iscrizioni)
+- `events/iscritti`: crea il proprio; approva/rifiuta admin
+- `events/withdrawals`: tutti leggono (classifica); crea solo proprio pilota
+- Deployato su Firebase con `firebase deploy --only firestore:rules`
+
+**3 — Chiusura listener Firestore:**
+- `live_tracking_screen.dart`: `getPilotTracking()` spostato da `build()` a `initState()` → `_pilotStream` evita subscription duplicate ad ogni rebuild
+- `gps_recording_screen.dart` e `event_management_screen.dart`: già corretti (Riverpod + initState)
+
+**4 — FirebaseErrorHandler:**
+- Nuovo `lib/core/utils/firebase_error_handler.dart`: switch su codici `FirebaseAuthException` e `FirebaseException`
+- Traduce: `permission-denied` → "Non hai i permessi per questa operazione", `unavailable` → "Connessione assente, riprova tra poco", `not-found` → "Dato non trovato", errori auth → messaggi italiani comprensibili
+- Applicato in login, register, GPS recording, event management, live tracking, penalty settings
+
+**5 — GPS Samsung S21 (già implementato — verificato):**
+- `AndroidManifest.xml` aveva già `android:foregroundServiceType="location"` su `BackgroundService`
+- `uses-permission FOREGROUND_SERVICE_LOCATION` già presente
+- Nessuna modifica necessaria; confermato compatibile Android 12+
+
+**6 — RepaintBoundary GPS screen:**
+- `gps_recording_screen.dart`: wrappa `FlutterMap` in `RepaintBoundary` → non repaint quando il timer stats scatta ogni secondo
+- Wrappa il Container statistiche (velocità/distanza/tempo/precisione) in `RepaintBoundary` → non repaint quando arriva update GPS
+- I due layer visivi si ridisegnano in modo completamente indipendente
+
+**Deploy:**
+- `firebase deploy --only hosting` su https://ccr-enduro.web.app
+- `git push origin main` → GitHub Actions genera APK Android
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**
