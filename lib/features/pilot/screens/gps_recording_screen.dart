@@ -33,6 +33,10 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   Duration _elapsed = Duration.zero;
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
+  late AnimationController _markerController;
+  LatLng? _displayPos;
+  LatLng? _fromPos;
+  LatLng? _targetPos;
 
   late final MapController _mapController;
   late final Stream<Position> _gpsStream;
@@ -56,6 +60,10 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     _pulseAnimation = Tween<double>(begin: 0.95, end: 1.05).animate(
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
+    _markerController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 500),
+    )..addListener(_onMarkerAnimTick);
     _startElapsedTimer();
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadEventTrack());
   }
@@ -76,8 +84,22 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   void dispose() {
     _elapsedTimer?.cancel();
     _pulseController.dispose();
+    _markerController.dispose();
     _mapController.dispose();
     super.dispose();
+  }
+
+  void _onMarkerAnimTick() {
+    if (_fromPos != null && _targetPos != null && mounted) {
+      final t = _markerController.value;
+      setState(() {
+        _displayPos = LatLng(
+          _fromPos!.latitude + (_targetPos!.latitude - _fromPos!.latitude) * t,
+          _fromPos!.longitude +
+              (_targetPos!.longitude - _fromPos!.longitude) * t,
+        );
+      });
+    }
   }
 
   Future<void> _loadEventTrack() async {
@@ -415,11 +437,27 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
       builder: (context, snap) {
         // Live position from stream; fall back to last known from GpsService
         final liveData = snap.data;
-        final curPos = liveData != null
+        final rawPos = liveData != null
             ? LatLng(liveData.latitude, liveData.longitude)
             : pos != null
                 ? LatLng(pos.latitude, pos.longitude)
                 : const LatLng(44.0, 11.0);
+
+        // Start interpolation toward the new GPS position
+        if (liveData != null) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            final newPos = LatLng(liveData.latitude, liveData.longitude);
+            if (_targetPos != newPos) {
+              _fromPos = _displayPos ?? newPos;
+              _targetPos = newPos;
+              _markerController.forward(from: 0);
+            }
+          });
+        }
+
+        // Use interpolated position for marker and camera; fall back to raw GPS
+        final curPos = _displayPos ?? rawPos;
 
         // Camera follow and optional map rotation on every stream emission
         if (liveData != null && _followMode) {
