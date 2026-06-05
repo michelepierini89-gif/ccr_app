@@ -372,6 +372,9 @@ gsutil cors get gs://ccr-enduro.firebasestorage.app
 | Freccia pilota ferma al punto di avvio | `ref.listen` muoveva solo camera, non richiedeva `setState`; marker con `const` non si ricostruiva | `GpsService.positionStream` + `StreamBuilder` in `_buildActiveTracking`; `RotatedBox+Transform.rotate` non-const |
 | Marker admin non aggiornati in real-time | `liveTrackingProvider` cacheato non triggera rebuild Riverpod su ogni emit Firestore | `StreamBuilder` diretto su `firestoreService.getPilotTracking()` bypassa la cache |
 | DIST=0m e VEL=0 km/h su Android anche con GPS attivo | `LocationSettings(timeLimit: Duration(ms))` è un timeout, non un intervallo: scadeva dopo 3s senza movimento, `TimeoutException` terminava lo stream silenziosamente | Rimosso `timeLimit`; uso `AndroidSettings(intervalDuration:...)` con `ForegroundNotificationConfig` e `distanceFilter: 2`; error recovery con riavvio automatico stream |
+| Marker pilota che salta da punto a punto ogni update GPS | GPS emette a intervalli discreti, il marker si teleporta senza transizione | `AnimationController` 500ms con lerp lineare `LatLng` tra `_fromPos` e `_targetPos`; `_displayPos` aggiornato a 60fps smooth |
+| FINE GARA bloccato anche dopo completamento speciali se control points mancanti | Logica usava `remainingWaypoints.isEmpty` che include tutti i waypoint (anche i CP intermedi) | Nuovo metodo `_allSpecialsCompleted`: conta `specialEntries` con `exitTime != null` vs `event.speciali.length` |
+| Classifica mostra solo "CP mancante" senza dettaglio | `SpecialTempo.controlPointsOk` era solo un bool senza info su quali CP | Aggiunto `missedCpPositions: List<int>` in `SpecialTempo`; motore calcola posizioni 1-based; dialog tappable in classifica |
 
 ### Step 11 — GPS real-time, mappe avanzate, fix Storage (05 giugno 2026) ✅
 
@@ -488,12 +491,18 @@ gsutil cors get gs://ccr-enduro.firebasestorage.app
 
 ## Prossimi Step
 
+**Produzione / sicurezza:**
 - Ripristinare regole Firestore/Storage granulari per produzione (da git history commit `25ad689`)
-- Build APK Android (GitHub Actions su `git push origin main`)
-- Test GPS reale su device Android (verificare DIST e VEL con movimento reale)
-- Test end-to-end classifica campionato con più eventi reali
+
+**Test su device reale:**
+- Test GPS su Android con movimento reale (verificare interpolazione marker, modalità HEADING, tempo speciale)
+- Test end-to-end classifica campionato con più eventi
 - Test flusso iscrizione 2-step su web e Android
+
+**Feature future:**
 - Trail percorso per ogni pilota nella mappa admin live (attualmente solo posizione istantanea)
 - Export PDF risultati post-gara (logo CCR, classifica finale, tempi speciali)
 - Schermata "Profilo pilota" con modifica nome/cognome
 - GitHub Actions CI completo (flutter test + flutter analyze)
+- Suono/vibrazione al passaggio waypoint su Android
+- Timeout automatico fine gara se pilota non preme FINE GARA dopo X minuti dall'ultima speciale
