@@ -141,15 +141,43 @@ class GpsService extends ChangeNotifier {
 
   void _startPositionStream(int intervalMs) {
     _positionSub?.cancel();
-    final settings = LocationSettings(
-      accuracy: LocationAccuracy.high,
-      distanceFilter: 0,
-      timeLimit: Duration(milliseconds: intervalMs),
-    );
+    final LocationSettings settings;
+    if (kIsWeb) {
+      settings = const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 2,
+      );
+    } else if (defaultTargetPlatform == TargetPlatform.android) {
+      settings = AndroidSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 2,
+        intervalDuration: Duration(milliseconds: intervalMs),
+        foregroundNotificationConfig: const ForegroundNotificationConfig(
+          notificationText: 'CCR Rally — GPS attivo',
+          notificationTitle: 'Registrazione GPS',
+          enableWakeLock: true,
+        ),
+      );
+    } else {
+      settings = AppleSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 2,
+        activityType: ActivityType.fitness,
+        pauseLocationUpdatesAutomatically: false,
+        showBackgroundLocationIndicator: true,
+      );
+    }
     _positionSub = Geolocator.getPositionStream(locationSettings: settings)
         .listen(
       _onPosition,
-      onError: (e) => debugPrint('GPS error: $e'),
+      onError: (e) {
+        debugPrint('GPS stream error: $e');
+        if (_isRecording) {
+          Future.delayed(const Duration(seconds: 2), () {
+            if (_isRecording) _startPositionStream(intervalMs);
+          });
+        }
+      },
     );
   }
 
