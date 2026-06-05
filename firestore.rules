@@ -2,8 +2,16 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Development: allow all authenticated reads/writes
+    // TODO: restore granular rules before production (see git commit 25ad689)
     match /{document=**} {
       allow read, write: if request.auth != null;
     }
+    // Championships collection — covered by the wildcard rule above in dev.
+    // In production, restrict to: admin write, authenticated read.
+    // match /championships/{champId} {
+    //   allow read: if request.auth != null;
+    //   allow write: if request.auth != null && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    // }
   }
 }

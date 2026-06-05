@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:latlong2/latlong.dart';
 import '../constants/firebase_constants.dart';
 import '../models/app_notification_model.dart';
+import '../models/championship_model.dart';
 import '../models/event_model.dart';
 import '../models/registration_model.dart';
 import '../models/team_model.dart';
@@ -296,6 +297,103 @@ class FirestoreService {
           .collection(FirebaseConstants.items)
           .doc(notifId)
           .update({'read': true});
+
+  // Championships
+
+  Future<String> createChampionship(ChampionshipModel c) async {
+    final ref = await _db
+        .collection(FirebaseConstants.championships)
+        .add(c.toFirestore());
+    return ref.id;
+  }
+
+  Future<void> updateChampionship(ChampionshipModel c) => _db
+      .collection(FirebaseConstants.championships)
+      .doc(c.id)
+      .update(c.toFirestore());
+
+  Future<void> deleteChampionship(String id) => _db
+      .collection(FirebaseConstants.championships)
+      .doc(id)
+      .delete();
+
+  Stream<List<ChampionshipModel>> getChampionships({String? createdBy}) {
+    Query q = _db
+        .collection(FirebaseConstants.championships)
+        .orderBy('stagione', descending: true);
+    if (createdBy != null) q = q.where('createdBy', isEqualTo: createdBy);
+    return q.snapshots().map((s) =>
+        s.docs.map((d) => ChampionshipModel.fromFirestore(d)).toList());
+  }
+
+  Stream<ChampionshipModel?> getChampionshipById(String id) => _db
+      .collection(FirebaseConstants.championships)
+      .doc(id)
+      .snapshots()
+      .map((doc) =>
+          doc.exists ? ChampionshipModel.fromFirestore(doc) : null);
+
+  Future<void> addEventToChampionship(
+          String championshipId, String eventId) =>
+      _db
+          .collection(FirebaseConstants.championships)
+          .doc(championshipId)
+          .update({
+        'eventIds': FieldValue.arrayUnion([eventId])
+      });
+
+  Future<void> removeEventFromChampionship(
+          String championshipId, String eventId) =>
+      _db
+          .collection(FirebaseConstants.championships)
+          .doc(championshipId)
+          .update({
+        'eventIds': FieldValue.arrayRemove([eventId])
+      });
+
+  Future<List<WaypointPassageRecord>> getPassagesOnce(String eventId) async {
+    final snap = await _db
+        .collection(FirebaseConstants.tracking)
+        .doc(eventId)
+        .collection(FirebaseConstants.passages)
+        .orderBy('timestamp')
+        .get();
+    return snap.docs
+        .map((d) => WaypointPassageRecord.fromFirestore(d))
+        .toList();
+  }
+
+  Future<List<RegistrationModel>> getRegistrationsOnce(
+      String eventId) async {
+    final snap = await _db
+        .collection(FirebaseConstants.events)
+        .doc(eventId)
+        .collection(FirebaseConstants.iscritti)
+        .get();
+    return snap.docs
+        .map((d) => RegistrationModel.fromFirestore(d, eventId))
+        .toList();
+  }
+
+  Future<List<TeamModel>> getTeamsOnce(String eventId) async {
+    final snap = await _db
+        .collection(FirebaseConstants.events)
+        .doc(eventId)
+        .collection(FirebaseConstants.teams)
+        .get();
+    return snap.docs
+        .map((d) => TeamModel.fromFirestore(d, eventId))
+        .toList();
+  }
+
+  Future<Set<String>> getWithdrawalsOnce(String eventId) async {
+    final snap = await _db
+        .collection(FirebaseConstants.events)
+        .doc(eventId)
+        .collection(FirebaseConstants.withdrawals)
+        .get();
+    return snap.docs.map((d) => d.id).toSet();
+  }
 
   Future<void> saveUserFcmToken(String userId, String token) =>
       _db.collection(FirebaseConstants.users).doc(userId).set(

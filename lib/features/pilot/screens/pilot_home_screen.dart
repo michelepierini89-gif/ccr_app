@@ -9,6 +9,7 @@ import '../../../core/widgets/notification_listener_widget.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../admin/providers/admin_provider.dart';
 import '../providers/pilot_provider.dart';
+import '../../../core/models/championship_model.dart';
 import 'event_list_screen.dart';
 import 'gps_recording_screen.dart';
 
@@ -22,7 +23,7 @@ class PilotHomeScreen extends ConsumerStatefulWidget {
 class _PilotHomeScreenState extends ConsumerState<PilotHomeScreen> {
   int _selectedIndex = 0;
 
-  static const _tabTitles = ['Le mie gare', 'GPS', 'Profilo'];
+  static const _tabTitles = ['Le mie gare', 'GPS', 'Campionati', 'Profilo'];
 
   Future<bool> _onWillPop() async {
     if (_selectedIndex != 0) {
@@ -69,6 +70,7 @@ class _PilotHomeScreenState extends ConsumerState<PilotHomeScreen> {
     final screens = [
       const EventListScreen(),
       GpsRecordingScreen(eventId: null),
+      const _ChampionshipsPage(),
       _ProfilePage(
         onLogout: () async {
           await ref.read(authServiceProvider).signOut();
@@ -78,6 +80,7 @@ class _PilotHomeScreenState extends ConsumerState<PilotHomeScreen> {
     ];
 
     final profileLabel = userAsync.valueOrNull?.nome ?? 'Profilo';
+    // GPS tab is index 1, championships tab is index 2, profile tab is index 3
 
     return PopScope(
       canPop: false,
@@ -291,6 +294,11 @@ class _PilotHomeScreenState extends ConsumerState<PilotHomeScreen> {
                 ),
                 label: 'GPS',
               ),
+              const BottomNavigationBarItem(
+                icon: Icon(Icons.emoji_events_outlined),
+                activeIcon: Icon(Icons.emoji_events),
+                label: 'Campionati',
+              ),
               BottomNavigationBarItem(
                 icon: const Icon(Icons.person_outline),
                 activeIcon: const Icon(Icons.person),
@@ -353,6 +361,131 @@ class _ModeChip extends StatelessWidget {
     );
   }
 }
+
+// ── Championships page (embedded in bottom nav) ───────────────────────────────
+
+class _ChampionshipsPage extends ConsumerWidget {
+  const _ChampionshipsPage();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final champsAsync = ref.watch(_allChampionshipsProvider);
+
+    return RefreshIndicator(
+      color: AppColors.accent,
+      backgroundColor: AppColors.cardBackground,
+      onRefresh: () async => ref.invalidate(_allChampionshipsProvider),
+      child: champsAsync.when(
+        loading: () =>
+            const Center(child: CircularProgressIndicator(color: AppColors.accent)),
+        error: (e, _) => ListView(
+          children: [
+            const SizedBox(height: 60),
+            Center(
+              child: Column(
+                children: [
+                  const Icon(Icons.cloud_off, color: AppColors.error, size: 48),
+                  const SizedBox(height: 12),
+                  const Text('Impossibile caricare i campionati',
+                      style: TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 16),
+                  ElevatedButton.icon(
+                    onPressed: () => ref.invalidate(_allChampionshipsProvider),
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Riprova'),
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.accent,
+                        foregroundColor: Colors.white),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        data: (items) {
+          if (items.isEmpty) {
+            return ListView(
+              children: const [
+                SizedBox(height: 80),
+                Center(
+                  child: Column(
+                    children: [
+                      Icon(Icons.emoji_events_outlined,
+                          color: AppColors.textSecondary, size: 64),
+                      SizedBox(height: 16),
+                      Text('Nessun campionato',
+                          style: TextStyle(
+                              color: AppColors.textPrimary,
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold)),
+                      SizedBox(height: 8),
+                      Text(
+                        'I campionati creati dall\'organizzatore\nappariranno qui',
+                        style: TextStyle(
+                            color: AppColors.textSecondary, height: 1.5),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            );
+          }
+          return ListView.builder(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+            itemCount: items.length,
+            itemBuilder: (context, i) {
+              final c = items[i];
+              final color = AppColors.specialColors[
+                  c.colorIndex.clamp(0, AppColors.specialColors.length - 1)];
+              return Container(
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: AppColors.cardBackground,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: color.withValues(alpha: 0.4)),
+                ),
+                child: ListTile(
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  leading: Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: 0.15),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(Icons.emoji_events, color: color, size: 22),
+                  ),
+                  title: Text(c.nome,
+                      style: const TextStyle(
+                          color: AppColors.textPrimary,
+                          fontWeight: FontWeight.bold)),
+                  subtitle: Text(
+                    'Stagione ${c.stagione} · ${c.eventIds.length} gare',
+                    style: const TextStyle(
+                        color: AppColors.textSecondary, fontSize: 12),
+                  ),
+                  trailing: const Icon(Icons.chevron_right,
+                      color: AppColors.textSecondary),
+                  onTap: () =>
+                      context.push('/pilot/championships/${c.id}'),
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+
+final _allChampionshipsProvider = StreamProvider<List<ChampionshipModel>>((ref) {
+  return ref.watch(firestoreServiceProvider).getChampionships();
+});
 
 class _ProfilePage extends ConsumerWidget {
   final VoidCallback onLogout;

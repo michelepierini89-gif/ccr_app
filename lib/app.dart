@@ -10,10 +10,12 @@ import 'features/auth/providers/auth_provider.dart';
 import 'features/auth/screens/login_screen.dart';
 import 'features/auth/screens/register_screen.dart';
 import 'features/admin/screens/admin_home_screen.dart';
+import 'features/admin/screens/championship_screen.dart';
 import 'features/admin/screens/create_event_screen.dart';
 import 'features/admin/screens/event_management_screen.dart';
 import 'features/admin/screens/registrations_screen.dart';
 import 'features/admin/screens/live_tracking_screen.dart';
+import 'features/pilot/screens/championship_standings_screen.dart';
 import 'features/pilot/screens/pilot_home_screen.dart';
 import 'features/pilot/screens/event_detail_screen.dart';
 import 'features/pilot/screens/team_screen.dart';
@@ -54,6 +56,29 @@ final _routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: 'create-event',
             builder: (context, state) => const CreateEventScreen(),
+          ),
+          GoRoute(
+            path: 'championships',
+            builder: (context, state) => const ChampionshipScreen(),
+            routes: [
+              GoRoute(
+                path: ':id',
+                builder: (context, state) {
+                  final id = state.pathParameters['id']!;
+                  return ChampionshipManagementScreen(championshipId: id);
+                },
+                routes: [
+                  GoRoute(
+                    path: 'standings',
+                    builder: (context, state) {
+                      final id = state.pathParameters['id']!;
+                      return ChampionshipStandingsScreen(
+                          championshipId: id);
+                    },
+                  ),
+                ],
+              ),
+            ],
           ),
           GoRoute(
             path: 'event/:id',
@@ -119,6 +144,13 @@ final _routerProvider = Provider<GoRouter>((ref) {
             builder: (context, state) {
               final eventId = state.uri.queryParameters['eventId'];
               return GpsRecordingScreen(eventId: eventId);
+            },
+          ),
+          GoRoute(
+            path: 'championships/:id',
+            builder: (context, state) {
+              final id = state.pathParameters['id']!;
+              return ChampionshipStandingsScreen(championshipId: id);
             },
           ),
         ],
