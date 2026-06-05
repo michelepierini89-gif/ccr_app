@@ -33,6 +33,7 @@ class SpecialTempo {
   final int ordine;
   final Duration tempo;
   final bool controlPointsOk;
+  final List<int> missedCpPositions; // 1-based positions of missed control points
 
   const SpecialTempo({
     required this.specialeId,
@@ -40,6 +41,7 @@ class SpecialTempo {
     required this.ordine,
     required this.tempo,
     required this.controlPointsOk,
+    this.missedCpPositions = const [],
   });
 
   String get tempoFormatted {

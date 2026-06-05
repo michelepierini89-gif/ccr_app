@@ -474,6 +474,57 @@ class _SpecialRow extends StatelessWidget {
 
   const _SpecialRow({required this.special, required this.isPunti});
 
+  void _showMissedCpsDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: Row(
+          children: [
+            const Icon(Icons.warning_amber_rounded,
+                color: AppColors.warning, size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '${special.specialeNome} — CP mancati',
+                style: const TextStyle(
+                    color: AppColors.textPrimary, fontSize: 14),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: special.missedCpPositions
+              .map((pos) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.cancel_outlined,
+                            color: AppColors.warning, size: 14),
+                        const SizedBox(width: 8),
+                        Text(
+                          'P$pos non rilevato',
+                          style: const TextStyle(
+                              color: AppColors.textSecondary, fontSize: 13),
+                        ),
+                      ],
+                    ),
+                  ))
+              .toList(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Chiudi',
+                style: TextStyle(color: AppColors.accent)),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -510,10 +561,10 @@ class _SpecialRow extends StatelessWidget {
             ),
           ),
           if (!special.controlPointsOk)
-            const Padding(
-              padding: EdgeInsets.only(right: 6),
-              child: Tooltip(
-                message: 'Control point mancante',
+            GestureDetector(
+              onTap: () => _showMissedCpsDialog(context),
+              child: const Padding(
+                padding: EdgeInsets.only(right: 6),
                 child: Icon(Icons.warning_amber_rounded,
                     color: AppColors.warning, size: 14),
               ),

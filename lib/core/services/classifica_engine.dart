@@ -108,17 +108,23 @@ class ClassificaEngine {
       if (!end.timestamp.isAfter(start.timestamp)) continue;
 
       final tempo = end.timestamp.difference(start.timestamp);
-      final cpOk = special.controlPoints.every((cp) => passages.any((p) =>
-          p.waypointId == cp.id &&
-          p.timestamp.isAfter(start.timestamp) &&
-          p.timestamp.isBefore(end.timestamp)));
+      final missed = <int>[];
+      for (int i = 0; i < special.controlPoints.length; i++) {
+        final cp = special.controlPoints[i];
+        final passed = passages.any((p) =>
+            p.waypointId == cp.id &&
+            p.timestamp.isAfter(start.timestamp) &&
+            p.timestamp.isBefore(end.timestamp));
+        if (!passed) missed.add(i + 1);
+      }
 
       result.add(SpecialTempo(
         specialeId: special.id,
         specialeNome: special.nome,
         ordine: special.ordine,
         tempo: tempo,
-        controlPointsOk: cpOk,
+        controlPointsOk: missed.isEmpty,
+        missedCpPositions: missed,
       ));
     }
     return result;
