@@ -106,10 +106,12 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   }
 
   Future<void> _loadEventTrack() async {
-    if (widget.eventId == null || _eventTrackLoaded) return;
+    final gps = ref.read(gpsServiceProvider);
+    final eid = widget.eventId ?? gps.activeEventId;
+    if (eid == null || _eventTrackLoaded) return;
     _eventTrackLoaded = true;
     try {
-      final event = await ref.read(eventProvider(widget.eventId!).future);
+      final event = await ref.read(eventProvider(eid).future);
       if (event?.trackUrl == null || !mounted) return;
       final bytes = await StorageService().downloadTrack(event!.trackUrl!);
       final content = utf8.decode(bytes);
@@ -322,18 +324,21 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     final pos = gps.lastPosition;
     final isRecording = gps.isRecording;
 
-    final eventAsync = widget.eventId != null
-        ? ref.watch(eventStreamProvider(widget.eventId!))
+    // Usa l'eventId attivo nel GPS se la schermata è aperta senza eventId
+    // (es. tab GPS aperto mentre la registrazione gira per un altro evento)
+    final effectiveEventId = widget.eventId ?? gps.activeEventId;
+    final eventAsync = effectiveEventId != null
+        ? ref.watch(eventStreamProvider(effectiveEventId))
         : null;
     final event = eventAsync?.valueOrNull;
     final startEnabled = event?.startEnabled ?? true;
-    final canStart = widget.eventId == null || startEnabled;
+    final canStart = effectiveEventId == null || startEnabled;
 
     // Withdrawal check
     final authUser = ref.watch(authStateProvider).valueOrNull;
-    final Set<String> withdrawnIds = widget.eventId != null
+    final Set<String> withdrawnIds = effectiveEventId != null
         ? ref
-                .watch(withdrawalsStreamProvider(widget.eventId!))
+                .watch(withdrawalsStreamProvider(effectiveEventId))
                 .valueOrNull ??
             {}
         : {};
@@ -345,7 +350,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
       body: SafeArea(
         child: isRecording
             ? _buildActiveTracking(gps, pos, event)
-            : _buildPreStart(gps, pos, canStart, isWithdrawn),
+            : _buildPreStart(gps, pos, canStart, isWithdrawn, effectiveEventId),
       ),
     );
   }
@@ -353,11 +358,12 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   // ── Pre-start view ──────────────────────────────────────────────────────────
 
   Widget _buildPreStart(
-      GpsService gps, dynamic pos, bool canStart, bool isWithdrawn) {
+      GpsService gps, dynamic pos, bool canStart, bool isWithdrawn,
+      [String? effectiveEventId]) {
     if (isWithdrawn) {
       return Column(
         children: [
-          _TopBar(eventId: widget.eventId, elapsed: null, isRecording: false),
+          _TopBar(eventId: effectiveEventId, elapsed: null, isRecording: false),
           Expanded(
             child: Center(
               child: Padding(
@@ -395,7 +401,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     return Column(
       children: [
         _TopBar(
-          eventId: widget.eventId,
+          eventId: effectiveEventId,
           elapsed: null,
           isRecording: false,
         ),
