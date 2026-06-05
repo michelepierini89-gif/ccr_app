@@ -644,21 +644,12 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                         point: curPos,
                         width: 36,
                         height: 36,
-                        child: RotatedBox(
-                          quarterTurns: 0,
-                          child: Transform.rotate(
-                            angle: arrowAngle,
-                            child: Icon(
-                              Icons.navigation,
-                              color: AppColors.accent,
-                              size: 32,
-                              shadows: [
-                                Shadow(
-                                  color: Colors.black54,
-                                  blurRadius: 6,
-                                ),
-                              ],
-                            ),
+                        child: Transform.rotate(
+                          angle: arrowAngle,
+                          child: Icon(
+                            Icons.navigation,
+                            color: AppColors.accent,
+                            size: 32,
                           ),
                         ),
                       ),
