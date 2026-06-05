@@ -28,7 +28,7 @@ class GpsRecordingScreen extends ConsumerStatefulWidget {
 }
 
 class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   Timer? _elapsedTimer;
   Duration _elapsed = Duration.zero;
   late AnimationController _pulseController;
@@ -758,26 +758,26 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           color: AppColors.cardBackground,
           child: Row(
             children: [
-              // FINE GARA button — abilitato solo quando tutti i waypoint sono passati
+              // FINE GARA button — abilitato quando tutte le speciali sono completate
               Expanded(
                 flex: 2,
                 child: SizedBox(
                   height: 52,
                   child: Tooltip(
-                    message: gps.remainingWaypoints.isEmpty
+                    message: _allSpecialsCompleted(gps, event)
                         ? ''
                         : 'Completa tutte le speciali prima di terminare',
                     child: ElevatedButton.icon(
-                      onPressed: gps.remainingWaypoints.isEmpty
+                      onPressed: _allSpecialsCompleted(gps, event)
                           ? _toggleRecording
                           : null,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.cardBackground,
-                        foregroundColor: gps.remainingWaypoints.isEmpty
+                        foregroundColor: _allSpecialsCompleted(gps, event)
                             ? AppColors.textPrimary
                             : AppColors.textSecondary,
                         side: BorderSide(
-                          color: gps.remainingWaypoints.isEmpty
+                          color: _allSpecialsCompleted(gps, event)
                               ? AppColors.border
                               : AppColors.border.withValues(alpha: 0.3),
                         ),
@@ -795,7 +795,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
               const SizedBox(width: 12),
               // RITIRO button
               Expanded(
-                flex: 3,
+                flex: 1,
                 child: AnimatedBuilder(
                   animation: _pulseAnimation,
                   builder: (ctx, child) => Transform.scale(
@@ -828,6 +828,14 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     );
       }, // StreamBuilder builder
     );   // StreamBuilder
+  }
+
+  bool _allSpecialsCompleted(GpsService gps, EventModel? event) {
+    if (event == null || event.speciali.isEmpty) {
+      return gps.remainingWaypoints.isEmpty;
+    }
+    return gps.specialEntries.where((e) => e.exitTime != null).length >=
+        event.speciali.length;
   }
 
   Widget _vDivider() => Container(
