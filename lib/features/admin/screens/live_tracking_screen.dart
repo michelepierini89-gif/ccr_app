@@ -23,8 +23,17 @@ class LiveTrackingScreen extends ConsumerStatefulWidget {
 class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
   List<LatLng> _eventTrackPoints = [];
   String? _loadedTrackUrl;
+  late final Stream<List<GpsPointModel>> _pilotStream;
 
   static const _onlineThreshold = Duration(seconds: 60);
+
+  @override
+  void initState() {
+    super.initState();
+    _pilotStream = ref
+        .read(firestoreServiceProvider)
+        .getPilotTracking(widget.eventId);
+  }
 
   Future<void> _loadTrack(String url) async {
     if (url == _loadedTrackUrl) return;
@@ -62,7 +71,7 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
     if (event?.trackUrl != null) _loadTrack(event!.trackUrl!);
 
     return StreamBuilder<List<GpsPointModel>>(
-      stream: ref.read(firestoreServiceProvider).getPilotTracking(widget.eventId),
+      stream: _pilotStream,
       builder: (context, snapshot) {
         if (!snapshot.hasData && snapshot.connectionState == ConnectionState.waiting) {
           return const Center(
