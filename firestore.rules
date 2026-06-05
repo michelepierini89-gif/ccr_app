@@ -2,16 +2,84 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Development: allow all authenticated reads/writes
-    // TODO: restore granular rules before production (see git commit 25ad689)
-    match /{document=**} {
-      allow read, write: if request.auth != null;
+
+    function isAuthenticated() {
+      return request.auth != null;
     }
-    // Championships collection — covered by the wildcard rule above in dev.
-    // In production, restrict to: admin write, authenticated read.
-    // match /championships/{champId} {
-    //   allow read: if request.auth != null;
-    //   allow write: if request.auth != null && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
-    // }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function isOwner(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+
+    // ── Users ────────────────────────────────────────────────────────────────
+    match /users/{userId} {
+      allow read, write: if isOwner(userId) || isAdmin();
+    }
+
+    // ── User notifications ────────────────────────────────────────────────────
+    match /user_notifications/{userId}/items/{notifId} {
+      allow read: if isOwner(userId);
+      // Admin writes when approving/rejecting registrations
+      allow write: if isOwner(userId) || isAdmin();
+    }
+
+    // ── Events ────────────────────────────────────────────────────────────────
+    match /events/{eventId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+
+      // Registrations — all auth read; own pilot create; admin update/delete
+      match /iscritti/{userId} {
+        allow read: if isAuthenticated();
+        allow create: if isOwner(userId);
+        allow update, delete: if isAdmin();
+      }
+
+      // Teams — all auth read/write (pilots join/leave)
+      match /teams/{teamId} {
+        allow read, write: if isAuthenticated();
+      }
+
+      // Withdrawals — all auth read (classifica); own pilot create
+      match /withdrawals/{userId} {
+        allow read: if isAuthenticated();
+        allow create: if isOwner(userId);
+      }
+
+      // Event notifications (admin inbox) — all auth write; admin read
+      match /notifications/{notifId} {
+        allow create: if isAuthenticated();
+        allow read: if isAdmin();
+      }
+    }
+
+    // ── GPS Tracking ──────────────────────────────────────────────────────────
+    // Live positions — only own pilot writes; only admin reads (privacy)
+    match /tracking/{eventId}/pilots/{userId} {
+      allow read: if isAdmin();
+      allow write: if isOwner(userId);
+    }
+
+    // Waypoint passages — all auth read/write (classifica computation)
+    match /tracking/{eventId}/passages/{passageId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // ── Championships ─────────────────────────────────────────────────────────
+    match /championships/{champId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // ── Penalty settings ──────────────────────────────────────────────────────
+    match /penalty_settings/{docId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
   }
 }
