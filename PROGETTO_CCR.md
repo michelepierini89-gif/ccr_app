@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 05 giugno 2026 (Step 11 completato)  
+**Data aggiornamento:** 05 giugno 2026 (Step 13 completato)  
 **Branch:** main  
 **Versione:** 1.0.0+1
 
@@ -20,7 +20,7 @@
 | Routing | GoRouter (`go_router ^15.1.2`) |
 | Mappe | flutter_map + OpenStreetMap (tile) |
 | Geolocalizzazione | geolocator + latlong2 |
-| GPS background | flutter_background_service |
+| GPS background | geolocator AndroidSettings + ForegroundNotificationConfig |
 | Parser tracciati | gpx + xml (parsing GPX/KML) |
 | File picking | file_picker |
 | Localizzazione | intl (locale it_IT) |
@@ -45,26 +45,30 @@ ccr_app/
 │   │   │   ├── app_constants.dart
 │   │   │   └── firebase_constants.dart
 │   │   ├── models/
+│   │   │   ├── championship_model.dart   # Campionato: id, nome, stagione, eventIds, colorIndex
 │   │   │   ├── event_model.dart
 │   │   │   ├── gps_point_model.dart
-│   │   │   ├── registration_model.dart
+│   │   │   ├── registration_model.dart   # + teamName: String? (nuovo squadra al volo)
 │   │   │   ├── special_model.dart        # + controlPoints: List<WaypointModel>
 │   │   │   ├── team_model.dart
 │   │   │   ├── user_model.dart           # UserRole: admin / pilot
 │   │   │   └── waypoint_model.dart
 │   │   ├── services/
 │   │   │   ├── auth_service.dart
-│   │   │   ├── firestore_service.dart    # + getEventById() stream
-│   │   │   ├── gps_service.dart              # + positionStream (StreamController broadcast)
+│   │   │   ├── firestore_service.dart    # + championship CRUD, getPassagesOnce, getRegistrationsOnce
+│   │   │   ├── gps_service.dart          # + positionStream (broadcast); AndroidSettings no timeLimit
 │   │   │   ├── gpx_parser.dart           # Parser GPX + KML (web-safe, no dart:io)
-│   │   │   ├── storage_service.dart          # downloadTrack via SDK (refFromURL+getData, autenticato)
+│   │   │   ├── offline_queue_service.dart # + queueRegistration teamName, queueJoinTeam
+│   │   │   ├── storage_service.dart      # downloadTrack via SDK (refFromURL+getData, autenticato)
 │   │   │   └── waypoint_detector.dart
 │   │   ├── theme/
 │   │   │   ├── app_colors.dart
 │   │   │   └── app_theme.dart            # Tema scuro (bg #0a0c12, accent #e53e1e)
-│   │   └── utils/
-│   │       ├── color_utils.dart
-│   │       └── location_utils.dart
+│   │   ├── utils/
+│   │   │   ├── color_utils.dart
+│   │   │   └── location_utils.dart
+│   │   └── widgets/
+│   │       └── skeleton_loader.dart      # SkeletonBox animato (ColorTween 900ms)
 │   │
 │   ├── features/
 │   │   ├── auth/
@@ -76,7 +80,8 @@ ccr_app/
 │   │   ├── admin/
 │   │   │   ├── providers/admin_provider.dart  # + eventStreamProvider
 │   │   │   ├── screens/
-│   │   │   │   ├── admin_home_screen.dart
+│   │   │   │   ├── admin_home_screen.dart         # + bottone trofeo AppBar → /admin/championships
+│   │   │   │   ├── championship_screen.dart        # lista campionati + crea; gestione eventi con Switch
 │   │   │   │   ├── create_event_screen.dart       # dimensione squadra + tipologia classifica
 │   │   │   │   ├── event_management_screen.dart   # tab responsive, bloccate in BOZZA
 │   │   │   │   ├── live_tracking_screen.dart      # mappa multi-pilota real-time + GPX evento
@@ -89,9 +94,10 @@ ccr_app/
 │   │   ├── pilot/
 │   │   │   ├── providers/pilot_provider.dart      # + eventProvider FutureProvider
 │   │   │   ├── screens/
-│   │   │   │   ├── pilot_home_screen.dart          # bottom nav, GPS banner
-│   │   │   │   ├── event_detail_screen.dart        # mappa tracciato da Storage
-│   │   │   │   ├── event_list_screen.dart
+│   │   │   │   ├── pilot_home_screen.dart          # 4 tab: Gare|GPS|Campionati|Profilo; PopScope
+│   │   │   │   ├── event_detail_screen.dart        # skeleton, errore+retry, dialog iscrizione 2-step
+│   │   │   │   ├── event_list_screen.dart          # skeleton, errore+retry, empty state CTA
+│   │   │   │   ├── championship_standings_screen.dart # podio + tabella classifica campionato
 │   │   │   │   ├── gps_recording_screen.dart       # START/FINE GARA, mappa live GPX+PS+ristoro, freccia bearing
 │   │   │   │   └── team_screen.dart                # nomi membri da registrazioni
 │   │   │   └── widgets/ (event_card_pilot, gps_status_widget)
@@ -132,12 +138,16 @@ ccr_app/
     /admin/event/:id/registrations
     /admin/event/:id/live          → LiveTrackingScreen
     /admin/event/:id/timing        → TimingScreen (admin)
-/pilot              → PilotHomeScreen
+  /admin/championships             → ChampionshipScreen (lista + crea)
+  /admin/championships/:id         → ChampionshipManagementScreen (toggle eventi)
+  /admin/championships/:id/standings → ChampionshipStandingsScreen (admin)
+/pilot              → PilotHomeScreen (4 tab: Gare|GPS|Campionati|Profilo)
   /pilot/event/:id  → EventDetailScreen
     /pilot/event/:id/team          → TeamScreen
     /pilot/event/:id/classifica    → ClassificaScreen
     /pilot/event/:id/timing        → TimingScreen (pilota)
   /pilot/gps        → GpsRecordingScreen
+  /pilot/championships/:id         → ChampionshipStandingsScreen (pilota)
 ```
 
 **Redirect automatico basato su ruolo:** dopo il login, `UserRole.admin` va a `/admin`, altrimenti a `/pilot`.
@@ -361,30 +371,7 @@ gsutil cors get gs://ccr-enduro.firebasestorage.app
 | `firebase_storage/unauthorized` su browser | `downloadTrack` usava `http.get` anonimo senza credenziali Auth | `FirebaseStorage.instance.refFromURL(url).getData()` porta il token automaticamente |
 | Freccia pilota ferma al punto di avvio | `ref.listen` muoveva solo camera, non richiedeva `setState`; marker con `const` non si ricostruiva | `GpsService.positionStream` + `StreamBuilder` in `_buildActiveTracking`; `RotatedBox+Transform.rotate` non-const |
 | Marker admin non aggiornati in real-time | `liveTrackingProvider` cacheato non triggera rebuild Riverpod su ogni emit Firestore | `StreamBuilder` diretto su `firestoreService.getPilotTracking()` bypassa la cache |
-
----
-
-## Prossimi Step
-
-### Step 9 — Deploy e UX offline ✅ (04 giugno 2026)
-- [x] Deploy su Firebase Hosting (`firebase deploy --only hosting`) ✅
-- [x] Regole Firebase Storage (`storage.rules`, deploy `--only storage`) ✅
-- [x] Banner offline con badge in PilotHomeScreen ✅
-- [x] Sync offline per `joinTeam` e `updatePilotTracking` ✅
-- [x] Backoff esponenziale per retry sync ✅
-- [x] Pull-to-refresh su EventDetailScreen e TimingScreen ✅
-- [ ] Build APK Android (richiede WSL2 riavviato con `.wslconfig` memory=4GB)
-- [ ] Test su Android con GPS reale
-- [ ] Test end-to-end classifica e timing con più piloti
-- [ ] Test flusso offline: spegnere connessione durante tracking, verificare sync al ritorno
-
-### Step 10 — Fix & UX miglioramenti (04 giugno 2026) ✅
-- [x] **Fix Firestore rules**: aggiunta regola `user_notifications/{userId}/items` → admin può inviare notifiche ai piloti senza permission-denied ✅
-- [x] **Icona app Android**: coppa stilizzata rossa `#e53e1e` su sfondo nero per mipmap-mdpi/hdpi/xhdpi/xxhdpi/xxxhdpi ✅
-- [x] **Slider con frecce**: pulsanti `–` e `+` accanto a ogni slider (inizio, fine, punti di controllo) in `SpecialsEditorScreen` ✅
-- [x] **Marker PS sulla mappa**: `WaypointMarkersLayer` mostra etichette PS1, PS2… con icona play(▶)/stop(■) colorate per inizio/fine speciale ✅
-- [x] **Elimina evento**: pulsante cestino rosso nell'AppBar di `EventManagementScreen` con doppia conferma, elimina da Firestore e torna a `/admin` ✅
-- [x] **Frase logo**: `"manca m'ai chen..."` in corsivo grigio chiaro sotto il logo CCR nella schermata di login ✅
+| DIST=0m e VEL=0 km/h su Android anche con GPS attivo | `LocationSettings(timeLimit: Duration(ms))` è un timeout, non un intervallo: scadeva dopo 3s senza movimento, `TimeoutException` terminava lo stream silenziosamente | Rimosso `timeLimit`; uso `AndroidSettings(intervalDuration:...)` con `ForegroundNotificationConfig` e `distanceFilter: 2`; error recovery con riavvio automatico stream |
 
 ### Step 11 — GPS real-time, mappe avanzate, fix Storage (05 giugno 2026) ✅
 
@@ -421,13 +408,54 @@ gsutil cors get gs://ccr-enduro.firebasestorage.app
 - `firebase deploy --only hosting` su https://ccr-enduro.web.app
 - `git push origin main` → GitHub Actions genera APK Android automaticamente
 
-### Step 12 — Possibili evoluzioni
-- Ripristinare regole Firestore/Storage granulari per produzione
-- Test GPS reale su device Android (freccia bearing, speciali, waypoint)
-- Test end-to-end classifica e timing con più piloti
-- Export PDF risultati post-gara (logo CCR, classifica finale, tempi speciali)
+### Step 12 — Navigazione, Campionati, Iscrizione 2-step (05 giugno 2026) ✅
+
+**Navigazione pilota migliorata:**
+- `SkeletonBox` animato (`ColorTween` 900ms repeat-reverse) in `lib/core/widgets/skeleton_loader.dart`
+- `EventListScreen`: 4 card skeleton durante caricamento; stato errore con `Icons.cloud_off` + pulsante Riprova; empty state con icona tonda accent + testo guida + pulsante Aggiorna
+- `EventDetailScreen`: skeleton header durante caricamento; stato errore con retry; loading indica il nome evento nell'AppBar
+- `PilotHomeScreen`: 4 tab (Gare | GPS | Campionati | Profilo) con icone filled/outlined per tab attivo; titolo AppBar dinamico per tab; `PopScope(canPop: false)` con dialog di conferma uscita su back Android
+
+**Sistema Campionati:**
+- `ChampionshipModel`: id, nome, descrizione, stagione (int), eventIds (List<String>), colorIndex, createdBy, createdAt; `fromFirestore`/`toFirestore`/`copyWith`
+- `FirestoreService`: metodi CRUD campionati (`createChampionship`, `updateChampionship`, `deleteChampionship`, `getChampionships`, `getChampionshipById`, `addEventToChampionship`, `removeEventFromChampionship`) + `getPassagesOnce`, `getRegistrationsOnce`, `getTeamsOnce`, `getWithdrawalsOnce`
+- **Admin** (`championship_screen.dart`): `ChampionshipScreen` — lista campionati + FAB crea (nome, year stepper, color picker); `ChampionshipManagementScreen` — header info, toggle eventi con `Switch` (`activeThumbColor`), link classifica, elimina con confirm
+- **Classifica campionato** (`championship_standings_screen.dart`): `FutureProvider.family` aggrega `ClassificaEngine` per ogni evento del campionato, somma punti per teamNome (case-insensitive); podio a 3 colonne (altezze 80/60/50, colori oro/argento/bronzo); tabella completa con icone posizione; pulsante refresh
+- **Pilota** (`PilotHomeScreen`): tab "Campionati" con `_allChampionshipsProvider` (StreamProvider, no filtro createdBy); naviga a `ChampionshipStandingsScreen` con `context.push`
+- `AdminHomeScreen`: bottone trofeo `EmojiEvents` in AppBar → `/admin/championships`
+- `app.dart`: 4 nuove route aggiunte (admin championships + pilot championships)
+
+**Flusso iscrizione 2 step (`_RegistrationDialog` in `event_detail_screen.dart`):**
+- `RegistrationModel.teamName: String?` aggiunto (nullable); `fromFirestore` legge `d['teamName']`; `toFirestore` scrive solo se non-null
+- `OfflineQueueService.queueRegistration`: accetta `teamName` opzionale, lo propaga in `syncPending`
+- `_RegistrationDialog` (ConsumerStatefulWidget): step 0 — lista squadre con posti disponibili (pulsante Scegli) + opzione "Crea nuova squadra" (TextField inline); step 1 — riepilogo evento/squadra/ruolo/pilota + banner info + pulsante "Invia richiesta"; `_StepDot` widget indicatore step
+- `_doRegister()`: per squadra esistente → `joinTeam` + `registerForEvent`; per nuova squadra → `createTeam` + `registerForEvent(teamName: nome)`
+- `EventListScreen`: pulsante "Iscriviti" naviga al dettaglio evento (no quick-register inline)
+
+### Step 13 — Fix GPS stream Android (05 giugno 2026) ✅
+
+**Root cause:**
+`_startPositionStream` usava `LocationSettings(timeLimit: Duration(milliseconds: intervalMs))`. `timeLimit` in geolocator è un **timeout** (non un intervallo di polling): scadeva dopo 3 secondi senza movimento, lanciava `TimeoutException`, l'`onError` la ingoiava silenziosamente e lo stream moriva. Il mode non cambiava mai → `_startPositionStream` non veniva mai richiamato → DIST=0m, VEL=0 km/h bloccati.
+
+**Fix applicato (`gps_service.dart`):**
+- Rimosso `timeLimit` completamente
+- **Android**: `AndroidSettings` con `intervalDuration: Duration(milliseconds: intervalMs)` per polling a cadenza configurabile; `ForegroundNotificationConfig(enableWakeLock: true)` per GPS attivo a schermo spento senza flutter_background_service
+- **iOS/macOS**: `AppleSettings` con `activityType: ActivityType.fitness`, `pauseLocationUpdatesAutomatically: false`, `showBackgroundLocationIndicator: true`
+- **Web**: `LocationSettings` base (senza piattaforma-specific)
+- `distanceFilter: 2` su tutte le piattaforme (filtra rumore < 2m)
+- Error recovery: `onError` ora riavvia `_startPositionStream` dopo 2s se `_isRecording == true`
+- `flutter analyze`: zero warning
+
+---
+
+## Prossimi Step
+
+- Ripristinare regole Firestore/Storage granulari per produzione (da git history commit `25ad689`)
+- Build APK Android (GitHub Actions su `git push origin main`)
+- Test GPS reale su device Android (verificare DIST e VEL con movimento reale)
+- Test end-to-end classifica campionato con più eventi reali
+- Test flusso iscrizione 2-step su web e Android
 - Trail percorso per ogni pilota nella mappa admin live (attualmente solo posizione istantanea)
-- Dashboard admin con statistiche gara (passaggi speciali, ritiri, progressi)
+- Export PDF risultati post-gara (logo CCR, classifica finale, tempi speciali)
 - Schermata "Profilo pilota" con modifica nome/cognome
-- Coverage test su GpsService e ClassificaEngine
 - GitHub Actions CI completo (flutter test + flutter analyze)
