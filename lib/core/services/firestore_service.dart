@@ -4,6 +4,7 @@ import '../constants/firebase_constants.dart';
 import '../models/app_notification_model.dart';
 import '../models/championship_model.dart';
 import '../models/event_model.dart';
+import '../models/penalty_settings_model.dart';
 import '../models/registration_model.dart';
 import '../models/team_model.dart';
 import '../models/gps_point_model.dart';
@@ -424,4 +425,31 @@ class FirestoreService {
         'waypointNome': waypointNome,
         'timestamp': Timestamp.fromDate(timestamp),
       });
+
+  // Penalty settings (documento unico 'default' nella collezione penalty_settings)
+
+  static const _penaltyDocId = 'default';
+
+  Stream<PenaltySettingsModel> penaltySettingsStream() => _db
+      .collection(FirebaseConstants.penaltySettings)
+      .doc(_penaltyDocId)
+      .snapshots()
+      .map((doc) => doc.exists
+          ? PenaltySettingsModel.fromMap(
+              doc.data() as Map<String, dynamic>)
+          : const PenaltySettingsModel());
+
+  Future<PenaltySettingsModel> getPenaltySettings() async {
+    final doc = await _db
+        .collection(FirebaseConstants.penaltySettings)
+        .doc(_penaltyDocId)
+        .get();
+    if (!doc.exists) return const PenaltySettingsModel();
+    return PenaltySettingsModel.fromMap(doc.data() as Map<String, dynamic>);
+  }
+
+  Future<void> savePenaltySettings(PenaltySettingsModel settings) => _db
+      .collection(FirebaseConstants.penaltySettings)
+      .doc(_penaltyDocId)
+      .set(settings.toMap());
 }

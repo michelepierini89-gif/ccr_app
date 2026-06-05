@@ -14,4 +14,5 @@ class FirebaseConstants {
   static const String items = 'items';
   static const String fcmToken = 'fcmToken';
   static const String championships = 'championships';
+  static const String penaltySettings = 'penalty_settings';
 }

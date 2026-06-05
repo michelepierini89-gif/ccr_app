@@ -489,6 +489,48 @@ gsutil cors get gs://ccr-enduro.firebasestorage.app
 
 ---
 
+### Step 15 — Sistema penalità completo (05 giugno 2026) ✅
+
+**PenaltySettingsModel:**
+- Nuovo modello `lib/core/models/penalty_settings_model.dart` con campi: `cp1Mancato` (60s), `cp2Mancati` (180s), `cp3oPiuMancati` (360s), `ritiroCompagno` (600s)
+- `fromMap` / `toMap` / `copyWith` / `formatSeconds()` (es. "1m 30s")
+- Collezione Firestore `penalty_settings`, documento `default`
+
+**FirestoreService:**
+- `penaltySettingsStream()` — Stream real-time delle penalità
+- `getPenaltySettings()` — lettura singola (async)
+- `savePenaltySettings()` — salvataggio
+
+**ClassificaEngine (riscritta):**
+- `compute()` accetta `PenaltySettingsModel penalties`
+- `_cpPenaltySeconds(missedCount, p)`: 0→0s, 1→cp1Mancato, 2→cp2Mancati, 3+→cp3oPiuMancati
+- `SpecialTempo.penaltySeconds` incluso nel `tempo` (tempo netto + penalità CP)
+- Logica ritiro squadra: `ritirato` = TUTTI i membri ritirati; `ritiroCompagno` = ALCUNI (non tutti) ritirati → penalità `ritiroCompagno` aggiunta al `tempoTotale`
+- `ClassificaEntry.ritiroCompagno` + `ritiroCompagnoPenaltySeconds`
+
+**UI Penalità Admin (`penalty_settings_screen.dart`):**
+- Schermata stepper (+/-30s per campo) accessibile da `AdminHomeScreen` via icona `tune`
+- Pulsante Salva + Ripristina valori predefiniti
+- Banner informativo, sezioni CP e Squadra
+
+**Routing:**
+- Route `/admin/penalty-settings` aggiunta in `app.dart`
+- Icona `tune` in AppBar di `AdminHomeScreen`
+
+**Classifica UI:**
+- Badge "COMP. RIT." (arancione) su card pilota con ritiro compagno
+- Indicatore "+Xs PEN" sotto il tempo totale nella card
+- Indicatore "+Xs PEN" nella riga espansa di ogni speciale con penalità CP
+
+**Campionato:**
+- `ChampionshipStandingsScreen`: carica penalità da Firestore e le passa a `ClassificaEngine.compute()`
+
+**Deploy:**
+- `firebase deploy --only hosting` su https://ccr-enduro.web.app
+- `git push origin main` → GitHub Actions genera APK Android
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**

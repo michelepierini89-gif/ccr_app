@@ -1,5 +1,6 @@
 import '../models/event_model.dart';
 import '../models/classifica_model.dart';
+import '../models/penalty_settings_model.dart';
 import '../models/registration_model.dart';
 import '../models/team_model.dart';
 import '../models/gps_point_model.dart';
@@ -14,6 +15,7 @@ class ClassificaEngine {
     required List<TeamModel> teams,
     required Set<String> withdrawals,
     required List<GpsPointModel> liveTracking,
+    PenaltySettingsModel penalties = const PenaltySettingsModel(),
   }) {
     final approvedRegs =
         registrations.where((r) => r.stato == RegistrationStatus.approvato).toList();
@@ -46,8 +48,14 @@ class ClassificaEngine {
       final teamPassages =
           passages.where((p) => memberIds.contains(p.userId)).toList();
       final isLive = memberIds.any(liveUserIds.contains);
-      final ritirato = memberIds.any(withdrawals.contains);
       final membriNomi = teamRegs.map((r) => r.nomeCompleto).toList();
+
+      // ritirato = TUTTI i membri si sono ritirati
+      // ritiroCompagno = ALCUNI (non tutti) si sono ritirati (penalità, ma non classificato come ritirato)
+      final withdrawnCount = memberIds.where(withdrawals.contains).length;
+      final ritirato = withdrawnCount == memberIds.length && withdrawnCount > 0;
+      final ritiroCompagno =
+          !ritirato && withdrawnCount > 0 && memberIds.length > 1;
 
       rawEntries.add(_RawEntry(
         entryId: teamId,
@@ -55,6 +63,7 @@ class ClassificaEngine {
         membriNomi: membriNomi,
         passages: teamPassages,
         ritirato: ritirato,
+        ritiroCompagno: ritiroCompagno,
         isLive: isLive,
       ));
     }
@@ -69,28 +78,40 @@ class ClassificaEngine {
         membriNomi: [reg.nomeCompleto],
         passages: userPassages,
         ritirato: withdrawals.contains(reg.userId),
+        ritiroCompagno: false,
         isLive: liveUserIds.contains(reg.userId),
       ));
     }
 
-    // Compute special times for each entry
+    // Compute special times for each entry (CP penalties included in tempo)
     final computed = rawEntries.map((e) {
-      final speciali = _computeSpeciali(event, e.passages);
+      final speciali = _computeSpeciali(event, e.passages, penalties);
+      final cpTotale = speciali.fold(Duration.zero, (acc, s) => acc + s.tempo);
+      final ritiroPenaltySeconds =
+          e.ritiroCompagno ? penalties.ritiroCompagno : 0;
       final tempoTotale =
-          speciali.fold(Duration.zero, (acc, s) => acc + s.tempo);
-      return (entry: e, speciali: speciali, tempoTotale: tempoTotale);
+          cpTotale + Duration(seconds: ritiroPenaltySeconds);
+      return (
+        entry: e,
+        speciali: speciali,
+        tempoTotale: tempoTotale,
+        ritiroPenaltySeconds: ritiroPenaltySeconds,
+      );
     }).toList();
 
     if (event.tipologiaClassifica == TipologiaClassifica.punteggioSpeciale) {
-      return _rankByPoints(computed, event);
+      return _rankByPoints(computed, event, penalties);
     }
     return _rankByTime(computed, event.speciali.length);
   }
 
   static List<SpecialTempo> _computeSpeciali(
-      EventModel event, List<WaypointPassageRecord> passages) {
+      EventModel event,
+      List<WaypointPassageRecord> passages,
+      PenaltySettingsModel penalties) {
     final result = <SpecialTempo>[];
-    for (final special in event.speciali..sort((a, b) => a.ordine.compareTo(b.ordine))) {
+    for (final special
+        in event.speciali..sort((a, b) => a.ordine.compareTo(b.ordine))) {
       final iniP = passages
           .where((p) => p.waypointId == special.waypointInizio.id)
           .toList()
@@ -107,7 +128,7 @@ class ClassificaEngine {
           orElse: () => finP.first);
       if (!end.timestamp.isAfter(start.timestamp)) continue;
 
-      final tempo = end.timestamp.difference(start.timestamp);
+      final cleanTempo = end.timestamp.difference(start.timestamp);
       final missed = <int>[];
       for (int i = 0; i < special.controlPoints.length; i++) {
         final cp = special.controlPoints[i];
@@ -118,6 +139,9 @@ class ClassificaEngine {
         if (!passed) missed.add(i + 1);
       }
 
+      final penaltySeconds = _cpPenaltySeconds(missed.length, penalties);
+      final tempo = cleanTempo + Duration(seconds: penaltySeconds);
+
       result.add(SpecialTempo(
         specialeId: special.id,
         specialeNome: special.nome,
@@ -125,13 +149,27 @@ class ClassificaEngine {
         tempo: tempo,
         controlPointsOk: missed.isEmpty,
         missedCpPositions: missed,
+        penaltySeconds: penaltySeconds,
       ));
     }
     return result;
   }
 
+  static int _cpPenaltySeconds(int missedCount, PenaltySettingsModel p) {
+    if (missedCount == 0) return 0;
+    if (missedCount == 1) return p.cp1Mancato;
+    if (missedCount == 2) return p.cp2Mancati;
+    return p.cp3oPiuMancati;
+  }
+
   static List<ClassificaEntry> _rankByTime(
-    List<({_RawEntry entry, List<SpecialTempo> speciali, Duration tempoTotale})>
+    List<
+            ({
+              _RawEntry entry,
+              List<SpecialTempo> speciali,
+              Duration tempoTotale,
+              int ritiroPenaltySeconds,
+            })>
         computed,
     int totaleSpeciali,
   ) {
@@ -178,15 +216,24 @@ class ClassificaEngine {
         punteggioTotale: 0,
         posizione: myPos,
         ritirato: c.entry.ritirato,
+        ritiroCompagno: c.entry.ritiroCompagno,
+        ritiroCompagnoPenaltySeconds: c.ritiroPenaltySeconds,
         isLive: c.entry.isLive,
       );
     }).toList();
   }
 
   static List<ClassificaEntry> _rankByPoints(
-    List<({_RawEntry entry, List<SpecialTempo> speciali, Duration tempoTotale})>
+    List<
+            ({
+              _RawEntry entry,
+              List<SpecialTempo> speciali,
+              Duration tempoTotale,
+              int ritiroPenaltySeconds,
+            })>
         computed,
     EventModel event,
+    PenaltySettingsModel penalties,
   ) {
     // Assign points per special
     final pointsMap = <String, int>{};
@@ -246,6 +293,8 @@ class ClassificaEngine {
         punteggioTotale: pts,
         posizione: myPos,
         ritirato: c.entry.ritirato,
+        ritiroCompagno: c.entry.ritiroCompagno,
+        ritiroCompagnoPenaltySeconds: c.ritiroPenaltySeconds,
         isLive: c.entry.isLive,
       );
     }).toList();
@@ -258,6 +307,7 @@ class _RawEntry {
   final List<String> membriNomi;
   final List<WaypointPassageRecord> passages;
   final bool ritirato;
+  final bool ritiroCompagno;
   final bool isLive;
 
   _RawEntry({
@@ -266,6 +316,7 @@ class _RawEntry {
     required this.membriNomi,
     required this.passages,
     required this.ritirato,
+    required this.ritiroCompagno,
     required this.isLive,
   });
 }

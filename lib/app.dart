@@ -20,6 +20,7 @@ import 'features/pilot/screens/pilot_home_screen.dart';
 import 'features/pilot/screens/event_detail_screen.dart';
 import 'features/pilot/screens/team_screen.dart';
 import 'features/pilot/screens/gps_recording_screen.dart';
+import 'features/admin/screens/penalty_settings_screen.dart';
 import 'features/classifica/screens/classifica_screen.dart';
 
 final _routerProvider = Provider<GoRouter>((ref) {
@@ -56,6 +57,10 @@ final _routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: 'create-event',
             builder: (context, state) => const CreateEventScreen(),
+          ),
+          GoRoute(
+            path: 'penalty-settings',
+            builder: (context, state) => const PenaltySettingsScreen(),
           ),
           GoRoute(
             path: 'championships',

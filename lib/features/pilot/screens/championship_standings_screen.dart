@@ -18,6 +18,8 @@ final _champStandingsProvider = FutureProvider.family<
   final champSnap = await svc.getChampionshipById(championshipId).first;
   if (champSnap == null || champSnap.eventIds.isEmpty) return [];
 
+  final penalties = await svc.getPenaltySettings();
+
   // For each event: load data and compute standings
   final teamTimes = <String, Duration>{};
   final teamEvents = <String, int>{};
@@ -38,6 +40,7 @@ final _champStandingsProvider = FutureProvider.family<
       teams: teams,
       withdrawals: withdrawals,
       liveTracking: const <GpsPointModel>[],
+      penalties: penalties,
     );
 
     for (final e in entries) {

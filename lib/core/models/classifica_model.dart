@@ -31,9 +31,10 @@ class SpecialTempo {
   final String specialeId;
   final String specialeNome;
   final int ordine;
-  final Duration tempo;
+  final Duration tempo;       // include già la penalità CP
   final bool controlPointsOk;
   final List<int> missedCpPositions; // 1-based positions of missed control points
+  final int penaltySeconds;          // secondi di penalità CP aggiunti
 
   const SpecialTempo({
     required this.specialeId,
@@ -42,6 +43,7 @@ class SpecialTempo {
     required this.tempo,
     required this.controlPointsOk,
     this.missedCpPositions = const [],
+    this.penaltySeconds = 0,
   });
 
   String get tempoFormatted {
@@ -58,10 +60,12 @@ class ClassificaEntry {
   final List<String> membriNomi;
   final List<SpecialTempo> specialiCompletati;
   final int totaleSpeciali;
-  final Duration tempoTotale;
+  final Duration tempoTotale;     // include penalità CP e ritiro compagno
   final int punteggioTotale;
   final int posizione; // 0 = ritirato / non classificato
   final bool ritirato;
+  final bool ritiroCompagno;       // compagno di squadra ritirato (penalità applicata)
+  final int ritiroCompagnoPenaltySeconds; // secondi aggiunti per ritiro compagno
   final bool isLive; // has recent GPS ping
 
   const ClassificaEntry({
@@ -74,6 +78,8 @@ class ClassificaEntry {
     required this.punteggioTotale,
     required this.posizione,
     required this.ritirato,
+    this.ritiroCompagno = false,
+    this.ritiroCompagnoPenaltySeconds = 0,
     required this.isLive,
   });
 

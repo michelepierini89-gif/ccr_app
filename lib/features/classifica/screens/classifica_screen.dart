@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/models/classifica_model.dart';
 import '../../../core/models/event_model.dart';
+import '../../../core/models/penalty_settings_model.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../admin/providers/admin_provider.dart';
 import '../providers/classifica_provider.dart';
@@ -261,6 +262,26 @@ class _EntryCardState extends State<_EntryCard> {
                                         fontWeight: FontWeight.bold,
                                         letterSpacing: 1)),
                               ),
+                            if (e.ritiroCompagno)
+                              Container(
+                                margin: const EdgeInsets.only(left: 6),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: AppColors.warning
+                                      .withValues(alpha: 0.15),
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(
+                                      color: AppColors.warning
+                                          .withValues(alpha: 0.6)),
+                                ),
+                                child: const Text('COMP. RIT.',
+                                    style: TextStyle(
+                                        color: AppColors.warning,
+                                        fontSize: 9,
+                                        fontWeight: FontWeight.bold,
+                                        letterSpacing: 0.5)),
+                              ),
                           ],
                         ),
                         if (e.membriNomi.length > 1 ||
@@ -323,6 +344,15 @@ class _EntryCardState extends State<_EntryCard> {
                             style: TextStyle(
                                 color: AppColors.textSecondary,
                                 fontSize: 16)),
+                      if (e.ritiroCompagno &&
+                          e.ritiroCompagnoPenaltySeconds > 0)
+                        Text(
+                          '+${PenaltySettingsModel.formatSeconds(e.ritiroCompagnoPenaltySeconds)} PEN',
+                          style: const TextStyle(
+                              color: AppColors.warning,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold),
+                        ),
                       if (e.specialiCompletati.isNotEmpty)
                         Icon(
                           _expanded
@@ -569,14 +599,28 @@ class _SpecialRow extends StatelessWidget {
                     color: AppColors.warning, size: 14),
               ),
             ),
-          Text(
-            special.tempoFormatted,
-            style: const TextStyle(
-              color: AppColors.textPrimary,
-              fontSize: 13,
-              fontWeight: FontWeight.bold,
-              fontFamily: 'monospace',
-            ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                special.tempoFormatted,
+                style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  fontFamily: 'monospace',
+                ),
+              ),
+              if (special.penaltySeconds > 0)
+                Text(
+                  '+${PenaltySettingsModel.formatSeconds(special.penaltySeconds)} PEN',
+                  style: const TextStyle(
+                      color: AppColors.warning,
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold),
+                ),
+            ],
           ),
         ],
       ),

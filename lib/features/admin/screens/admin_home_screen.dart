@@ -37,6 +37,11 @@ class AdminHomeScreen extends ConsumerWidget {
             onPressed: () => context.push('/admin/championships'),
           ),
           IconButton(
+            icon: const Icon(Icons.tune),
+            tooltip: 'Penalità',
+            onPressed: () => context.push('/admin/penalty-settings'),
+          ),
+          IconButton(
             icon: const Icon(Icons.logout),
             tooltip: 'Logout',
             onPressed: () async {
