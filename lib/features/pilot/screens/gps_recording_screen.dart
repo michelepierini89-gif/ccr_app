@@ -699,6 +699,12 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                     child: const Icon(Icons.my_location, size: 20),
                   ),
                 ),
+              // Scale bar
+              Positioned(
+                right: 12,
+                bottom: _followMode ? 12 : 60,
+                child: _MapScaleBar(lat: curPos.latitude, zoom: _mapZoom),
+              ),
             ],
           ),
         ),
@@ -1223,6 +1229,67 @@ class _WaypointPin extends StatelessWidget {
           color: color.withValues(alpha: 0.6),
         ),
       ],
+    );
+  }
+}
+
+class _MapScaleBar extends StatelessWidget {
+  final double lat;
+  final double zoom;
+  const _MapScaleBar({required this.lat, required this.zoom});
+
+  static double _niceScale(double meters) {
+    const steps = [
+      1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0,
+      1000.0, 2000.0, 5000.0, 10000.0, 20000.0, 50000.0,
+    ];
+    for (final s in steps) {
+      if (s >= meters * 0.7) return s;
+    }
+    return 50000.0;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final metersPerPixel =
+        156543.03392 * cos(lat * pi / 180) / pow(2.0, zoom);
+    const targetWidth = 80.0;
+    final scaleMeters = _niceScale(metersPerPixel * targetWidth);
+    final barWidthPx = (scaleMeters / metersPerPixel).clamp(20.0, 160.0);
+    final label = scaleMeters >= 1000
+        ? '${(scaleMeters / 1000).round()} km'
+        : '${scaleMeters.round()} m';
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          Text(label,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 9,
+                fontWeight: FontWeight.bold,
+                height: 1.1,
+              )),
+          const SizedBox(height: 2),
+          SizedBox(
+            width: barWidthPx,
+            child: Row(
+              children: [
+                Container(width: 1.5, height: 6, color: Colors.white),
+                Expanded(child: Container(height: 2, color: Colors.white)),
+                Container(width: 1.5, height: 6, color: Colors.white),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
