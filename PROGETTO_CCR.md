@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 05 giugno 2026 (Step 13 completato)  
+**Data aggiornamento:** 05 giugno 2026 (Step 14 completato)  
 **Branch:** main  
 **Versione:** 1.0.0+1
 
@@ -445,6 +445,44 @@ gsutil cors get gs://ccr-enduro.firebasestorage.app
 - `distanceFilter: 2` su tutte le piattaforme (filtra rumore < 2m)
 - Error recovery: `onError` ora riavvia `_startPositionStream` dopo 2s se `_isRecording == true`
 - `flutter analyze`: zero warning
+
+---
+
+### Step 14 — GPS fluido, modalità mappa, UI migliorata (05 giugno 2026) ✅
+
+**Traccia pilota blu:**
+- Polyline percorso pilota in `#2196F3` blu per distinguerla chiaramente dalla traccia GPX evento rossa
+
+**Pulsanti FINE GARA / RITIRO:**
+- Layout flex 2:1 (FINE GARA più grande di RITIRO)
+- FINE GARA si abilita quando tutte le speciali hanno exit time registrato (non solo `remainingWaypoints.isEmpty`)
+- Metodo `_allSpecialsCompleted(gps, event)` con fallback su `remainingWaypoints` se l'evento non ha speciali
+
+**Tempo speciale mm:ss.d:**
+- Nella riga "ultimo passaggio", se il waypoint passato è di tipo `fine`, mostra il tempo elapsed della speciale in formato `mm:ss.d` (al decimo)
+- Altrimenti mostra l'ora assoluta come prima
+
+**Modalità mappa NORD/HEADING:**
+- Pulsante `IconButton` in basso a sinistra della mappa
+- NORD (icona `explore`, grigio): comportamento attuale, mappa fissa, freccia ruota
+- HEADING (icona `navigation`, accent): mappa ruota con `MapController.rotate(-bearingDeg)`, freccia fissa verso l'alto (angle=0)
+- Reset rotazione a 0 quando si torna in modalità NORD
+
+**Dettaglio CP mancati in classifica:**
+- `SpecialTempo`: aggiunto campo `missedCpPositions: List<int>` (posizioni 1-based dei CP non rilevati)
+- `ClassificaEngine._computeSpeciali`: calcolo CP mancati per speciale
+- `classifica_screen.dart`: icona warning tappabile apre `AlertDialog` con lista "P{n} non rilevato"
+
+**Navigazione fluida:**
+- `AppConstants.gpsIntervalInSpecialMs` ridotto da 1000ms a 500ms
+- `AnimationController` duration 500ms con `addListener` per interpolazione lineare marker
+- Tween manuale `LatLng`: lerp tra `_fromPos` e `_targetPos` su ogni tick dell'animazione
+- `_displayPos` aggiornato smoothly; camera segue la posizione interpolata
+- `TickerProviderStateMixin` (da `Single`) per supportare due `AnimationController`
+
+**Deploy:**
+- `firebase deploy --only hosting` su https://ccr-enduro.web.app
+- `git push origin main` → GitHub Actions genera APK Android
 
 ---
 
