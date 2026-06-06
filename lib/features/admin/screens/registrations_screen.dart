@@ -308,6 +308,23 @@ class _RegistrationListState extends ConsumerState<_RegistrationList> {
                       ],
                     ],
                   ),
+                ] else if (reg.teamName != null) ...[
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      const Icon(Icons.group,
+                          size: 14, color: AppColors.textSecondary),
+                      const SizedBox(width: 6),
+                      Text(
+                        reg.teamName!,
+                        style: const TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
                 ] else ...[
                   const SizedBox(height: 6),
                   const Row(

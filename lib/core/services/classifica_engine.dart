@@ -59,7 +59,7 @@ class ClassificaEngine {
 
       rawEntries.add(_RawEntry(
         entryId: teamId,
-        teamNome: teamModel?.nome ?? 'Squadra $teamId',
+        teamNome: teamModel?.nome ?? teamRegs.firstOrNull?.teamName ?? teamId,
         membriNomi: membriNomi,
         passages: teamPassages,
         ritirato: ritirato,
