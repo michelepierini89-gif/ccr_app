@@ -46,8 +46,8 @@ service cloud.firestore {
         allow update, delete: if isAdmin();
       }
 
-      // Teams — all auth read/write (pilots join/leave)
-      match /teams/{teamId} {
+      // Teams (collezione 'squadre') — all auth read/write (pilots join/leave)
+      match /squadre/{teamId} {
         allow read, write: if isAuthenticated();
       }
 
