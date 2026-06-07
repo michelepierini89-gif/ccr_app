@@ -48,7 +48,76 @@ exports.onRegistrationStatusChange = onDocumentUpdated(
   }
 );
 
-// ── Trigger 2: admin abilita la partenza ────────────────────────────────────
+// ── Trigger 2: ordine di partenza pubblicato ─────────────────────────────────
+exports.onStartingOrderPublished = onDocumentUpdated(
+  {
+    document: 'events/{eventId}',
+    region: 'europe-west1',
+  },
+  async (event) => {
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+    if (!before || !after) return;
+
+    const beforeOrder = before.startingOrder ?? [];
+    const afterOrder = after.startingOrder ?? [];
+    if (afterOrder.length === 0) return;
+    if (JSON.stringify(beforeOrder) === JSON.stringify(afterOrder)) return;
+
+    const { eventId } = event.params;
+    const eventName = after.nome ?? 'evento';
+    const db = getFirestore();
+
+    const teamsSnap = await db
+      .collection('events').doc(eventId).collection('squadre')
+      .get();
+    const teamsByName = new Map(
+      teamsSnap.docs.map((d) => [(d.data().nome ?? '').toLowerCase().trim(), d.data()])
+    );
+
+    const messages = [];
+    for (const slot of afterOrder) {
+      const team = teamsByName.get((slot.teamName ?? '').toLowerCase().trim());
+      if (!team) continue;
+      const membriIds = team.membriIds ?? [];
+      if (membriIds.length === 0) continue;
+
+      const startDate = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
+      const orario = startDate.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+
+      const userDocs = await Promise.all(
+        membriIds.map((uid) => db.collection('users').doc(uid).get())
+      );
+      const tokens = userDocs.map((d) => d.data()?.fcmToken).filter(Boolean);
+      for (const token of tokens) {
+        messages.push({
+          token,
+          notification: {
+            title: '🚦 Ordine di partenza pubblicato',
+            body: `"${eventName}": parti con il numero ${slot.orderNumber} alle ${orario}.`,
+          },
+          data: {
+            type: 'startingOrderPublished',
+            eventId,
+            orderNumber: String(slot.orderNumber),
+            startTime: startDate.toISOString(),
+          },
+          android: { priority: 'high' },
+          apns: { payload: { aps: { sound: 'default' } } },
+        });
+      }
+    }
+
+    if (messages.length === 0) return;
+
+    // sendEach accetta fino a 500 messaggi per chiamata
+    for (let i = 0; i < messages.length; i += 500) {
+      await getMessaging().sendEach(messages.slice(i, i + 500));
+    }
+  }
+);
+
+// ── Trigger 3: admin abilita la partenza ────────────────────────────────────
 exports.onStartEnabled = onDocumentUpdated(
   {
     document: 'events/{eventId}',

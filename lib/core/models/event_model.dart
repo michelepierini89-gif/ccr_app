@@ -4,6 +4,30 @@ import 'waypoint_model.dart';
 
 enum EventStatus { bozza, aperto, inCorso, concluso }
 
+class StartingSlot {
+  final String teamName;
+  final DateTime startTime;
+  final int orderNumber;
+
+  const StartingSlot({
+    required this.teamName,
+    required this.startTime,
+    required this.orderNumber,
+  });
+
+  factory StartingSlot.fromMap(Map<String, dynamic> m) => StartingSlot(
+        teamName: m['teamName'] ?? '',
+        startTime: (m['startTime'] as Timestamp?)?.toDate() ?? DateTime.now(),
+        orderNumber: (m['orderNumber'] as num?)?.toInt() ?? 0,
+      );
+
+  Map<String, dynamic> toMap() => {
+        'teamName': teamName,
+        'startTime': Timestamp.fromDate(startTime),
+        'orderNumber': orderNumber,
+      };
+}
+
 enum TipologiaClassifica { sommaTempi, punteggioSpeciale }
 
 extension TipologiaClassificaLabel on TipologiaClassifica {
@@ -30,6 +54,7 @@ class EventModel {
   final TipologiaClassifica tipologiaClassifica;
   final WaypointModel? fuelPoint;
   final bool startEnabled;
+  final List<StartingSlot> startingOrder;
 
   const EventModel({
     required this.id,
@@ -47,6 +72,7 @@ class EventModel {
     this.tipologiaClassifica = TipologiaClassifica.sommaTempi,
     this.fuelPoint,
     this.startEnabled = false,
+    this.startingOrder = const [],
   });
 
   factory EventModel.fromFirestore(DocumentSnapshot doc) {
@@ -77,6 +103,9 @@ class EventModel {
           ? WaypointModel.fromMap(d['fuelPoint'] as Map<String, dynamic>)
           : null,
       startEnabled: d['startEnabled'] as bool? ?? false,
+      startingOrder: (d['startingOrder'] as List<dynamic>? ?? [])
+          .map((e) => StartingSlot.fromMap(e as Map<String, dynamic>))
+          .toList(),
     );
   }
 
@@ -95,6 +124,7 @@ class EventModel {
         'tipologiaClassifica': tipologiaClassifica.name,
         'fuelPoint': fuelPoint?.toMap(),
         'startEnabled': startEnabled,
+        'startingOrder': startingOrder.map((s) => s.toMap()).toList(),
       };
 
   EventModel copyWith({
@@ -111,6 +141,7 @@ class EventModel {
     WaypointModel? fuelPoint,
     bool clearFuelPoint = false,
     bool? startEnabled,
+    List<StartingSlot>? startingOrder,
   }) =>
       EventModel(
         id: id,
@@ -128,5 +159,6 @@ class EventModel {
         tipologiaClassifica: tipologiaClassifica ?? this.tipologiaClassifica,
         fuelPoint: clearFuelPoint ? null : (fuelPoint ?? this.fuelPoint),
         startEnabled: startEnabled ?? this.startEnabled,
+        startingOrder: startingOrder ?? this.startingOrder,
       );
 }

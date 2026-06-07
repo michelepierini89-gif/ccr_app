@@ -20,6 +20,7 @@ import '../widgets/special_tile.dart';
 import 'registrations_screen.dart';
 import 'live_tracking_screen.dart';
 import 'specials_editor_screen.dart';
+import 'starting_order_screen.dart';
 import '../../classifica/screens/classifica_screen.dart';
 import '../../timing/screens/timing_screen.dart';
 
@@ -465,10 +466,44 @@ class _EventManagementScreenState
                         }
                       },
                     ),
-                    RegistrationsScreen(
-                      eventId: event.id,
-                      minSquadra: event.minSquadra,
-                      maxSquadra: event.maxSquadra,
+                    Column(
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                          child: SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              onPressed: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) =>
+                                      StartingOrderScreen(event: event),
+                                ),
+                              ),
+                              icon: const Icon(Icons.flag_circle_outlined,
+                                  color: AppColors.accent),
+                              label: const Text('Ordine di partenza',
+                                  style: TextStyle(color: AppColors.accent)),
+                              style: OutlinedButton.styleFrom(
+                                side: const BorderSide(
+                                    color: AppColors.accent),
+                                padding: const EdgeInsets.symmetric(
+                                    vertical: 12),
+                                shape: RoundedRectangleBorder(
+                                    borderRadius:
+                                        BorderRadius.circular(8)),
+                              ),
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: RegistrationsScreen(
+                            eventId: event.id,
+                            minSquadra: event.minSquadra,
+                            maxSquadra: event.maxSquadra,
+                          ),
+                        ),
+                      ],
                     ),
                     LiveTrackingScreen(eventId: event.id),
                     ClassificaScreen(

@@ -333,6 +333,16 @@ class FirestoreService {
     });
   }
 
+  Future<ChampionshipModel?> getChampionshipForEvent(String eventId) async {
+    final snap = await _db
+        .collection(FirebaseConstants.championships)
+        .where('eventIds', arrayContains: eventId)
+        .limit(1)
+        .get();
+    if (snap.docs.isEmpty) return null;
+    return ChampionshipModel.fromFirestore(snap.docs.first);
+  }
+
   Stream<ChampionshipModel?> getChampionshipById(String id) => _db
       .collection(FirebaseConstants.championships)
       .doc(id)
