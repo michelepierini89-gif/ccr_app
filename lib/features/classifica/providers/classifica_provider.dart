@@ -1,8 +1,11 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/models/classifica_model.dart';
+import '../../../core/models/gps_point_model.dart';
 import '../../../core/models/penalty_settings_model.dart';
+import '../../../core/models/user_model.dart';
 import '../../../core/services/classifica_engine.dart';
 import '../../admin/providers/admin_provider.dart';
+import '../../auth/providers/auth_provider.dart';
 
 final passagesStreamProvider =
     StreamProvider.family<List<WaypointPassageRecord>, String>(
@@ -27,8 +30,17 @@ final classificaProvider =
   final regsAv = ref.watch(registrationsProvider(eventId));
   final teamsAv = ref.watch(teamsProvider(eventId));
   final wdAv = ref.watch(withdrawalsStreamProvider(eventId));
-  final liveAv = ref.watch(liveTrackingProvider(eventId));
   final penaltyAv = ref.watch(penaltySettingsProvider);
+
+  // tracking/{eventId}/pilots è leggibile solo dagli admin (privacy GPS):
+  // i piloti non devono sottoscriversi a quello stream, altrimenti
+  // Firestore restituisce permission-denied. La classifica per i piloti
+  // viene quindi calcolata senza il badge "LIVE".
+  final isAdmin =
+      ref.watch(currentUserModelProvider).valueOrNull?.role == UserRole.admin;
+  final liveAv = isAdmin
+      ? ref.watch(liveTrackingProvider(eventId))
+      : const AsyncValue<List<GpsPointModel>>.data(<GpsPointModel>[]);
 
   if (eventAv.isLoading || passAv.isLoading || regsAv.isLoading) {
     return const AsyncValue.loading();
