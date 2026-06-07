@@ -318,6 +318,63 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
     });
   }
 
+  Future<void> _toggleAnnullata(int index) async {
+    final special = _specials[index];
+    if (!special.annullata) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppColors.cardBackground,
+          title: const Text('Annullare questa speciale?',
+              style: TextStyle(color: AppColors.textPrimary)),
+          content: const Text(
+            'Non verrà conteggiata in classifica.',
+            style: TextStyle(color: AppColors.textSecondary),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Annulla',
+                  style: TextStyle(color: AppColors.textSecondary)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('Conferma',
+                  style: TextStyle(color: AppColors.warning)),
+            ),
+          ],
+        ),
+      );
+      if (confirm != true) return;
+    }
+
+    setState(() {
+      _specials[index] = special.copyWith(annullata: !special.annullata);
+    });
+
+    try {
+      final updated = widget.event.copyWith(speciali: _specials);
+      await ref.read(firestoreServiceProvider).updateEvent(updated);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_specials[index].annullata
+              ? 'Speciale annullata'
+              : 'Annullamento rimosso'),
+          backgroundColor: AppColors.warning,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Errore salvataggio: $e'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    }
+  }
+
   Future<void> _save() async {
     setState(() => _isSaving = true);
     try {
@@ -771,6 +828,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
                   : null,
               onEdit: () => _startEdit(i),
               onDelete: () => _deleteSpeciale(i),
+              onToggleAnnulla: () => _toggleAnnullata(i),
             ),
           ),
       ],

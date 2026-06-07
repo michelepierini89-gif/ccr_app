@@ -99,10 +99,13 @@ class ClassificaEngine {
       );
     }).toList();
 
+    final specialiValide =
+        event.speciali.where((s) => !s.annullata).length;
+
     if (event.tipologiaClassifica == TipologiaClassifica.punteggioSpeciale) {
       return _rankByPoints(computed, event, penalties);
     }
-    return _rankByTime(computed, event.speciali.length);
+    return _rankByTime(computed, specialiValide);
   }
 
   static List<SpecialTempo> _computeSpeciali(
@@ -112,6 +115,7 @@ class ClassificaEngine {
     final result = <SpecialTempo>[];
     for (final special
         in event.speciali..sort((a, b) => a.ordine.compareTo(b.ordine))) {
+      if (special.annullata) continue;
       final iniP = passages
           .where((p) => p.waypointId == special.waypointInizio.id)
           .toList()
@@ -242,6 +246,7 @@ class ClassificaEngine {
     }
 
     for (final special in event.speciali) {
+      if (special.annullata) continue;
       final completions = computed
           .where((c) => c.speciali.any((s) => s.specialeId == special.id))
           .map((c) => (
@@ -288,7 +293,7 @@ class ClassificaEngine {
         teamNome: c.entry.teamNome,
         membriNomi: c.entry.membriNomi,
         specialiCompletati: c.speciali,
-        totaleSpeciali: event.speciali.length,
+        totaleSpeciali: event.speciali.where((s) => !s.annullata).length,
         tempoTotale: c.tempoTotale,
         punteggioTotale: pts,
         posizione: myPos,

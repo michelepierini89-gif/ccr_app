@@ -7,6 +7,7 @@ class SpecialTile extends StatelessWidget {
   final double? lengthKm;
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
+  final VoidCallback? onToggleAnnulla;
 
   const SpecialTile({
     super.key,
@@ -14,27 +15,32 @@ class SpecialTile extends StatelessWidget {
     this.lengthKm,
     this.onEdit,
     this.onDelete,
+    this.onToggleAnnulla,
   });
 
   @override
   Widget build(BuildContext context) {
+    final annullata = special.annullata;
+    final tileColor = annullata ? AppColors.textSecondary : special.color;
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 4),
       decoration: BoxDecoration(
         color: AppColors.cardBackground,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: AppColors.border),
+        border: Border.all(
+          color: annullata ? AppColors.error : AppColors.border,
+        ),
       ),
       child: ListTile(
         leading: Container(
           width: 36,
           height: 36,
           decoration: BoxDecoration(
-            color: special.color,
+            color: tileColor,
             shape: BoxShape.circle,
             boxShadow: [
               BoxShadow(
-                color: special.color.withValues(alpha: 0.4),
+                color: tileColor.withValues(alpha: 0.4),
                 blurRadius: 8,
                 spreadRadius: 1,
               ),
@@ -51,12 +57,42 @@ class SpecialTile extends StatelessWidget {
             ),
           ),
         ),
-        title: Text(
-          special.nome,
-          style: const TextStyle(
-            color: AppColors.textPrimary,
-            fontWeight: FontWeight.w600,
-          ),
+        title: Row(
+          children: [
+            Flexible(
+              child: Text(
+                special.nome,
+                style: TextStyle(
+                  color: annullata
+                      ? AppColors.textSecondary
+                      : AppColors.textPrimary,
+                  fontWeight: FontWeight.w600,
+                  decoration:
+                      annullata ? TextDecoration.lineThrough : null,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            if (annullata) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: AppColors.error,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: const Text(
+                  'ANNULLATA',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ],
         ),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -116,6 +152,16 @@ class SpecialTile extends StatelessWidget {
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (onToggleAnnulla != null)
+              IconButton(
+                icon: Icon(
+                  Icons.block,
+                  color: annullata ? AppColors.error : AppColors.warning,
+                  size: 20,
+                ),
+                tooltip: annullata ? 'Riattiva PS' : 'Annulla PS',
+                onPressed: onToggleAnnulla,
+              ),
             if (onEdit != null)
               IconButton(
                 icon: const Icon(Icons.edit, color: AppColors.textSecondary,

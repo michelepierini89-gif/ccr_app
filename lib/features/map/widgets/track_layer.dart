@@ -42,11 +42,16 @@ class TrackLayer extends StatelessWidget {
     final polylines = <Polyline>[];
     // Specials first (underneath), wider stroke
     for (final s in specials) {
+      final color = s.annullata ? AppColors.textSecondary : s.color;
+      final pattern = s.annullata
+          ? StrokePattern.dashed(segments: const [10, 8])
+          : const StrokePattern.solid();
       if (trackPoints.isEmpty) {
         polylines.add(Polyline(
           points: [s.waypointInizio.latLng, s.waypointFine.latLng],
-          color: s.color,
+          color: color,
           strokeWidth: 5,
+          pattern: pattern,
         ));
       } else {
         final startIdx =
@@ -58,8 +63,9 @@ class TrackLayer extends StatelessWidget {
         if (a < b && b < trackPoints.length) {
           polylines.add(Polyline(
             points: trackPoints.sublist(a, b + 1),
-            color: s.color,
+            color: color,
             strokeWidth: 5,
+            pattern: pattern,
           ));
         }
       }

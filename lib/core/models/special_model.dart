@@ -10,6 +10,7 @@ class SpecialModel {
   final WaypointModel waypointFine;
   final List<WaypointModel> controlPoints;
   final int ordine;
+  final bool annullata;
 
   const SpecialModel({
     required this.id,
@@ -19,6 +20,7 @@ class SpecialModel {
     required this.waypointFine,
     this.controlPoints = const [],
     required this.ordine,
+    this.annullata = false,
   });
 
   Color get color =>
@@ -38,6 +40,7 @@ class SpecialModel {
             .map((e) => WaypointModel.fromMap(e as Map<String, dynamic>))
             .toList(),
         ordine: (m['ordine'] as num?)?.toInt() ?? 0,
+        annullata: m['annullata'] as bool? ?? false,
       );
 
   Map<String, dynamic> toMap() => {
@@ -48,6 +51,7 @@ class SpecialModel {
         'waypointFine': waypointFine.toMap(),
         'controlPoints': controlPoints.map((cp) => cp.toMap()).toList(),
         'ordine': ordine,
+        'annullata': annullata,
       };
 
   SpecialModel copyWith({
@@ -58,6 +62,7 @@ class SpecialModel {
     WaypointModel? waypointFine,
     List<WaypointModel>? controlPoints,
     int? ordine,
+    bool? annullata,
   }) =>
       SpecialModel(
         id: id ?? this.id,
@@ -67,5 +72,6 @@ class SpecialModel {
         waypointFine: waypointFine ?? this.waypointFine,
         controlPoints: controlPoints ?? this.controlPoints,
         ordine: ordine ?? this.ordine,
+        annullata: annullata ?? this.annullata,
       );
 }
