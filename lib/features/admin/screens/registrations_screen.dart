@@ -167,16 +167,7 @@ class _RegistrationListState extends ConsumerState<_RegistrationList> {
     }
   }
 
-  String? _partnerName(String userId, TeamModel team) {
-    final partnerId =
-        team.membriIds.where((id) => id != userId).firstOrNull;
-    if (partnerId == null) return null;
-    try {
-      return widget.regs.firstWhere((r) => r.userId == partnerId).nomeCompleto;
-    } catch (_) {
-      return null;
-    }
-  }
+  static const String _senzaSquadra = 'Senza squadra';
 
   @override
   Widget build(BuildContext context) {
@@ -194,205 +185,174 @@ class _RegistrationListState extends ConsumerState<_RegistrationList> {
         ),
       );
     }
+
+    // Raggruppa le iscrizioni per nome squadra (teamName / nome squadra reale)
+    final groups = <String, List<RegistrationModel>>{};
+    final groupTeams = <String, TeamModel?>{};
+    for (final reg in regs) {
+      final team = _teamOf(reg.userId);
+      final key = team?.nome ?? reg.teamName ?? _senzaSquadra;
+      groups.putIfAbsent(key, () => []).add(reg);
+      groupTeams[key] = team;
+    }
+
+    final sortedKeys = groups.keys.toList()
+      ..sort((a, b) {
+        if (a == _senzaSquadra) return 1;
+        if (b == _senzaSquadra) return -1;
+        return a.compareTo(b);
+      });
+
     return ListView.builder(
       padding: const EdgeInsets.all(16),
-      itemCount: regs.length,
+      itemCount: sortedKeys.length,
       itemBuilder: (context, i) {
-        final reg = regs[i];
-        final statusColor = _statusColor(reg.stato);
-        final team = _teamOf(reg.userId);
-        final partner = team != null ? _partnerName(reg.userId, team) : null;
-        final isTeamIncomplete = team != null &&
-            (team.membriIds.length < widget.minSquadra ||
-                team.membriIds.length > widget.maxSquadra);
+        final key = sortedKeys[i];
+        final groupRegs = groups[key]!;
+        final team = groupTeams[key];
+        final hasTeam = key != _senzaSquadra;
+        final memberCount = team?.membriIds.length ?? groupRegs.length;
+        final isComplete = hasTeam &&
+            memberCount >= widget.minSquadra &&
+            memberCount <= widget.maxSquadra;
+        final groupColor = !hasTeam
+            ? AppColors.textSecondary
+            : (isComplete ? AppColors.success : AppColors.warning);
 
         return Container(
-          margin: const EdgeInsets.only(bottom: 10),
+          margin: const EdgeInsets.only(bottom: 14),
           decoration: BoxDecoration(
             color: AppColors.cardBackground,
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(12),
             border: Border.all(
-              color: isTeamIncomplete
+              color: hasTeam && !isComplete
                   ? AppColors.warning.withValues(alpha: 0.5)
                   : AppColors.border,
             ),
           ),
-          child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+                child: Row(
                   children: [
-                    const Icon(Icons.person, color: AppColors.textSecondary, size: 16),
-                    const SizedBox(width: 6),
+                    Icon(
+                      hasTeam ? Icons.group : Icons.person_off,
+                      size: 18,
+                      color: groupColor,
+                    ),
+                    const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        reg.nomeCompleto,
+                        key,
                         style: const TextStyle(
                           color: AppColors.textPrimary,
                           fontWeight: FontWeight.bold,
-                          fontSize: 15,
+                          fontSize: 16,
                         ),
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: statusColor.withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: statusColor),
-                      ),
-                      child: Text(
-                        _statusLabel(reg.stato),
-                        style: TextStyle(
-                          color: statusColor,
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
+                    const SizedBox(width: 8),
+                    Text(
+                      '$memberCount membr${memberCount == 1 ? "o" : "i"}',
+                      style: const TextStyle(
+                          color: AppColors.textSecondary, fontSize: 12),
+                    ),
+                    if (hasTeam) ...[
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: groupColor.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: groupColor),
+                        ),
+                        child: Text(
+                          isComplete ? 'COMPLETA' : 'INCOMPLETA',
+                          style: TextStyle(
+                            color: groupColor,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
-                    ),
+                    ],
                   ],
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  DateFormat('dd/MM/yyyy HH:mm').format(reg.createdAt),
+              ),
+              const Divider(height: 1, color: AppColors.border),
+              for (final reg in groupRegs) _buildPilotRow(reg),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildPilotRow(RegistrationModel reg) {
+    final statusColor = _statusColor(reg.stato);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.person, color: AppColors.textSecondary, size: 16),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  reg.nomeCompleto,
                   style: const TextStyle(
-                      color: AppColors.textSecondary, fontSize: 11),
+                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 15,
+                  ),
+                  overflow: TextOverflow.ellipsis,
                 ),
-                // Team info
-                if (team != null) ...[
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Icon(
-                        isTeamIncomplete ? Icons.warning_amber_rounded : Icons.group,
-                        size: 14,
-                        color: isTeamIncomplete
-                            ? AppColors.warning
-                            : AppColors.textSecondary,
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        team.nome,
-                        style: TextStyle(
-                          color: isTeamIncomplete
-                              ? AppColors.warning
-                              : AppColors.textSecondary,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      if (partner != null) ...[
-                        const Text(' · ',
-                            style: TextStyle(
-                                color: AppColors.textSecondary, fontSize: 12)),
-                        Expanded(
-                          child: Text(
-                            partner,
-                            style: const TextStyle(
-                                color: AppColors.textSecondary, fontSize: 12),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ] else ...[
-                        const SizedBox(width: 6),
-                        const Text(
-                          'Senza copilota',
-                          style: TextStyle(
-                              color: AppColors.warning,
-                              fontSize: 12,
-                              fontStyle: FontStyle.italic),
-                        ),
-                      ],
-                    ],
+              ),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: statusColor.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: statusColor),
+                ),
+                child: Text(
+                  _statusLabel(reg.stato),
+                  style: TextStyle(
+                    color: statusColor,
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
                   ),
-                ] else if (reg.teamName != null) ...[
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      const Icon(Icons.group,
-                          size: 14, color: AppColors.textSecondary),
-                      const SizedBox(width: 6),
-                      Text(
-                        reg.teamName!,
-                        style: const TextStyle(
-                          color: AppColors.textSecondary,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ],
-                  ),
-                ] else ...[
-                  const SizedBox(height: 6),
-                  const Row(
-                    children: [
-                      Icon(Icons.person_off,
-                          size: 13, color: AppColors.textSecondary),
-                      SizedBox(width: 6),
-                      Text('Nessuna squadra',
-                          style: TextStyle(
-                              color: AppColors.textSecondary, fontSize: 12)),
-                    ],
-                  ),
-                ],
-                if (reg.stato == RegistrationStatus.inAttesa) ...[
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton(
-                          onPressed: _loadingUserId != null
-                              ? null
-                              : () => _updateStatus(
-                                  reg.userId, RegistrationStatus.approvato),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: AppColors.success,
-                            side: const BorderSide(color: AppColors.success),
-                            minimumSize: const Size(0, 44),
-                          ),
-                          child: _loadingUserId == reg.userId
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: AppColors.success,
-                                  ),
-                                )
-                              : const Text('Approva'),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: OutlinedButton(
-                          onPressed: _loadingUserId != null
-                              ? null
-                              : () => _updateStatus(
-                                  reg.userId, RegistrationStatus.rifiutato),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: AppColors.error,
-                            side: const BorderSide(color: AppColors.error),
-                            minimumSize: const Size(0, 44),
-                          ),
-                          child: const Text('Rifiuta'),
-                        ),
-                      ),
-                    ],
-                  ),
-                ] else if (reg.stato == RegistrationStatus.approvato) ...[
-                  const SizedBox(height: 8),
-                  OutlinedButton(
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            DateFormat('dd/MM/yyyy HH:mm').format(reg.createdAt),
+            style: const TextStyle(
+                color: AppColors.textSecondary, fontSize: 11),
+          ),
+          if (reg.stato == RegistrationStatus.inAttesa) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
                     onPressed: _loadingUserId != null
                         ? null
                         : () => _updateStatus(
-                            reg.userId, RegistrationStatus.inAttesa),
+                            reg.userId, RegistrationStatus.approvato),
                     style: OutlinedButton.styleFrom(
-                      foregroundColor: AppColors.textSecondary,
-                      side: const BorderSide(color: AppColors.border),
-                      minimumSize: const Size(0, 40),
+                      foregroundColor: AppColors.success,
+                      side: const BorderSide(color: AppColors.success),
+                      minimumSize: const Size(0, 44),
                     ),
                     child: _loadingUserId == reg.userId
                         ? const SizedBox(
@@ -400,17 +360,55 @@ class _RegistrationListState extends ConsumerState<_RegistrationList> {
                             height: 16,
                             child: CircularProgressIndicator(
                               strokeWidth: 2,
-                              color: AppColors.textSecondary,
+                              color: AppColors.success,
                             ),
                           )
-                        : const Text('Revoca approvazione'),
+                        : const Text('Approva'),
                   ),
-                ],
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _loadingUserId != null
+                        ? null
+                        : () => _updateStatus(
+                            reg.userId, RegistrationStatus.rifiutato),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.error,
+                      side: const BorderSide(color: AppColors.error),
+                      minimumSize: const Size(0, 44),
+                    ),
+                    child: const Text('Rifiuta'),
+                  ),
+                ),
               ],
             ),
-          ),
-        );
-      },
+          ] else if (reg.stato == RegistrationStatus.approvato) ...[
+            const SizedBox(height: 8),
+            OutlinedButton(
+              onPressed: _loadingUserId != null
+                  ? null
+                  : () =>
+                      _updateStatus(reg.userId, RegistrationStatus.inAttesa),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.textSecondary,
+                side: const BorderSide(color: AppColors.border),
+                minimumSize: const Size(0, 40),
+              ),
+              child: _loadingUserId == reg.userId
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: AppColors.textSecondary,
+                      ),
+                    )
+                  : const Text('Revoca approvazione'),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
