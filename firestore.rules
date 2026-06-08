@@ -3,12 +3,6 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Admin bypass — sovrascrive qualsiasi regola più specifica
-    match /{document=**} {
-      allow read, write: if request.auth != null &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
-    }
-
     function isAuthenticated() {
       return request.auth != null;
     }
@@ -22,42 +16,82 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == uid;
     }
 
-    // ── Users ────────────────────────────────────────────────────────────────
+    // Admin bypass — l'admin ha sempre accesso completo, in aggiunta alle regole
+    // più specifiche sotto (Firestore concede l'accesso se ALMENO una regola lo permette)
+    match /{document=**} {
+      allow read, write: if isAdmin();
+    }
+
+    // ── Users ─────────────────────────────────────────────────────────────────
+    // Ogni utente legge/scrive solo il proprio profilo
     match /users/{userId} {
-      allow read, write: if isOwner(userId) || isAdmin();
+      allow read, write: if isOwner(userId);
     }
 
     // ── User notifications ────────────────────────────────────────────────────
-    match /user_notifications/{userId}/items/{notifId} {
+    // Ogni utente legge solo le proprie notifiche; admin scrive per approvazioni
+    match /user_notifications/{userId} {
       allow read: if isOwner(userId);
-      // Admin writes when approving/rejecting registrations
-      allow write: if isOwner(userId) || isAdmin();
+      allow write: if isOwner(userId);
+
+      match /{subcollection=**} {
+        allow read: if isOwner(userId);
+        allow write: if isOwner(userId);
+      }
     }
 
     // ── Events ────────────────────────────────────────────────────────────────
+    // (startingOrder è un campo del documento evento → coperto da questa regola)
     match /events/{eventId} {
       allow read: if isAuthenticated();
       allow write: if isAdmin();
 
-      // Registrations — all auth read; own pilot create; admin update/delete
+      // Iscrizioni — collezione reale 'iscritti'
       match /iscritti/{userId} {
         allow read: if isAuthenticated();
         allow create: if isOwner(userId);
         allow update, delete: if isAdmin();
       }
 
-      // Teams (collezione 'squadre') — all auth read/write (pilots join/leave)
+      // Alias 'registrations' (compatibilità futura, stesso significato di 'iscritti')
+      match /registrations/{userId} {
+        allow read: if isAuthenticated();
+        allow create: if isOwner(userId);
+        allow update, delete: if isAdmin();
+      }
+
+      // Squadre — collezione reale 'squadre'
       match /squadre/{teamId} {
         allow read, write: if isAuthenticated();
       }
 
-      // Withdrawals — all auth read (classifica); own pilot create
+      // Ordine di partenza — collezione (se mai estratta dal documento evento)
+      match /startingOrder/{slotId} {
+        allow read: if isAuthenticated();
+        allow write: if isAdmin();
+      }
+
+      // Tempi delle speciali — placeholder per futura collezione dedicata
+      // (oggi i tempi sono calcolati da tracking/{eventId}/passages)
+      match /speciali_tempi/{tempoId} {
+        allow read: if isAuthenticated();
+        allow write: if isAdmin();
+      }
+
+      // Piloti dell'evento — placeholder per futura collezione dedicata
+      // (oggi le posizioni live sono in tracking/{eventId}/pilots)
+      match /pilots/{pilotId} {
+        allow read: if isAuthenticated();
+        allow write: if isAdmin();
+      }
+
+      // Ritiri
       match /withdrawals/{userId} {
         allow read: if isAuthenticated();
         allow create: if isOwner(userId);
       }
 
-      // Event notifications (admin inbox) — all auth write; admin read
+      // Notifiche admin (inbox iscrizioni) — tutti scrivono, solo admin legge
       match /notifications/{notifId} {
         allow create: if isAuthenticated();
         allow read: if isAdmin();
@@ -65,15 +99,25 @@ service cloud.firestore {
     }
 
     // ── GPS Tracking ──────────────────────────────────────────────────────────
-    // Live positions — only own pilot writes; only admin reads (privacy)
+    // Posizioni live — solo il proprio pilota scrive; solo admin legge (privacy)
     match /tracking/{eventId}/pilots/{userId} {
       allow read: if isAdmin();
       allow write: if isOwner(userId);
     }
 
-    // Waypoint passages — all auth read/write (classifica computation)
+    // Passaggi ai waypoint — tutti gli autenticati leggono/scrivono (classifica)
     match /tracking/{eventId}/passages/{passageId} {
       allow read, write: if isAuthenticated();
+    }
+
+    // Alias 'gps_tracks' (compatibilità futura, stesso significato di 'tracking')
+    match /gps_tracks/{eventId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+
+      match /{subcollection=**} {
+        allow read, write: if isAuthenticated();
+      }
     }
 
     // ── Championships ─────────────────────────────────────────────────────────
