@@ -16,12 +16,14 @@ class WaypointMarkersLayer extends StatelessWidget {
     this.onTap,
   });
 
-  Color _colorForWaypoint(WaypointModel wp) {
+  /// Colore della speciale a cui appartiene il waypoint (per il bordo del marker
+  /// inizio/fine), oppure null se non è un punto inizio/fine di una speciale.
+  Color? _specialColorForWaypoint(WaypointModel wp) {
     for (final s in specials) {
       if (s.waypointInizio.id == wp.id) return s.color;
       if (s.waypointFine.id == wp.id) return s.color;
     }
-    return AppColors.textSecondary;
+    return null;
   }
 
   /// Returns (label, isStart) for a waypoint that belongs to a special.
@@ -41,9 +43,15 @@ class WaypointMarkersLayer extends StatelessWidget {
     return MarkerLayer(
       markers: waypoints.map((wp) {
         final labelInfo = _labelFor(wp);
-        final color = _colorForWaypoint(wp);
+        final specialColor = _specialColorForWaypoint(wp);
         final label = labelInfo?.$1 ?? wp.nome;
         final isStart = labelInfo?.$2 ?? true;
+        // Inizio = cerchio verde con triangolo play; Fine = cerchio rosso con
+        // quadrato stop. Il bordo usa il colore della speciale corrispondente.
+        final fillColor = labelInfo == null
+            ? AppColors.textSecondary
+            : (isStart ? AppColors.success : AppColors.error);
+        final borderColor = specialColor ?? Colors.white;
         return Marker(
           point: wp.latLng,
           width: 48,
@@ -57,12 +65,12 @@ class WaypointMarkersLayer extends StatelessWidget {
                   width: 28,
                   height: 28,
                   decoration: BoxDecoration(
-                    color: color,
+                    color: fillColor,
                     shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white, width: 2),
+                    border: Border.all(color: borderColor, width: 2.5),
                     boxShadow: [
                       BoxShadow(
-                          color: color.withValues(alpha: 0.5),
+                          color: fillColor.withValues(alpha: 0.5),
                           blurRadius: 4)
                     ],
                   ),
