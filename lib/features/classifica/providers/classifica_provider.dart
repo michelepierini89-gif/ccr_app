@@ -16,9 +16,14 @@ final withdrawalsStreamProvider =
     StreamProvider.family<Set<String>, String>((ref, eventId) =>
         ref.watch(firestoreServiceProvider).getWithdrawalsStream(eventId));
 
-/// Impostazioni penalità in real-time da Firestore.
+/// Impostazioni penalità predefinite (globali) in real-time da Firestore.
 final penaltySettingsProvider = StreamProvider<PenaltySettingsModel>((ref) =>
     ref.watch(firestoreServiceProvider).penaltySettingsStream());
+
+/// Override penalità contestuale all'evento (null se non impostato).
+final eventPenaltyOverrideProvider =
+    StreamProvider.family<PenaltySettingsModel?, String>((ref, eventId) =>
+        ref.watch(firestoreServiceProvider).eventPenaltySettingsStream(eventId));
 
 /// Computes the live ranking. Returns `AsyncValue<List<ClassificaEntry>>`.
 /// Re-runs whenever any underlying stream emits a new value.
@@ -31,6 +36,7 @@ final classificaProvider =
   final teamsAv = ref.watch(teamsProvider(eventId));
   final wdAv = ref.watch(withdrawalsStreamProvider(eventId));
   final penaltyAv = ref.watch(penaltySettingsProvider);
+  final penaltyOverrideAv = ref.watch(eventPenaltyOverrideProvider(eventId));
 
   // tracking/{eventId}/pilots è leggibile solo dagli admin (privacy GPS):
   // i piloti non devono sottoscriversi a quello stream, altrimenti
@@ -62,6 +68,8 @@ final classificaProvider =
     teams: teamsAv.valueOrNull ?? [],
     withdrawals: wdAv.valueOrNull ?? {},
     liveTracking: liveAv.valueOrNull ?? [],
-    penalties: penaltyAv.valueOrNull ?? const PenaltySettingsModel(),
+    penalties: penaltyOverrideAv.valueOrNull ??
+        penaltyAv.valueOrNull ??
+        const PenaltySettingsModel(),
   ));
 });

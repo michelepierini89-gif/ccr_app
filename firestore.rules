@@ -85,6 +85,12 @@ service cloud.firestore {
         allow write: if isAdmin();
       }
 
+      // Override penalità contestuale all'evento
+      match /penalty_settings/{docId} {
+        allow read: if isAuthenticated();
+        allow write: if isAdmin();
+      }
+
       // Ritiri
       match /withdrawals/{userId} {
         allow read: if isAuthenticated();

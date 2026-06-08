@@ -187,7 +187,7 @@ class _StartingOrderScreenState extends ConsumerState<StartingOrderScreen> {
     final registrations = await svc.getRegistrationsOnce(prevEventId);
     final teams = await svc.getTeamsOnce(prevEventId);
     final withdrawals = await svc.getWithdrawalsOnce(prevEventId);
-    final penalties = await svc.getPenaltySettings();
+    final penalties = await svc.getEffectivePenaltySettings(prevEventId);
 
     final entries = ClassificaEngine.compute(
       event: prevEvent,

@@ -18,8 +18,6 @@ final _champStandingsProvider = FutureProvider.family<
   final champSnap = await svc.getChampionshipById(championshipId).first;
   if (champSnap == null || champSnap.eventIds.isEmpty) return [];
 
-  final penalties = await svc.getPenaltySettings();
-
   // For each event: load data and compute standings
   final teamTimes = <String, Duration>{};
   final teamEvents = <String, int>{};
@@ -28,6 +26,7 @@ final _champStandingsProvider = FutureProvider.family<
     final event = await svc.getEvent(eventId);
     if (event == null) continue;
 
+    final penalties = await svc.getEffectivePenaltySettings(eventId);
     final passages = await svc.getPassagesOnce(eventId);
     final registrations = await svc.getRegistrationsOnce(eventId);
     final teams = await svc.getTeamsOnce(eventId);

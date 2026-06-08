@@ -59,10 +59,6 @@ final _routerProvider = Provider<GoRouter>((ref) {
             builder: (context, state) => const CreateEventScreen(),
           ),
           GoRoute(
-            path: 'penalty-settings',
-            builder: (context, state) => const PenaltySettingsScreen(),
-          ),
-          GoRoute(
             path: 'championships',
             builder: (context, state) => const ChampionshipScreen(),
             routes: [
@@ -110,6 +106,13 @@ final _routerProvider = Provider<GoRouter>((ref) {
                     appBar: AppBar(title: const Text('Live Tracking')),
                     body: LiveTrackingScreen(eventId: eventId),
                   );
+                },
+              ),
+              GoRoute(
+                path: 'penalty-settings',
+                builder: (context, state) {
+                  final eventId = state.pathParameters['id']!;
+                  return PenaltySettingsScreen(eventId: eventId);
                 },
               ),
             ],

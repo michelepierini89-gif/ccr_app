@@ -332,6 +332,12 @@ class _EventManagementScreenState
             ),
             actions: [
               IconButton(
+                icon: const Icon(Icons.tune),
+                tooltip: 'Penalità evento',
+                onPressed: () =>
+                    context.push('/admin/event/${event.id}/penalty-settings'),
+              ),
+              IconButton(
                 icon: const Icon(Icons.delete_outline, color: AppColors.error),
                 tooltip: 'Elimina evento',
                 onPressed: () => _deleteEvent(context, event),

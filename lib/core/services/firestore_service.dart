@@ -462,4 +462,44 @@ class FirestoreService {
       .collection(FirebaseConstants.penaltySettings)
       .doc(_penaltyDocId)
       .set(settings.toMap());
+
+  // Override penalità contestuale all'evento
+  // (events/{eventId}/penalty_settings/override) — null se non impostato,
+  // in tal caso si applicano i valori predefiniti globali
+
+  static const _penaltyOverrideDocId = 'override';
+
+  DocumentReference<Map<String, dynamic>> _eventPenaltyOverrideDoc(
+          String eventId) =>
+      _db
+          .collection(FirebaseConstants.events)
+          .doc(eventId)
+          .collection(FirebaseConstants.penaltySettings)
+          .doc(_penaltyOverrideDocId);
+
+  Stream<PenaltySettingsModel?> eventPenaltySettingsStream(String eventId) =>
+      _eventPenaltyOverrideDoc(eventId).snapshots().map((doc) =>
+          doc.exists ? PenaltySettingsModel.fromMap(doc.data()!) : null);
+
+  Future<PenaltySettingsModel?> getEventPenaltySettings(String eventId) async {
+    final doc = await _eventPenaltyOverrideDoc(eventId).get();
+    if (!doc.exists) return null;
+    return PenaltySettingsModel.fromMap(doc.data()!);
+  }
+
+  Future<void> saveEventPenaltySettings(
+          String eventId, PenaltySettingsModel settings) =>
+      _eventPenaltyOverrideDoc(eventId).set(settings.toMap());
+
+  Future<void> resetEventPenaltySettings(String eventId) =>
+      _eventPenaltyOverrideDoc(eventId).delete();
+
+  /// Penalità effettive per un evento: override contestuale se presente,
+  /// altrimenti i valori predefiniti globali.
+  Future<PenaltySettingsModel> getEffectivePenaltySettings(
+      String eventId) async {
+    final override = await getEventPenaltySettings(eventId);
+    if (override != null) return override;
+    return getPenaltySettings();
+  }
 }

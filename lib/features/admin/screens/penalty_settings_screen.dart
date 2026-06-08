@@ -6,8 +6,12 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/firebase_error_handler.dart';
 import '../providers/admin_provider.dart';
 
+/// Gestione penalità contestuale a un evento: mostra i valori predefiniti
+/// globali e permette di sovrascriverli con un override valido solo per
+/// l'evento aperto (events/{eventId}/penalty_settings/override).
 class PenaltySettingsScreen extends ConsumerStatefulWidget {
-  const PenaltySettingsScreen({super.key});
+  final String eventId;
+  const PenaltySettingsScreen({super.key, required this.eventId});
 
   @override
   ConsumerState<PenaltySettingsScreen> createState() =>
@@ -16,7 +20,9 @@ class PenaltySettingsScreen extends ConsumerStatefulWidget {
 
 class _PenaltySettingsScreenState
     extends ConsumerState<PenaltySettingsScreen> {
+  PenaltySettingsModel? _defaults;
   PenaltySettingsModel? _settings;
+  bool _hasOverride = false;
   bool _loading = true;
   bool _saving = false;
   String? _errorMsg;
@@ -29,11 +35,24 @@ class _PenaltySettingsScreenState
 
   Future<void> _load() async {
     try {
-      final s =
-          await ref.read(firestoreServiceProvider).getPenaltySettings();
-      if (mounted) setState(() { _settings = s; _loading = false; });
+      final svc = ref.read(firestoreServiceProvider);
+      final defaults = await svc.getPenaltySettings();
+      final override = await svc.getEventPenaltySettings(widget.eventId);
+      if (mounted) {
+        setState(() {
+          _defaults = defaults;
+          _hasOverride = override != null;
+          _settings = override ?? defaults;
+          _loading = false;
+        });
+      }
     } catch (e) {
-      if (mounted) setState(() { _errorMsg = FirebaseErrorHandler.getMessage(e); _loading = false; });
+      if (mounted) {
+        setState(() {
+          _errorMsg = FirebaseErrorHandler.getMessage(e);
+          _loading = false;
+        });
+      }
     }
   }
 
@@ -41,10 +60,41 @@ class _PenaltySettingsScreenState
     if (_settings == null) return;
     setState(() => _saving = true);
     try {
-      await ref.read(firestoreServiceProvider).savePenaltySettings(_settings!);
+      await ref
+          .read(firestoreServiceProvider)
+          .saveEventPenaltySettings(widget.eventId, _settings!);
       if (mounted) {
+        setState(() => _hasOverride = true);
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Penalità salvate con successo'),
+          content: Text('Penalità dell\'evento salvate con successo'),
+          backgroundColor: AppColors.success,
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(FirebaseErrorHandler.getMessage(e)),
+          backgroundColor: AppColors.error,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _resetToDefault() async {
+    setState(() => _saving = true);
+    try {
+      await ref
+          .read(firestoreServiceProvider)
+          .resetEventPenaltySettings(widget.eventId);
+      if (mounted) {
+        setState(() {
+          _hasOverride = false;
+          _settings = _defaults;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Ripristinati i valori predefiniti'),
           backgroundColor: AppColors.success,
         ));
       }
@@ -74,6 +124,9 @@ class _PenaltySettingsScreenState
         'ritiro' => _settings!.copyWith(
             ritiroCompagno:
                 (_settings!.ritiroCompagno + delta).clamp(0, 7200)),
+        'mancante' => _settings!.copyWith(
+            pilotaMancante:
+                (_settings!.pilotaMancante + delta).clamp(0, 7200)),
         _ => _settings,
       };
     });
@@ -84,7 +137,7 @@ class _PenaltySettingsScreenState
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
-        title: const Text('Penalità'),
+        title: const Text('Penalità evento'),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => context.pop(),
@@ -107,7 +160,10 @@ class _PenaltySettingsScreenState
                       const SizedBox(height: 16),
                       ElevatedButton(
                         onPressed: () {
-                          setState(() { _loading = true; _errorMsg = null; });
+                          setState(() {
+                            _loading = true;
+                            _errorMsg = null;
+                          });
                           _load();
                         },
                         child: const Text('Riprova'),
@@ -124,22 +180,36 @@ class _PenaltySettingsScreenState
                       Container(
                         padding: const EdgeInsets.all(14),
                         decoration: BoxDecoration(
-                          color: AppColors.accent.withValues(alpha: 0.08),
+                          color: (_hasOverride
+                                  ? AppColors.warning
+                                  : AppColors.accent)
+                              .withValues(alpha: 0.08),
                           borderRadius: BorderRadius.circular(10),
                           border: Border.all(
-                              color:
-                                  AppColors.accent.withValues(alpha: 0.3)),
+                            color: (_hasOverride
+                                    ? AppColors.warning
+                                    : AppColors.accent)
+                                .withValues(alpha: 0.3),
+                          ),
                         ),
-                        child: const Row(
+                        child: Row(
                           children: [
-                            Icon(Icons.info_outline,
-                                color: AppColors.accent, size: 18),
-                            SizedBox(width: 10),
+                            Icon(
+                              _hasOverride
+                                  ? Icons.tune
+                                  : Icons.info_outline,
+                              color: _hasOverride
+                                  ? AppColors.warning
+                                  : AppColors.accent,
+                              size: 18,
+                            ),
+                            const SizedBox(width: 10),
                             Expanded(
                               child: Text(
-                                'Le penalità vengono aggiunte al tempo di ogni prova speciale. '
-                                'Applicabili a tutti gli eventi.',
-                                style: TextStyle(
+                                _hasOverride
+                                    ? 'Questo evento usa valori di penalità personalizzati, validi solo qui.'
+                                    : 'Questo evento usa i valori predefiniti globali. Modificali e salva per creare un override valido solo per questo evento.',
+                                style: const TextStyle(
                                     color: AppColors.textSecondary,
                                     fontSize: 12),
                               ),
@@ -190,6 +260,17 @@ class _PenaltySettingsScreenState
                         subtitle:
                             'Aggiunta al team se un membro si ritira ma il compagno continua',
                       ),
+                      const SizedBox(height: 10),
+                      _PenaltyRow(
+                        label: 'Pilota mancante alla partenza',
+                        icon: Icons.person_remove_outlined,
+                        value: _settings!.pilotaMancante,
+                        onDecrease: () => _adjust('mancante', -30),
+                        onIncrease: () => _adjust('mancante', 30),
+                        accentColor: AppColors.warning,
+                        subtitle:
+                            'Aggiunta al tempo totale della squadra per ogni pilota sotto il minimo richiesto dall\'evento',
+                      ),
                       const SizedBox(height: 40),
 
                       SizedBox(
@@ -210,7 +291,8 @@ class _PenaltySettingsScreenState
                                   child: CircularProgressIndicator(
                                       strokeWidth: 2, color: Colors.white))
                               : const Icon(Icons.save_outlined),
-                          label: Text(_saving ? 'Salvataggio...' : 'Salva penalità'),
+                          label: Text(
+                              _saving ? 'Salvataggio...' : 'Salva per questo evento'),
                         ),
                       ),
                       const SizedBox(height: 16),
@@ -219,10 +301,9 @@ class _PenaltySettingsScreenState
                       SizedBox(
                         width: double.infinity,
                         child: OutlinedButton.icon(
-                          onPressed: _saving
+                          onPressed: _saving || !_hasOverride
                               ? null
-                              : () => setState(
-                                  () => _settings = const PenaltySettingsModel()),
+                              : _resetToDefault,
                           style: OutlinedButton.styleFrom(
                             foregroundColor: AppColors.textSecondary,
                             side: const BorderSide(color: AppColors.border),
@@ -230,7 +311,8 @@ class _PenaltySettingsScreenState
                                 borderRadius: BorderRadius.circular(12)),
                           ),
                           icon: const Icon(Icons.restart_alt, size: 18),
-                          label: const Text('Ripristina valori predefiniti'),
+                          label: const Text(
+                              'Ripristina valori predefiniti globali'),
                         ),
                       ),
                     ],
