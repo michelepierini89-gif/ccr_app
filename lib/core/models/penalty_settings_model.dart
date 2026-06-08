@@ -3,12 +3,14 @@ class PenaltySettingsModel {
   final int cp2Mancati;      // secondi penalità per 2 CP mancati
   final int cp3oPiuMancati;  // secondi penalità per 3+ CP mancati
   final int ritiroCompagno;  // secondi penalità se un compagno si ritira
+  final int pilotaMancante;  // secondi penalità per ogni pilota sotto il minimo squadra
 
   const PenaltySettingsModel({
     this.cp1Mancato = 60,
     this.cp2Mancati = 180,
     this.cp3oPiuMancati = 360,
     this.ritiroCompagno = 600,
+    this.pilotaMancante = 300,
   });
 
   factory PenaltySettingsModel.fromMap(Map<String, dynamic> d) =>
@@ -17,6 +19,7 @@ class PenaltySettingsModel {
         cp2Mancati: (d['cp2Mancati'] as int?) ?? 180,
         cp3oPiuMancati: (d['cp3oPiuMancati'] as int?) ?? 360,
         ritiroCompagno: (d['ritiroCompagno'] as int?) ?? 600,
+        pilotaMancante: (d['pilotaMancante'] as int?) ?? 300,
       );
 
   Map<String, dynamic> toMap() => {
@@ -24,6 +27,7 @@ class PenaltySettingsModel {
         'cp2Mancati': cp2Mancati,
         'cp3oPiuMancati': cp3oPiuMancati,
         'ritiroCompagno': ritiroCompagno,
+        'pilotaMancante': pilotaMancante,
       };
 
   PenaltySettingsModel copyWith({
@@ -31,12 +35,14 @@ class PenaltySettingsModel {
     int? cp2Mancati,
     int? cp3oPiuMancati,
     int? ritiroCompagno,
+    int? pilotaMancante,
   }) =>
       PenaltySettingsModel(
         cp1Mancato: cp1Mancato ?? this.cp1Mancato,
         cp2Mancati: cp2Mancati ?? this.cp2Mancati,
         cp3oPiuMancati: cp3oPiuMancati ?? this.cp3oPiuMancati,
         ritiroCompagno: ritiroCompagno ?? this.ritiroCompagno,
+        pilotaMancante: pilotaMancante ?? this.pilotaMancante,
       );
 
   static String formatSeconds(int s) {

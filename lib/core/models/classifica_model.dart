@@ -66,6 +66,8 @@ class ClassificaEntry {
   final bool ritirato;
   final bool ritiroCompagno;       // compagno di squadra ritirato (penalità applicata)
   final int ritiroCompagnoPenaltySeconds; // secondi aggiunti per ritiro compagno
+  final int pilotiMancanti; // piloti sotto il minimo squadra stabilito nell'evento
+  final int pilotiMancantiPenaltySeconds; // secondi aggiunti per piloti mancanti
   final bool isLive; // has recent GPS ping
 
   const ClassificaEntry({
@@ -80,6 +82,8 @@ class ClassificaEntry {
     required this.ritirato,
     this.ritiroCompagno = false,
     this.ritiroCompagnoPenaltySeconds = 0,
+    this.pilotiMancanti = 0,
+    this.pilotiMancantiPenaltySeconds = 0,
     required this.isLive,
   });
 

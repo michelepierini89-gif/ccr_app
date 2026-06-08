@@ -282,6 +282,27 @@ class _EntryCardState extends State<_EntryCard> {
                                         fontWeight: FontWeight.bold,
                                         letterSpacing: 0.5)),
                               ),
+                            if (e.pilotiMancanti > 0)
+                              Container(
+                                margin: const EdgeInsets.only(left: 6),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: AppColors.warning
+                                      .withValues(alpha: 0.15),
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(
+                                      color: AppColors.warning
+                                          .withValues(alpha: 0.6)),
+                                ),
+                                child: Text(
+                                    'PILOTA MANCANTE${e.pilotiMancanti > 1 ? " x${e.pilotiMancanti}" : ""}',
+                                    style: const TextStyle(
+                                        color: AppColors.warning,
+                                        fontSize: 9,
+                                        fontWeight: FontWeight.bold,
+                                        letterSpacing: 0.5)),
+                              ),
                           ],
                         ),
                         if (e.membriNomi.length > 1 ||
@@ -348,6 +369,15 @@ class _EntryCardState extends State<_EntryCard> {
                           e.ritiroCompagnoPenaltySeconds > 0)
                         Text(
                           '+${PenaltySettingsModel.formatSeconds(e.ritiroCompagnoPenaltySeconds)} PEN',
+                          style: const TextStyle(
+                              color: AppColors.warning,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold),
+                        ),
+                      if (e.pilotiMancanti > 0 &&
+                          e.pilotiMancantiPenaltySeconds > 0)
+                        Text(
+                          '+${PenaltySettingsModel.formatSeconds(e.pilotiMancantiPenaltySeconds)} PEN',
                           style: const TextStyle(
                               color: AppColors.warning,
                               fontSize: 10,

@@ -57,6 +57,9 @@ class ClassificaEngine {
       final ritiroCompagno =
           !ritirato && withdrawnCount > 0 && memberIds.length > 1;
 
+      final pilotiMancanti =
+          (event.minSquadra - memberIds.length).clamp(0, event.minSquadra);
+
       rawEntries.add(_RawEntry(
         entryId: teamId,
         teamNome: teamModel?.nome ?? teamRegs.firstOrNull?.teamName ?? teamId,
@@ -64,6 +67,7 @@ class ClassificaEngine {
         passages: teamPassages,
         ritirato: ritirato,
         ritiroCompagno: ritiroCompagno,
+        pilotiMancanti: pilotiMancanti,
         isLive: isLive,
       ));
     }
@@ -79,6 +83,7 @@ class ClassificaEngine {
         passages: userPassages,
         ritirato: withdrawals.contains(reg.userId),
         ritiroCompagno: false,
+        pilotiMancanti: 0,
         isLive: liveUserIds.contains(reg.userId),
       ));
     }
@@ -89,13 +94,17 @@ class ClassificaEngine {
       final cpTotale = speciali.fold(Duration.zero, (acc, s) => acc + s.tempo);
       final ritiroPenaltySeconds =
           e.ritiroCompagno ? penalties.ritiroCompagno : 0;
-      final tempoTotale =
-          cpTotale + Duration(seconds: ritiroPenaltySeconds);
+      final pilotiMancantiPenaltySeconds =
+          e.pilotiMancanti * penalties.pilotaMancante;
+      final tempoTotale = cpTotale +
+          Duration(seconds: ritiroPenaltySeconds) +
+          Duration(seconds: pilotiMancantiPenaltySeconds);
       return (
         entry: e,
         speciali: speciali,
         tempoTotale: tempoTotale,
         ritiroPenaltySeconds: ritiroPenaltySeconds,
+        pilotiMancantiPenaltySeconds: pilotiMancantiPenaltySeconds,
       );
     }).toList();
 
@@ -173,6 +182,7 @@ class ClassificaEngine {
               List<SpecialTempo> speciali,
               Duration tempoTotale,
               int ritiroPenaltySeconds,
+              int pilotiMancantiPenaltySeconds,
             })>
         computed,
     int totaleSpeciali,
@@ -222,6 +232,8 @@ class ClassificaEngine {
         ritirato: c.entry.ritirato,
         ritiroCompagno: c.entry.ritiroCompagno,
         ritiroCompagnoPenaltySeconds: c.ritiroPenaltySeconds,
+        pilotiMancanti: c.entry.pilotiMancanti,
+        pilotiMancantiPenaltySeconds: c.pilotiMancantiPenaltySeconds,
         isLive: c.entry.isLive,
       );
     }).toList();
@@ -234,6 +246,7 @@ class ClassificaEngine {
               List<SpecialTempo> speciali,
               Duration tempoTotale,
               int ritiroPenaltySeconds,
+              int pilotiMancantiPenaltySeconds,
             })>
         computed,
     EventModel event,
@@ -300,6 +313,8 @@ class ClassificaEngine {
         ritirato: c.entry.ritirato,
         ritiroCompagno: c.entry.ritiroCompagno,
         ritiroCompagnoPenaltySeconds: c.ritiroPenaltySeconds,
+        pilotiMancanti: c.entry.pilotiMancanti,
+        pilotiMancantiPenaltySeconds: c.pilotiMancantiPenaltySeconds,
         isLive: c.entry.isLive,
       );
     }).toList();
@@ -313,6 +328,7 @@ class _RawEntry {
   final List<WaypointPassageRecord> passages;
   final bool ritirato;
   final bool ritiroCompagno;
+  final int pilotiMancanti;
   final bool isLive;
 
   _RawEntry({
@@ -322,6 +338,7 @@ class _RawEntry {
     required this.passages,
     required this.ritirato,
     required this.ritiroCompagno,
+    required this.pilotiMancanti,
     required this.isLive,
   });
 }
