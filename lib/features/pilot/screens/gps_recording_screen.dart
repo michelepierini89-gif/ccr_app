@@ -501,6 +501,16 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         // Mode banner
         _ModeBanner(color: modeColor, label: _modeLabel(gps.mode)),
 
+        // Banner punto ristoro: appare quando il pilota è entro 200m
+        if (event?.fuelPoint != null)
+          Builder(builder: (context) {
+            final fuel = event!.fuelPoint!;
+            final distance = LocationUtils.haversineDistance(
+                curPos.latitude, curPos.longitude, fuel.lat, fuel.lng);
+            if (distance > 200) return const SizedBox.shrink();
+            return _FuelPointBanner(distanceMeters: distance);
+          }),
+
         // Live map — RepaintBoundary isola la mappa: rivernicia solo quando
         // cambia la posizione GPS, non quando il timer stats scatta ogni secondo
         Expanded(
@@ -1088,6 +1098,37 @@ class _ModeBadge extends StatelessWidget {
           fontSize: 13,
           letterSpacing: 1,
         ),
+      ),
+    );
+  }
+}
+
+class _FuelPointBanner extends StatelessWidget {
+  final double distanceMeters;
+  const _FuelPointBanner({required this.distanceMeters});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      color: Colors.amber.withValues(alpha: 0.18),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.local_gas_station,
+              color: Colors.amber, size: 16),
+          const SizedBox(width: 8),
+          Text(
+            'Punto ristoro tra ${distanceMeters.round()} m',
+            style: const TextStyle(
+              color: Colors.amber,
+              fontWeight: FontWeight.bold,
+              fontSize: 12,
+              letterSpacing: 0.5,
+            ),
+          ),
+        ],
       ),
     );
   }
