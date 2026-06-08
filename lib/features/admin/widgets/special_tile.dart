@@ -102,7 +102,7 @@ class SpecialTile extends StatelessWidget {
               children: [
                 const Icon(Icons.flag, color: AppColors.success, size: 14),
                 const SizedBox(width: 4),
-                Expanded(
+                Flexible(
                   child: Text(
                     'Inizio: ${special.waypointInizio.nome}',
                     style: const TextStyle(
@@ -117,7 +117,7 @@ class SpecialTile extends StatelessWidget {
               children: [
                 const Icon(Icons.flag, color: AppColors.accent, size: 14),
                 const SizedBox(width: 4),
-                Expanded(
+                Flexible(
                   child: Text(
                     'Fine: ${special.waypointFine.nome}',
                     style: const TextStyle(
@@ -137,12 +137,15 @@ class SpecialTile extends StatelessWidget {
                     size: 14,
                   ),
                   const SizedBox(width: 4),
-                  Text(
-                    lengthKm != null
-                        ? '${lengthKm!.toStringAsFixed(1)} km · ${special.controlPoints.length} punt${special.controlPoints.length == 1 ? "o" : "i"} di controllo'
-                        : '${special.controlPoints.length} punt${special.controlPoints.length == 1 ? "o" : "i"} di controllo',
-                    style: const TextStyle(
-                        color: AppColors.textSecondary, fontSize: 12),
+                  Flexible(
+                    child: Text(
+                      lengthKm != null
+                          ? '${lengthKm!.toStringAsFixed(1)} km · ${special.controlPoints.length} punt${special.controlPoints.length == 1 ? "o" : "i"} di controllo'
+                          : '${special.controlPoints.length} punt${special.controlPoints.length == 1 ? "o" : "i"} di controllo',
+                      style: const TextStyle(
+                          color: AppColors.textSecondary, fontSize: 12),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ],
               ),
