@@ -81,6 +81,12 @@ class GpsService extends ChangeNotifier {
   int _consecutiveDiscarded = 0;
   LatLng? _filteredPosition;
 
+  // Bearing computation: circular buffer of last 5 valid filtered points
+  static const double _kMinSpeedKmh = 5.0;
+  final List<LatLng> _recentPoints = [];
+  double _lastHighSpeedBearingDeg = 0.0;
+  double _bearingDeg = 0.0;
+
   bool get isRecording => _isRecording;
   String? get activeEventId => _activeEventId;
   GpsMode get mode => _mode;
@@ -103,6 +109,21 @@ class GpsService extends ChangeNotifier {
 
   /// Last Kalman-filtered position; null until the first accepted GPS fix.
   LatLng? get filteredPosition => _filteredPosition;
+
+  /// Geometric bearing in degrees [0, 360), computed from recent GPS movement.
+  /// Freezes at the last value recorded above 5 km/h to avoid jitter at low speed.
+  /// Never uses position.heading (unreliable below ~8 km/h on most chipsets).
+  double get bearingDeg => _bearingDeg;
+
+  /// Computes the forward azimuth from [from] to [to] in degrees [0, 360).
+  static double _computeBearingDeg(LatLng from, LatLng to) {
+    final lat1 = from.latitude * pi / 180;
+    final lat2 = to.latitude * pi / 180;
+    final dLon = (to.longitude - from.longitude) * pi / 180;
+    final y = sin(dLon) * cos(lat2);
+    final x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon);
+    return (atan2(y, x) * 180.0 / pi + 360.0) % 360.0;
+  }
 
   Future<bool> requestPermissions() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -150,6 +171,9 @@ class GpsService extends ChangeNotifier {
     _consecutiveDiscarded = 0;
     _filteredPosition = null;
     _kalmanFilter.reset();
+    _recentPoints.clear();
+    _lastHighSpeedBearingDeg = 0.0;
+    _bearingDeg = 0.0;
     _isRecording = true;
     _mode = GpsMode.transfer;
     _recordingStart = DateTime.now();
@@ -240,6 +264,26 @@ class GpsService extends ChangeNotifier {
       _totalDistanceKm += _haversineKm(_localTrack.last, latLng);
     }
     _localTrack.add(latLng);
+
+    // Circular buffer of last 5 valid Kalman-filtered points for bearing
+    _recentPoints.add(latLng);
+    if (_recentPoints.length > 5) _recentPoints.removeAt(0);
+
+    // Geometric bearing: update only when moving; freeze at low speed to avoid jitter
+    final speedKmh = pos.speed * 3.6;
+    if (speedKmh > _kMinSpeedKmh && _recentPoints.length >= 2) {
+      _lastHighSpeedBearingDeg = _computeBearingDeg(
+        _recentPoints[_recentPoints.length - 2],
+        _recentPoints[_recentPoints.length - 1],
+      );
+      _bearingDeg = _lastHighSpeedBearingDeg;
+    }
+    // Below threshold: _bearingDeg keeps last high-speed value (arrow stable)
+
+    debugPrint(
+        'Bearing: ${_bearingDeg.toStringAsFixed(1)}°, '
+        'Speed: ${speedKmh.toStringAsFixed(1)} km/h, '
+        'Mode: $mode');
 
     // Detect waypoint passage
     final wp = WaypointDetector.detectPassage(
@@ -345,6 +389,9 @@ class GpsService extends ChangeNotifier {
     _consecutiveDiscarded = 0;
     _filteredPosition = null;
     _kalmanFilter.reset();
+    _recentPoints.clear();
+    _lastHighSpeedBearingDeg = 0.0;
+    _bearingDeg = 0.0;
     WakelockPlus.disable().ignore();
     notifyListeners();
   }

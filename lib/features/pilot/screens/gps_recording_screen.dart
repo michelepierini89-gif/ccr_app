@@ -123,18 +123,6 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     } catch (_) {}
   }
 
-  double _calcBearing(List<LatLng> track) {
-    if (track.length < 2) return 0;
-    final a = track[track.length - 2];
-    final b = track[track.length - 1];
-    final dLng = (b.longitude - a.longitude) * pi / 180;
-    final lat1 = a.latitude * pi / 180;
-    final lat2 = b.latitude * pi / 180;
-    final y = sin(dLng) * cos(lat2);
-    final x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLng);
-    return atan2(y, x);
-  }
-
   Marker _psMarker(LatLng point, String label, Color color, bool isStart) =>
       Marker(
         point: point,
@@ -478,15 +466,16 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
             _programmaticMove = true;
             _mapController.move(curPos, _mapZoom);
             if (_headingMode) {
-              final b = _calcBearing(gps.localTrack);
-              _mapController.rotate(-(b * 180 / pi));
+              // bearingDeg already in degrees [0,360) — no radians conversion needed
+              _mapController.rotate(-gps.bearingDeg);
             }
           });
         }
 
-        final bearing = _calcBearing(gps.localTrack);
-        // In HEADING mode the map rotates → arrow stays fixed pointing up
-        final arrowAngle = _headingMode ? 0.0 : bearing;
+        // NORD mode: arrow rotates by bearingDeg (converted to radians for Transform.rotate)
+        // HEADING mode: map already rotated → arrow fixed pointing up (angle 0)
+        // No double-rotation: either the map rotates OR the arrow rotates, never both.
+        final arrowAngle = _headingMode ? 0.0 : gps.bearingDeg * pi / 180;
         final hasPos = liveData != null || pos != null;
         final speed = liveData?.speed ?? pos?.speed ?? 0.0;
         final accuracy = liveData?.accuracy ?? pos?.accuracy ?? 0.0;
