@@ -50,6 +50,10 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   bool _eventTrackLoaded = false;
   bool _headingMode = false;
 
+  StreamSubscription<String>? _recoverySub;
+  String? _recoveryMessage;
+  Timer? _recoveryTimer;
+
   @override
   void initState() {
     super.initState();
@@ -68,6 +72,14 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     )..addListener(_onMarkerAnimTick);
     WakelockPlus.enable().ignore();
     _startElapsedTimer();
+    _recoverySub = ref.read(gpsServiceProvider).recoveryStream.listen((msg) {
+      if (!mounted) return;
+      setState(() => _recoveryMessage = msg);
+      _recoveryTimer?.cancel();
+      _recoveryTimer = Timer(const Duration(seconds: 3), () {
+        if (mounted) setState(() => _recoveryMessage = null);
+      });
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadEventTrack());
   }
 
@@ -87,6 +99,8 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   void dispose() {
     WakelockPlus.disable().ignore();
     _elapsedTimer?.cancel();
+    _recoverySub?.cancel();
+    _recoveryTimer?.cancel();
     _pulseController.dispose();
     _markerController.dispose();
     _mapController.dispose();
@@ -517,6 +531,24 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                 fontSize: 10,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0.5,
+              ),
+            ),
+          ),
+
+        // Recovery banner: light-blue strip shown for 3 s after a retroactive start
+        if (_recoveryMessage != null)
+          Container(
+            width: double.infinity,
+            height: 26,
+            color: const Color(0xFF29B6F6).withValues(alpha: 0.18),
+            alignment: Alignment.center,
+            child: Text(
+              _recoveryMessage!,
+              style: const TextStyle(
+                color: Color(0xFF29B6F6),
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.3,
               ),
             ),
           ),

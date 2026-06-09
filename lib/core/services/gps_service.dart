@@ -26,12 +26,14 @@ class SpecialEntry {
   final String specialeNome;
   final DateTime entryTime;
   final DateTime? exitTime;
+  final bool recoveredStart;
 
   const SpecialEntry({
     required this.specialeId,
     required this.specialeNome,
     required this.entryTime,
     this.exitTime,
+    this.recoveredStart = false,
   });
 
   Duration? get elapsed => exitTime?.difference(entryTime);
@@ -41,6 +43,7 @@ class SpecialEntry {
         specialeNome: specialeNome,
         entryTime: entryTime,
         exitTime: t,
+        recoveredStart: recoveredStart,
       );
 }
 
@@ -87,6 +90,14 @@ class GpsService extends ChangeNotifier {
   double _lastHighSpeedBearingDeg = 0.0;
   double _bearingDeg = 0.0;
 
+  // Special-start recovery
+  static const double kSpecialStartRecoveryRadiusMeters = 80.0;
+  static const int kSpecialStartRecoveryLookbackSeconds = 30;
+  final Set<String> _recoveryAttempted = {};
+  final List<DateTime> _trackTimestamps = [];
+  final StreamController<String> _recoveryStreamCtrl =
+      StreamController<String>.broadcast();
+
   bool get isRecording => _isRecording;
   String? get activeEventId => _activeEventId;
   GpsMode get mode => _mode;
@@ -115,6 +126,10 @@ class GpsService extends ChangeNotifier {
   /// Never uses position.heading (unreliable below ~8 km/h on most chipsets).
   double get bearingDeg => _bearingDeg;
 
+  /// Emits a localised message string each time a missed special start is
+  /// retroactively recovered. Subscribers should display a timed banner.
+  Stream<String> get recoveryStream => _recoveryStreamCtrl.stream;
+
   /// Computes the forward azimuth from [from] to [to] in degrees [0, 360).
   static double _computeBearingDeg(LatLng from, LatLng to) {
     final lat1 = from.latitude * pi / 180;
@@ -123,6 +138,109 @@ class GpsService extends ChangeNotifier {
     final y = sin(dLon) * cos(lat2);
     final x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon);
     return (atan2(y, x) * 180.0 / pi + 360.0) % 360.0;
+  }
+
+  /// Retroactively detects a missed special-start waypoint.
+  ///
+  /// Called on every accepted GPS point. For each special whose START has not
+  /// been registered yet:
+  ///   1. Checks if the current position is within 3× the recovery radius of
+  ///      the START waypoint (pilot is "inside" the special zone).
+  ///   2. If so, scans the last [kSpecialStartRecoveryLookbackSeconds] seconds
+  ///      of the recorded track for the point closest to the START.
+  ///   3. If that closest point is within [kSpecialStartRecoveryRadiusMeters],
+  ///      the start is retroactively registered using that point's timestamp.
+  ///
+  /// Each special is attempted at most once ([_recoveryAttempted]) to prevent loops.
+  Future<void> _trySpecialStartRecovery(
+      LatLng currentPos, DateTime now) async {
+    for (final special in _specials) {
+      final inizioId = special.waypointInizio.id;
+
+      // Skip if already started, already attempted, or cancelled
+      if (_passedWaypoints.contains(inizioId)) continue;
+      if (_recoveryAttempted.contains(special.id)) continue;
+      if (special.annullata) continue;
+
+      // Trigger: current position within 3× recovery radius of the START
+      final distToStartM = _haversineKm(
+            currentPos,
+            LatLng(special.waypointInizio.lat, special.waypointInizio.lng),
+          ) *
+          1000.0;
+      if (distToStartM >= kSpecialStartRecoveryRadiusMeters * 3) continue;
+
+      // Mark attempted before the lookback to prevent re-entry on subsequent points
+      _recoveryAttempted.add(special.id);
+
+      // Lookback: find track point closest to START within the time window
+      final cutoff = now
+          .subtract(Duration(seconds: kSpecialStartRecoveryLookbackSeconds));
+      final startPt =
+          LatLng(special.waypointInizio.lat, special.waypointInizio.lng);
+
+      double bestDistM = double.infinity;
+      int bestIdx = -1;
+      for (int i = _localTrack.length - 1; i >= 0; i--) {
+        if (_trackTimestamps[i].isBefore(cutoff)) break;
+        final d = _haversineKm(_localTrack[i], startPt) * 1000.0;
+        if (d < bestDistM) {
+          bestDistM = d;
+          bestIdx = i;
+        }
+      }
+
+      if (bestIdx < 0 || bestDistM >= kSpecialStartRecoveryRadiusMeters) {
+        continue;
+      }
+
+      // Recovery confirmed
+      final recoveredTime = _trackTimestamps[bestIdx];
+      debugPrint(
+          'RECOVERY speciale ${special.id}: '
+          'start retroattivo a $recoveredTime '
+          '(dist min: ${bestDistM.toStringAsFixed(1)}m)');
+
+      // Register inizio waypoint as passed to block double-detection
+      _passedWaypoints.add(inizioId);
+      _passages.add(
+          WaypointPassage(waypoint: special.waypointInizio, timestamp: recoveredTime));
+
+      // Open the special with the recovered entry time
+      _currentSpecialId = special.id;
+      _currentSpecialNome = special.nome;
+      _specialEntries.add(SpecialEntry(
+        specialeId: special.id,
+        specialeNome: special.nome,
+        entryTime: recoveredTime,
+        recoveredStart: true,
+      ));
+
+      // Notify the UI
+      _recoveryStreamCtrl.add('⚡ Inizio ${special.nome} recuperato');
+
+      // Persist in Firestore with recoveredStart flag so admins can review it
+      if (_activeEventId != null && _activeUserId != null) {
+        try {
+          await _firestoreService.recordWaypointPassage(
+            eventId: _activeEventId!,
+            userId: _activeUserId!,
+            waypointId: inizioId,
+            waypointNome: special.waypointInizio.nome,
+            timestamp: recoveredTime,
+            recoveredStart: true,
+          );
+        } catch (_) {
+          await _offlineQueue.queuePassage(
+            eventId: _activeEventId!,
+            userId: _activeUserId!,
+            waypointId: inizioId,
+            waypointNome: special.waypointInizio.nome,
+            timestamp: recoveredTime,
+          );
+        }
+      }
+    }
   }
 
   Future<bool> requestPermissions() async {
@@ -174,6 +292,8 @@ class GpsService extends ChangeNotifier {
     _recentPoints.clear();
     _lastHighSpeedBearingDeg = 0.0;
     _bearingDeg = 0.0;
+    _recoveryAttempted.clear();
+    _trackTimestamps.clear();
     _isRecording = true;
     _mode = GpsMode.transfer;
     _recordingStart = DateTime.now();
@@ -264,6 +384,7 @@ class GpsService extends ChangeNotifier {
       _totalDistanceKm += _haversineKm(_localTrack.last, latLng);
     }
     _localTrack.add(latLng);
+    _trackTimestamps.add(now); // kept in sync with _localTrack for lookback
 
     // Circular buffer of last 5 valid Kalman-filtered points for bearing
     _recentPoints.add(latLng);
@@ -336,6 +457,9 @@ class GpsService extends ChangeNotifier {
       }
     }
 
+    // Recovery: retroactively detect missed special starts
+    await _trySpecialStartRecovery(latLng, now);
+
     // Determine mode
     final remainingForMode =
         _waypoints.where((w) => !_passedWaypoints.contains(w.id)).toList();
@@ -392,6 +516,8 @@ class GpsService extends ChangeNotifier {
     _recentPoints.clear();
     _lastHighSpeedBearingDeg = 0.0;
     _bearingDeg = 0.0;
+    _recoveryAttempted.clear();
+    _trackTimestamps.clear();
     WakelockPlus.disable().ignore();
     notifyListeners();
   }
@@ -400,6 +526,7 @@ class GpsService extends ChangeNotifier {
   void dispose() {
     _positionSub?.cancel();
     _posStreamCtrl.close();
+    _recoveryStreamCtrl.close();
     super.dispose();
   }
 }

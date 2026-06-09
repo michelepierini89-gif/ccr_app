@@ -424,6 +424,7 @@ class FirestoreService {
     required String waypointId,
     required String waypointNome,
     required DateTime timestamp,
+    bool recoveredStart = false,
   }) =>
       _db
           .collection(FirebaseConstants.tracking)
@@ -434,6 +435,7 @@ class FirestoreService {
         'waypointId': waypointId,
         'waypointNome': waypointNome,
         'timestamp': Timestamp.fromDate(timestamp),
+        if (recoveredStart) 'recoveredStart': true,
       });
 
   // Penalty settings (documento unico 'default' nella collezione penalty_settings)
