@@ -101,7 +101,7 @@ class _SlotRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final timeStr = DateFormat('HH:mm').format(slot.startTime);
+    final timeStr = DateFormat('HH:mm').format(slot.startTime.toLocal());
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
@@ -196,7 +196,7 @@ class _MySlotBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final timeStr = DateFormat('HH:mm').format(slot.startTime);
+    final timeStr = DateFormat('HH:mm').format(slot.startTime.toLocal());
     return Container(
       width: double.infinity,
       color: AppColors.accent.withValues(alpha: 0.12),

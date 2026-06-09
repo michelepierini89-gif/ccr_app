@@ -84,7 +84,11 @@ exports.onStartingOrderPublished = onDocumentUpdated(
       if (membriIds.length === 0) continue;
 
       const startDate = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
-      const orario = startDate.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+      const orario = new Intl.DateTimeFormat('it-IT', {
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: 'Europe/Rome',
+      }).format(startDate);
 
       const userDocs = await Promise.all(
         membriIds.map((uid) => db.collection('users').doc(uid).get())
