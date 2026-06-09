@@ -220,3 +220,122 @@ exports.autoArchiveEvents = onSchedule(
     console.log(`autoArchiveEvents: ${count} event${count === 1 ? 'o archiviato' : 'i archiviati'}.`);
   }
 );
+
+// ── Scheduled: ritiro automatico per superamento tempo massimo gara ─────────
+exports.enforceMaxRaceTime = onSchedule(
+  {
+    schedule: '*/5 * * * *',
+    timeZone: 'Europe/Rome',
+    region: 'europe-west1',
+  },
+  async () => {
+    const db = getFirestore();
+    const now = new Date();
+
+    // Query active events (in_corso only)
+    const eventsSnap = await db
+      .collection('events')
+      .where('stato', '==', 'in_corso')
+      .get();
+
+    if (eventsSnap.empty) return;
+
+    for (const eventDoc of eventsSnap.docs) {
+      const eventData = eventDoc.data();
+      const maxMinutes = eventData.maxRaceTimeMinutes ?? 270;
+      const startingOrder = eventData.startingOrder ?? [];
+      if (startingOrder.length === 0) continue;
+
+      // Build map: teamName → startTime (Date)
+      const startTimeByTeam = {};
+      for (const slot of startingOrder) {
+        const st = slot.startTime;
+        if (!st) continue;
+        const startDate = st.toDate ? st.toDate() : new Date(st);
+        startTimeByTeam[slot.teamName.trim().toLowerCase()] = startDate;
+      }
+
+      // Get all racing pilots for this event
+      const pilotsSnap = await db
+        .collection('tracking')
+        .doc(eventDoc.id)
+        .collection('pilots')
+        .where('raceStatus', '==', 'racing')
+        .get();
+
+      if (pilotsSnap.empty) continue;
+
+      // Get all approved registrations to match userId → teamName
+      const regsSnap = await db
+        .collection('registrations')
+        .where('eventId', '==', eventDoc.id)
+        .where('stato', '==', 'approvato')
+        .get();
+
+      const teamByUserId = {};
+      for (const reg of regsSnap.docs) {
+        const d = reg.data();
+        if (d.userId && d.teamName) {
+          teamByUserId[d.userId] = d.teamName.trim().toLowerCase();
+        }
+      }
+
+      const batch = db.batch();
+      let retiredCount = 0;
+
+      for (const pilotDoc of pilotsSnap.docs) {
+        const userId = pilotDoc.id;
+        const pilotData = pilotDoc.data();
+        const teamName = teamByUserId[userId];
+        if (!teamName) continue;
+
+        const startTime = startTimeByTeam[teamName];
+        if (!startTime) continue;
+
+        const deadlineMs = startTime.getTime() + maxMinutes * 60 * 1000;
+        if (now.getTime() < deadlineMs) continue;
+
+        // Check if pilot has completed all required specials (waypointPassati)
+        const waypointPassati = pilotData.waypointPassati ?? [];
+        const specialiValide = (eventData.speciali ?? []).filter(
+          (s) => !s.annullata,
+        );
+        const requiredWpIds = new Set(
+          specialiValide.flatMap((s) => [s.waypointInizio?.id, s.waypointFine?.id].filter(Boolean)),
+        );
+        const passedIds = new Set(waypointPassati);
+        const allDone = [...requiredWpIds].every((id) => passedIds.has(id));
+        if (allDone) continue;
+
+        // Retire pilot
+        batch.set(
+          pilotDoc.ref,
+          { raceStatus: 'retired', retiredReason: 'timeout' },
+          { merge: true },
+        );
+
+        // Also write to withdrawals sub-collection
+        const withdrawalRef = db
+          .collection('events')
+          .doc(eventDoc.id)
+          .collection('withdrawals')
+          .doc(userId);
+        batch.set(
+          withdrawalRef,
+          {
+            userId,
+            eventId: eventDoc.id,
+            timestamp: now,
+            retiredReason: 'timeout',
+          },
+          { merge: true },
+        );
+
+        retiredCount++;
+        console.log(`enforceMaxRaceTime: ritirato userId=${userId} evento=${eventDoc.id}`);
+      }
+
+      if (retiredCount > 0) await batch.commit();
+    }
+  }
+);

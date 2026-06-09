@@ -69,6 +69,7 @@ class ClassificaEntry {
   final int pilotiMancanti; // piloti sotto il minimo squadra stabilito nell'evento
   final int pilotiMancantiPenaltySeconds; // secondi aggiunti per piloti mancanti
   final bool isLive; // has recent GPS ping
+  final String? retiredReason; // 'timeout' | 'manual' | null
 
   const ClassificaEntry({
     required this.entryId,
@@ -85,6 +86,7 @@ class ClassificaEntry {
     this.pilotiMancanti = 0,
     this.pilotiMancantiPenaltySeconds = 0,
     required this.isLive,
+    this.retiredReason,
   });
 
   bool get hasFinished => specialiCompletati.length == totaleSpeciali;

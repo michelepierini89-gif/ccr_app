@@ -593,8 +593,11 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
   int _minSquadra = 1;
   int _maxSquadra = 4;
   TipologiaClassifica _tipologia = TipologiaClassifica.sommaTempi;
+  int _maxRaceTimeH = 4;
+  int _maxRaceTimeM = 30;
   Timer? _squadraDebounce;
   Timer? _tipologiaDebounce;
+  Timer? _maxRaceDebounce;
 
   @override
   void initState() {
@@ -602,6 +605,8 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
     _minSquadra = widget.event.minSquadra;
     _maxSquadra = widget.event.maxSquadra;
     _tipologia = widget.event.tipologiaClassifica;
+    _maxRaceTimeH = widget.event.maxRaceTimeMinutes ~/ 60;
+    _maxRaceTimeM = widget.event.maxRaceTimeMinutes % 60;
     _totalLength = _computeTotalLength();
   }
 
@@ -625,12 +630,23 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
         setState(() => _tipologia = widget.event.tipologiaClassifica);
       }
     }
+    if (_maxRaceDebounce == null || !_maxRaceDebounce!.isActive) {
+      final h = widget.event.maxRaceTimeMinutes ~/ 60;
+      final m = widget.event.maxRaceTimeMinutes % 60;
+      if (h != _maxRaceTimeH || m != _maxRaceTimeM) {
+        setState(() {
+          _maxRaceTimeH = h;
+          _maxRaceTimeM = m;
+        });
+      }
+    }
   }
 
   @override
   void dispose() {
     _squadraDebounce?.cancel();
     _tipologiaDebounce?.cancel();
+    _maxRaceDebounce?.cancel();
     super.dispose();
   }
 
@@ -698,6 +714,26 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
           .read(firestoreServiceProvider)
           .updateEvent(widget.event
               .copyWith(minSquadra: _minSquadra, maxSquadra: _maxSquadra))
+          .catchError((e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(FirebaseErrorHandler.getMessage(e)),
+            backgroundColor: AppColors.error,
+          ));
+        }
+      });
+    });
+  }
+
+  void _onMaxRaceTimeChanged() {
+    _maxRaceDebounce?.cancel();
+    _maxRaceDebounce = Timer(const Duration(milliseconds: 800), () {
+      final totalMinutes = _maxRaceTimeH * 60 + _maxRaceTimeM;
+      if (totalMinutes < 30) return;
+      ref
+          .read(firestoreServiceProvider)
+          .updateEvent(widget.event
+              .copyWith(maxRaceTimeMinutes: totalMinutes))
           .catchError((e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -1031,6 +1067,47 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
           ),
         ),
 
+        // ── Tempo massimo gara ──
+        const SizedBox(height: 16),
+        _SectionLabel('Tempo massimo gara'),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: _StepperField(
+                label: 'Ore',
+                value: _maxRaceTimeH,
+                min: 0,
+                max: 12,
+                onChanged: (v) {
+                  setState(() => _maxRaceTimeH = v);
+                  _onMaxRaceTimeChanged();
+                },
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _StepperField(
+                label: 'Min (×5)',
+                value: _maxRaceTimeM,
+                min: 0,
+                max: 55,
+                step: 5,
+                onChanged: (v) {
+                  setState(() => _maxRaceTimeM = v);
+                  _onMaxRaceTimeChanged();
+                },
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          '${_maxRaceTimeH}h ${_maxRaceTimeM.toString().padLeft(2, '0')}min'
+          ' — ${_maxRaceTimeH * 60 + _maxRaceTimeM} min totali',
+          style: const TextStyle(color: AppColors.accent, fontSize: 11),
+        ),
+
         // ── Specials list ──
         if (event.speciali.isNotEmpty) ...[
           const SizedBox(height: 20),
@@ -1314,6 +1391,7 @@ class _StepperField extends StatelessWidget {
   final int value;
   final int min;
   final int max;
+  final int step;
   final void Function(int) onChanged;
 
   const _StepperField({
@@ -1321,6 +1399,7 @@ class _StepperField extends StatelessWidget {
     required this.value,
     required this.min,
     required this.max,
+    this.step = 1,
     required this.onChanged,
   });
 
@@ -1344,7 +1423,7 @@ class _StepperField extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               InkWell(
-                onTap: value > min ? () => onChanged(value - 1) : null,
+                onTap: value > min ? () => onChanged(value - step) : null,
                 borderRadius: BorderRadius.circular(20),
                 child: Container(
                   width: 32,
@@ -1368,7 +1447,7 @@ class _StepperField extends StatelessWidget {
                       fontSize: 20,
                       fontWeight: FontWeight.bold)),
               InkWell(
-                onTap: value < max ? () => onChanged(value + 1) : null,
+                onTap: value < max ? () => onChanged(value + step) : null,
                 borderRadius: BorderRadius.circular(20),
                 child: Container(
                   width: 32,

@@ -26,6 +26,8 @@ class _CreateEventScreenState extends ConsumerState<CreateEventScreen> {
   int _minSquadra = 2;
   int _maxSquadra = 3;
   TipologiaClassifica _tipologia = TipologiaClassifica.sommaTempi;
+  int _maxRaceTimeH = 4;
+  int _maxRaceTimeM = 30;
   bool _isLoading = false;
 
   @override
@@ -64,6 +66,14 @@ class _CreateEventScreenState extends ConsumerState<CreateEventScreen> {
       ));
       return;
     }
+    final totalMinutes = _maxRaceTimeH * 60 + _maxRaceTimeM;
+    if (totalMinutes < 30 || totalMinutes > 720) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Tempo massimo: tra 30 minuti e 12 ore'),
+        backgroundColor: AppColors.error,
+      ));
+      return;
+    }
     setState(() => _isLoading = true);
     try {
       final uid = ref.read(authStateProvider).valueOrNull?.uid ?? '';
@@ -80,6 +90,7 @@ class _CreateEventScreenState extends ConsumerState<CreateEventScreen> {
         minSquadra: _minSquadra,
         maxSquadra: _maxSquadra,
         tipologiaClassifica: _tipologia,
+        maxRaceTimeMinutes: totalMinutes,
       );
       final id = await ref.read(firestoreServiceProvider).createEvent(event);
       if (!mounted) return;
@@ -230,6 +241,46 @@ class _CreateEventScreenState extends ConsumerState<CreateEventScreen> {
                 value: _tipologia,
                 onChanged: (v) => setState(() => _tipologia = v),
               ),
+              const SizedBox(height: 24),
+              // ── Tempo massimo gara ──
+              _SectionLabel('Tempo massimo gara'),
+              const SizedBox(height: 4),
+              Text(
+                'Min 30 min — Max 12 ore  (default: 4h 30min)',
+                style: const TextStyle(
+                    color: AppColors.textSecondary, fontSize: 11),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: _StepperField(
+                      label: 'Ore',
+                      value: _maxRaceTimeH,
+                      min: 0,
+                      max: 12,
+                      onChanged: (v) => setState(() => _maxRaceTimeH = v),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: _StepperField(
+                      label: 'Minuti',
+                      value: _maxRaceTimeM,
+                      min: 0,
+                      max: 55,
+                      step: 5,
+                      onChanged: (v) => setState(() => _maxRaceTimeM = v),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Totale: ${_maxRaceTimeH}h ${_maxRaceTimeM.toString().padLeft(2, '0')}min'
+                ' (${_maxRaceTimeH * 60 + _maxRaceTimeM} min)',
+                style: const TextStyle(color: AppColors.accent, fontSize: 12),
+              ),
               const SizedBox(height: 32),
               CcrButton(
                 label: 'Salva evento',
@@ -267,6 +318,7 @@ class _StepperField extends StatelessWidget {
   final int value;
   final int min;
   final int max;
+  final int step;
   final void Function(int) onChanged;
 
   const _StepperField({
@@ -274,6 +326,7 @@ class _StepperField extends StatelessWidget {
     required this.value,
     required this.min,
     required this.max,
+    this.step = 1,
     required this.onChanged,
   });
 
@@ -297,7 +350,7 @@ class _StepperField extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               InkWell(
-                onTap: value > min ? () => onChanged(value - 1) : null,
+                onTap: value > min ? () => onChanged(value - step) : null,
                 borderRadius: BorderRadius.circular(20),
                 child: Container(
                   width: 36,
@@ -325,7 +378,7 @@ class _StepperField extends StatelessWidget {
                     fontWeight: FontWeight.bold),
               ),
               InkWell(
-                onTap: value < max ? () => onChanged(value + 1) : null,
+                onTap: value < max ? () => onChanged(value + step) : null,
                 borderRadius: BorderRadius.circular(20),
                 child: Container(
                   width: 36,

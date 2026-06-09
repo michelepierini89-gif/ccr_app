@@ -27,6 +27,12 @@ class ClassificaEngine {
         .map((p) => p.userId)
         .toSet();
 
+    // Build retiredReason map from tracking docs
+    final retiredReasonMap = <String, String>{
+      for (final p in liveTracking)
+        if (p.retiredReason != null) p.userId: p.retiredReason!,
+    };
+
     // Group approved regs by team
     final byTeam = <String, List<RegistrationModel>>{};
     final soloRegs = <RegistrationModel>[];
@@ -60,6 +66,10 @@ class ClassificaEngine {
       final pilotiMancanti =
           (event.minSquadra - memberIds.length).clamp(0, event.minSquadra);
 
+      final teamRetiredReason = memberIds
+          .map((uid) => retiredReasonMap[uid])
+          .where((r) => r != null)
+          .firstOrNull;
       rawEntries.add(_RawEntry(
         entryId: teamId,
         teamNome: teamModel?.nome ?? teamRegs.firstOrNull?.teamName ?? teamId,
@@ -69,6 +79,7 @@ class ClassificaEngine {
         ritiroCompagno: ritiroCompagno,
         pilotiMancanti: pilotiMancanti,
         isLive: isLive,
+        retiredReason: teamRetiredReason,
       ));
     }
 
@@ -85,6 +96,7 @@ class ClassificaEngine {
         ritiroCompagno: false,
         pilotiMancanti: 0,
         isLive: liveUserIds.contains(reg.userId),
+        retiredReason: retiredReasonMap[reg.userId],
       ));
     }
 
@@ -235,6 +247,7 @@ class ClassificaEngine {
         pilotiMancanti: c.entry.pilotiMancanti,
         pilotiMancantiPenaltySeconds: c.pilotiMancantiPenaltySeconds,
         isLive: c.entry.isLive,
+        retiredReason: c.entry.ritirato ? c.entry.retiredReason : null,
       );
     }).toList();
   }
@@ -316,6 +329,7 @@ class ClassificaEngine {
         pilotiMancanti: c.entry.pilotiMancanti,
         pilotiMancantiPenaltySeconds: c.pilotiMancantiPenaltySeconds,
         isLive: c.entry.isLive,
+        retiredReason: c.entry.ritirato ? c.entry.retiredReason : null,
       );
     }).toList();
   }
@@ -330,6 +344,7 @@ class _RawEntry {
   final bool ritiroCompagno;
   final int pilotiMancanti;
   final bool isLive;
+  final String? retiredReason;
 
   _RawEntry({
     required this.entryId,
@@ -340,5 +355,6 @@ class _RawEntry {
     required this.ritiroCompagno,
     required this.pilotiMancanti,
     required this.isLive,
+    this.retiredReason,
   });
 }

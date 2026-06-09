@@ -8,6 +8,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../../core/models/event_model.dart';
+import '../../../core/models/registration_model.dart';
 import '../../../core/models/waypoint_model.dart';
 import '../../../core/services/gps_service.dart';
 import '../../../core/services/gpx_parser.dart';
@@ -54,6 +55,10 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   String? _recoveryMessage;
   Timer? _recoveryTimer;
 
+  DateTime? _raceDeadline;
+  bool _isTimeExpired = false;
+  bool _showingTimeoutDialog = false;
+
   @override
   void initState() {
     super.initState();
@@ -86,13 +91,106 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   void _startElapsedTimer() {
     _elapsedTimer?.cancel();
     _elapsedTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
       final gps = ref.read(gpsServiceProvider);
-      if (gps.isRecording && gps.recordingStart != null && mounted) {
+      if (!gps.isRecording) return;
+
+      if (gps.recordingStart != null) {
+        // Timeout check before setState so flag is visible in next build
+        if (_raceDeadline != null && !_isTimeExpired && !_showingTimeoutDialog) {
+          if (DateTime.now().isAfter(_raceDeadline!)) {
+            final eid = widget.eventId ?? gps.activeEventId;
+            final ev = eid != null
+                ? ref.read(eventStreamProvider(eid)).valueOrNull
+                : null;
+            if (ev != null && !_allSpecialsCompleted(gps, ev)) {
+              _isTimeExpired = true;
+              _showingTimeoutDialog = true;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) _showTimeoutDialog();
+              });
+            }
+          }
+        }
         setState(() {
           _elapsed = DateTime.now().difference(gps.recordingStart!);
         });
       }
     });
+  }
+
+  void _computeDeadlineIfNeeded(EventModel event, RegistrationModel? reg) {
+    if (_raceDeadline != null || _isTimeExpired) return;
+    final teamName = reg?.teamName;
+    if (teamName == null || event.startingOrder.isEmpty) return;
+    final tl = teamName.toLowerCase().trim();
+    final slot = event.startingOrder.cast<StartingSlot?>().firstWhere(
+          (s) => s!.teamName.toLowerCase().trim() == tl,
+          orElse: () => null,
+        );
+    if (slot == null) return;
+    _raceDeadline =
+        slot.startTime.add(Duration(minutes: event.maxRaceTimeMinutes));
+  }
+
+  Future<void> _showTimeoutDialog() async {
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: const Text(
+          '⏱ Tempo massimo scaduto',
+          style: TextStyle(color: AppColors.warning, fontSize: 17),
+        ),
+        content: const Text(
+          'La tua squadra è stata automaticamente ritirata perché '
+          'il tempo massimo di gara è scaduto.',
+          style: TextStyle(color: AppColors.textSecondary),
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              _triggerTimeoutWithdrawal();
+            },
+            style:
+                ElevatedButton.styleFrom(backgroundColor: AppColors.warning),
+            child: const Text('OK',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _triggerTimeoutWithdrawal() async {
+    final gps = ref.read(gpsServiceProvider);
+    final user = ref.read(authStateProvider).valueOrNull;
+    final eid = widget.eventId ?? gps.activeEventId;
+    final partialTrack = List.of(gps.localTrack);
+    gps.blockFurtherWrites();
+    await gps.stopRecording();
+    if (mounted) setState(() => _elapsed = Duration.zero);
+    if (user != null && eid != null) {
+      try {
+        await ref
+            .read(firestoreServiceProvider)
+            .recordWithdrawal(eid, user.uid,
+                partialTrack: partialTrack, retiredReason: 'timeout');
+        await ref.read(firestoreServiceProvider).setRaceStatus(
+            eid, user.uid, 'retired',
+            retiredReason: 'timeout');
+      } catch (_) {}
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content:
+            Text('⏱ Tempo scaduto — ritiro automatico registrato.'),
+        backgroundColor: AppColors.warning,
+        duration: Duration(seconds: 5),
+      ));
+    }
   }
 
   @override
@@ -362,6 +460,14 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     final isWithdrawn =
         authUser != null && withdrawnIds.contains(authUser.uid);
 
+    // Race deadline for countdown — lazy, no setState needed (timer already redraws each second)
+    if (isRecording && effectiveEventId != null && event != null) {
+      final reg = ref
+          .watch(myRegistrationStreamProvider(effectiveEventId))
+          .valueOrNull;
+      _computeDeadlineIfNeeded(event, reg);
+    }
+
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
@@ -516,6 +622,13 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           elapsed: _elapsed,
           isRecording: true,
         ),
+
+        // Countdown strip (visible only when deadline is set)
+        if (_raceDeadline != null)
+          _CountdownStrip(
+            deadline: _raceDeadline!,
+            allSpecialsDone: event != null && _allSpecialsCompleted(gps, event),
+          ),
 
         // Mode banner
         _ModeBanner(color: modeColor, label: _modeLabel(gps.mode)),
@@ -921,11 +1034,13 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                 child: SizedBox(
                   height: 56,
                   child: Tooltip(
-                    message: _allSpecialsCompleted(gps, event)
-                        ? ''
-                        : 'Completa tutte le speciali prima di terminare',
+                    message: _isTimeExpired
+                        ? 'Tempo scaduto — ritiro automatico in corso'
+                        : _allSpecialsCompleted(gps, event)
+                            ? ''
+                            : 'Completa tutte le speciali prima di terminare',
                     child: ElevatedButton.icon(
-                      onPressed: _allSpecialsCompleted(gps, event)
+                      onPressed: !_isTimeExpired && _allSpecialsCompleted(gps, event)
                           ? _toggleRecording
                           : null,
                       style: ElevatedButton.styleFrom(
@@ -966,7 +1081,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                   child: SizedBox(
                     height: 56,
                     child: ElevatedButton.icon(
-                      onPressed: _confirmWithdrawal,
+                      onPressed: _isTimeExpired ? null : _confirmWithdrawal,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.error,
                         foregroundColor: Colors.white,
@@ -1452,6 +1567,109 @@ class _BigButton extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ── Countdown strip ─────────────────────────────────────────────────────────
+
+class _CountdownStrip extends StatefulWidget {
+  final DateTime deadline;
+  final bool allSpecialsDone;
+
+  const _CountdownStrip({
+    required this.deadline,
+    required this.allSpecialsDone,
+  });
+
+  @override
+  State<_CountdownStrip> createState() => _CountdownStripState();
+}
+
+class _CountdownStripState extends State<_CountdownStrip> {
+  late Timer _timer;
+  Duration _remaining = Duration.zero;
+  bool _blink = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _tick(null);
+    _timer = Timer.periodic(const Duration(seconds: 1), _tick);
+  }
+
+  void _tick(Timer? _) {
+    if (!mounted) return;
+    final now = DateTime.now();
+    final rem = widget.deadline.difference(now);
+    setState(() {
+      _remaining = rem.isNegative ? Duration.zero : rem;
+      _blink = now.second % 2 == 0;
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final totalSec = _remaining.inSeconds;
+    final expired = totalSec == 0;
+    final critical = totalSec <= 5 * 60 && !expired;
+    final warning = totalSec <= 10 * 60 && !critical;
+    final done = widget.allSpecialsDone;
+
+    Color stripColor;
+    Color textColor;
+    if (done) {
+      stripColor = Colors.green.withValues(alpha: 0.15);
+      textColor = Colors.green;
+    } else if (expired) {
+      stripColor = AppColors.error.withValues(alpha: 0.18);
+      textColor = AppColors.error;
+    } else if (critical) {
+      stripColor = AppColors.error.withValues(alpha: 0.15);
+      textColor = AppColors.error;
+    } else if (warning) {
+      stripColor = AppColors.warning.withValues(alpha: 0.13);
+      textColor = AppColors.warning;
+    } else {
+      stripColor = AppColors.accent.withValues(alpha: 0.10);
+      textColor = AppColors.accent;
+    }
+
+    final h = _remaining.inHours;
+    final m = _remaining.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = _remaining.inSeconds.remainder(60).toString().padLeft(2, '0');
+    final timeStr = h > 0 ? '$h:$m:$s' : '$m:$s';
+
+    final visible = !critical || _blink || done;
+
+    return AnimatedOpacity(
+      opacity: visible ? 1.0 : 0.0,
+      duration: const Duration(milliseconds: 200),
+      child: Container(
+        width: double.infinity,
+        height: 26,
+        color: stripColor,
+        alignment: Alignment.center,
+        child: Text(
+          done
+              ? '✓ Speciali completate'
+              : expired
+                  ? '⏱ Tempo scaduto'
+                  : '⏱ Tempo rimasto: $timeStr',
+          style: TextStyle(
+            color: textColor,
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.5,
+          ),
+        ),
       ),
     );
   }

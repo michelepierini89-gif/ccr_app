@@ -70,7 +70,9 @@ class _AdminTimingView extends ConsumerWidget {
     buf.writeln('Posizione,Squadra,Piloti,Speciali completate,Tempo totale');
     for (final e in entries) {
       final piloti = e.membriNomi.join(' / ');
-      final pos = e.ritirato ? 'RIT' : (e.posizione == 0 ? 'NC' : '${e.posizione}');
+      final pos = e.ritirato
+          ? (e.retiredReason == 'timeout' ? 'RIT(T)' : 'RIT')
+          : (e.posizione == 0 ? 'NC' : '${e.posizione}');
       buf.writeln(
           '$pos,"${e.teamNome}","$piloti",${e.specialiCompletati.length}/${e.totaleSpeciali},${e.tempoTotaleFormatted}');
       for (final s in e.specialiCompletati) {
@@ -313,7 +315,7 @@ class _TimingEntryCardState extends State<_TimingEntryCard> {
                     width: 32,
                     child: Text(
                       e.ritirato
-                          ? 'RIT'
+                          ? (e.retiredReason == 'timeout' ? '⏱ T/O' : 'RIT')
                           : e.posizione == 0
                               ? 'NC'
                               : '${e.posizione}°',
@@ -421,7 +423,7 @@ class _SummaryCard extends StatelessWidget {
             children: [
               Text(
                 entry.ritirato
-                    ? 'RIT'
+                    ? (entry.retiredReason == 'timeout' ? '⏱ T/O' : 'RIT')
                     : entry.posizione == 0
                         ? 'NC'
                         : '${entry.posizione}°',

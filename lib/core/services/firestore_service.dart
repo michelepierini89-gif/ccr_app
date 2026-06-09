@@ -206,13 +206,17 @@ class FirestoreService {
       .set(point.toFirestore(), SetOptions(merge: true));
 
   Future<void> setRaceStatus(
-          String eventId, String userId, String status) =>
+          String eventId, String userId, String status,
+          {String? retiredReason}) =>
       _db
           .collection(FirebaseConstants.tracking)
           .doc(eventId)
           .collection(FirebaseConstants.pilots)
           .doc(userId)
-          .set({'raceStatus': status}, SetOptions(merge: true));
+          .set({
+            'raceStatus': status,
+            'retiredReason': ?retiredReason,
+          }, SetOptions(merge: true));
 
   Stream<List<GpsPointModel>> getPilotTracking(String eventId) => _db
       .collection(FirebaseConstants.tracking)
@@ -230,7 +234,7 @@ class FirestoreService {
           .update({'startEnabled': enabled});
 
   Future<void> recordWithdrawal(String eventId, String userId,
-      {List<LatLng> partialTrack = const []}) async {
+      {List<LatLng> partialTrack = const [], String? retiredReason}) async {
     await _db
         .collection(FirebaseConstants.events)
         .doc(eventId)
@@ -243,6 +247,7 @@ class FirestoreService {
         'partialTrack': partialTrack
             .map((p) => {'lat': p.latitude, 'lng': p.longitude})
             .toList(),
+      'retiredReason': ?retiredReason,
     });
     await _createNotification(eventId, {
       'type': 'withdrawal',

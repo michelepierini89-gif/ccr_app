@@ -55,6 +55,7 @@ class EventModel {
   final WaypointModel? fuelPoint;
   final bool startEnabled;
   final List<StartingSlot> startingOrder;
+  final int maxRaceTimeMinutes;
 
   const EventModel({
     required this.id,
@@ -73,6 +74,7 @@ class EventModel {
     this.fuelPoint,
     this.startEnabled = false,
     this.startingOrder = const [],
+    this.maxRaceTimeMinutes = 270,
   });
 
   factory EventModel.fromFirestore(DocumentSnapshot doc) {
@@ -106,6 +108,7 @@ class EventModel {
       startingOrder: (d['startingOrder'] as List<dynamic>? ?? [])
           .map((e) => StartingSlot.fromMap(e as Map<String, dynamic>))
           .toList(),
+      maxRaceTimeMinutes: (d['maxRaceTimeMinutes'] as num?)?.toInt() ?? 270,
     );
   }
 
@@ -125,6 +128,7 @@ class EventModel {
         'fuelPoint': fuelPoint?.toMap(),
         'startEnabled': startEnabled,
         'startingOrder': startingOrder.map((s) => s.toMap()).toList(),
+        'maxRaceTimeMinutes': maxRaceTimeMinutes,
       };
 
   EventModel copyWith({
@@ -142,6 +146,7 @@ class EventModel {
     bool clearFuelPoint = false,
     bool? startEnabled,
     List<StartingSlot>? startingOrder,
+    int? maxRaceTimeMinutes,
   }) =>
       EventModel(
         id: id,
@@ -160,5 +165,6 @@ class EventModel {
         fuelPoint: clearFuelPoint ? null : (fuelPoint ?? this.fuelPoint),
         startEnabled: startEnabled ?? this.startEnabled,
         startingOrder: startingOrder ?? this.startingOrder,
+        maxRaceTimeMinutes: maxRaceTimeMinutes ?? this.maxRaceTimeMinutes,
       );
 }

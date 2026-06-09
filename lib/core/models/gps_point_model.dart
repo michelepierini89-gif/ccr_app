@@ -11,6 +11,7 @@ class GpsPointModel {
   final String? specialeId;
   final List<String> waypointPassati;
   final String raceStatus;
+  final String? retiredReason;
 
   const GpsPointModel({
     required this.userId,
@@ -23,6 +24,7 @@ class GpsPointModel {
     this.specialeId,
     required this.waypointPassati,
     this.raceStatus = 'not_started',
+    this.retiredReason,
   });
 
   factory GpsPointModel.fromFirestore(DocumentSnapshot doc, String eventId) {
@@ -38,6 +40,7 @@ class GpsPointModel {
       specialeId: d['specialeId'],
       waypointPassati: List<String>.from(d['waypointPassati'] ?? []),
       raceStatus: d['raceStatus'] as String? ?? 'not_started',
+      retiredReason: d['retiredReason'] as String?,
     );
   }
 
