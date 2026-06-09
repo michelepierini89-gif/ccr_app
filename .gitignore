@@ -50,3 +50,6 @@ ios/Runner/GoogleService-Info.plist
 # Desktop platforms (not supported)
 macos/
 windows/
+
+# Firebase Functions generated manifest (regenerate with FUNCTIONS_MANIFEST_OUTPUT_PATH)
+functions/functions.yaml
