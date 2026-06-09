@@ -203,7 +203,16 @@ class FirestoreService {
       .doc(point.eventId)
       .collection(FirebaseConstants.pilots)
       .doc(point.userId)
-      .set(point.toFirestore());
+      .set(point.toFirestore(), SetOptions(merge: true));
+
+  Future<void> setRaceStatus(
+          String eventId, String userId, String status) =>
+      _db
+          .collection(FirebaseConstants.tracking)
+          .doc(eventId)
+          .collection(FirebaseConstants.pilots)
+          .doc(userId)
+          .set({'raceStatus': status}, SetOptions(merge: true));
 
   Stream<List<GpsPointModel>> getPilotTracking(String eventId) => _db
       .collection(FirebaseConstants.tracking)

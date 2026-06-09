@@ -61,6 +61,7 @@ class GpsService extends ChangeNotifier {
   Stream<Position> get positionStream => _posStreamCtrl.stream;
 
   bool _isRecording = false;
+  bool _writesBlocked = false;
   GpsMode _mode = GpsMode.idle;
   Position? _lastPosition;
   String? _activeEventId;
@@ -100,6 +101,8 @@ class GpsService extends ChangeNotifier {
 
   bool get isRecording => _isRecording;
   String? get activeEventId => _activeEventId;
+
+  void blockFurtherWrites() => _writesBlocked = true;
   GpsMode get mode => _mode;
   Position? get lastPosition => _lastPosition;
   List<WaypointPassage> get passages => List.unmodifiable(_passages);
@@ -269,6 +272,7 @@ class GpsService extends ChangeNotifier {
       _offlineQueue.syncPending(_firestoreService).ignore();
     }
 
+    _writesBlocked = false;
     _activeEventId = eventId;
     _activeUserId = userId;
     _waypoints = waypoints;
@@ -300,6 +304,7 @@ class GpsService extends ChangeNotifier {
     WakelockPlus.enable().ignore();
     notifyListeners();
 
+    _firestoreService.setRaceStatus(eventId, userId, 'racing').catchError((_) {});
     _startPositionStream(AppConstants.gpsIntervalTransferMs);
   }
 
@@ -492,9 +497,11 @@ class GpsService extends ChangeNotifier {
         specialeId: _currentSpecialId,
         waypointPassati: _passedWaypoints.toList(),
       );
-      _firestoreService.updatePilotTracking(point).catchError((_) {
-        _offlineQueue.queueTracking(point).ignore();
-      });
+      if (!_writesBlocked) {
+        _firestoreService.updatePilotTracking(point).catchError((_) {
+          _offlineQueue.queueTracking(point).ignore();
+        });
+      }
     }
 
     notifyListeners();
@@ -504,6 +511,7 @@ class GpsService extends ChangeNotifier {
     _positionSub?.cancel();
     _positionSub = null;
     _isRecording = false;
+    _writesBlocked = false;
     _mode = GpsMode.idle;
     _activeEventId = null;
     _activeUserId = null;

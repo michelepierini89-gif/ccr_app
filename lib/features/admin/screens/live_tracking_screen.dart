@@ -10,7 +10,35 @@ import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/firebase_error_handler.dart';
 import '../providers/admin_provider.dart';
-import '../../classifica/providers/classifica_provider.dart';
+
+// ── Race status constants ────────────────────────────────────────────────────
+const _kNotStarted = 'not_started';
+const _kRacing = 'racing';
+const _kFinished = 'finished';
+const _kRetired = 'retired';
+
+Color _statusColor(String status) => switch (status) {
+      _kRacing => Colors.green,
+      _kFinished => Colors.blue,
+      _kRetired => Colors.grey,
+      _ => Colors.amber,
+    };
+
+IconData _statusIcon(String status) => switch (status) {
+      _kRacing => Icons.gps_fixed,
+      _kFinished => Icons.check,
+      _kRetired => Icons.close,
+      _ => Icons.access_time,
+    };
+
+String _statusTooltip(String status) => switch (status) {
+      _kRacing => 'In gara',
+      _kFinished => 'Finito',
+      _kRetired => 'Ritirato',
+      _ => 'Non partito',
+    };
+
+// ── Screen ───────────────────────────────────────────────────────────────────
 
 class LiveTrackingScreen extends ConsumerStatefulWidget {
   final String eventId;
@@ -25,8 +53,7 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
   List<LatLng> _eventTrackPoints = [];
   String? _loadedTrackUrl;
   late final Stream<List<GpsPointModel>> _pilotStream;
-
-  static const _onlineThreshold = Duration(seconds: 60);
+  bool _legendExpanded = false;
 
   @override
   void initState() {
@@ -49,12 +76,6 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
     } catch (_) {}
   }
 
-  bool _isOnline(GpsPointModel p) =>
-      DateTime.now().difference(p.timestamp) < _onlineThreshold;
-
-  Color _pilotColor(int index) =>
-      AppColors.specialColors[index % AppColors.specialColors.length];
-
   String _pilotLabel(GpsPointModel p, List<RegistrationModel> regs) {
     try {
       final reg = regs.firstWhere((r) => r.userId == p.userId);
@@ -62,6 +83,27 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
     } catch (_) {
       return p.userId.length > 6 ? p.userId.substring(0, 6) : p.userId;
     }
+  }
+
+  Marker _buildPilotMarker(
+      GpsPointModel p, String label) {
+    final status = p.raceStatus;
+    final Widget child = status == _kRacing
+        ? _RacingMarker(label: label)
+        : _StatusMarker(
+            color: _statusColor(status),
+            icon: _statusIcon(status),
+            label: label,
+          );
+    return Marker(
+      point: LatLng(p.lat, p.lng),
+      width: 70,
+      height: 64,
+      child: Tooltip(
+        message: _statusTooltip(status),
+        child: child,
+      ),
+    );
   }
 
   @override
@@ -74,7 +116,8 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
     return StreamBuilder<List<GpsPointModel>>(
       stream: _pilotStream,
       builder: (context, snapshot) {
-        if (!snapshot.hasData && snapshot.connectionState == ConnectionState.waiting) {
+        if (!snapshot.hasData &&
+            snapshot.connectionState == ConnectionState.waiting) {
           return const Center(
               child: CircularProgressIndicator(color: AppColors.accent));
         }
@@ -86,97 +129,70 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
         final pilots = snapshot.data ?? [];
         final regs = regsAsync.valueOrNull ?? [];
 
-        final onlinePilots = pilots.where(_isOnline).toList();
-        final offlinePilots = pilots.where((p) => !_isOnline(p)).toList();
+        final pilotMap = {for (final p in pilots) p.userId: p};
+        final approvedRegs = regs
+            .where((r) => r.stato == RegistrationStatus.approvato)
+            .toList();
+        final countRacing =
+            pilots.where((p) => p.raceStatus == _kRacing).length;
+        final countFinished =
+            pilots.where((p) => p.raceStatus == _kFinished).length;
+        final countRetired =
+            pilots.where((p) => p.raceStatus == _kRetired).length;
+        final countNotStarted = approvedRegs
+            .where((r) =>
+                !pilotMap.containsKey(r.userId) ||
+                pilotMap[r.userId]!.raceStatus == _kNotStarted)
+            .length;
 
-        final markers = <Marker>[];
-        for (int i = 0; i < pilots.length; i++) {
-          final p = pilots[i];
-          final online = _isOnline(p);
-          final color = online ? _pilotColor(i) : AppColors.textSecondary;
-          final label = _pilotLabel(p, regs);
-          markers.add(Marker(
-            point: LatLng(p.lat, p.lng),
-            width: 70,
-            height: 64,
-            child: Column(
-              children: [
-                Container(
-                  width: 36,
-                  height: 36,
-                  decoration: BoxDecoration(
-                    color: color,
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white, width: 2),
-                    boxShadow: online
-                        ? [
-                            BoxShadow(
-                              color: color.withValues(alpha: 0.5),
-                              blurRadius: 8,
-                              spreadRadius: 2,
-                            )
-                          ]
-                        : null,
-                  ),
-                  child: Icon(
-                    online ? Icons.person : Icons.person_off,
-                    color: Colors.white,
-                    size: 18,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  label,
-                  style: TextStyle(
-                    color: online ? color : AppColors.textSecondary,
-                    fontSize: 9,
-                    fontWeight: FontWeight.bold,
-                    shadows: const [Shadow(color: Colors.black, blurRadius: 2)],
-                  ),
-                  textAlign: TextAlign.center,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
-          ));
-        }
+        final markers = <Marker>[
+          for (final p in pilots)
+            _buildPilotMarker(p, _pilotLabel(p, regs)),
+        ];
 
-        final mapCenter = onlinePilots.isNotEmpty
-            ? LatLng(onlinePilots.first.lat, onlinePilots.first.lng)
+        final racingPilots = pilots.where((p) => p.raceStatus == _kRacing);
+        final mapCenter = racingPilots.isNotEmpty
+            ? LatLng(racingPilots.first.lat, racingPilots.first.lng)
             : pilots.isNotEmpty
                 ? LatLng(pilots.first.lat, pilots.first.lng)
                 : const LatLng(44.0, 11.0);
 
         return Column(
           children: [
-            // Stats bar
+            // ── Status counter bar ──────────────────────────────────────────
             Container(
               color: AppColors.cardBackground,
               padding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               child: Row(
                 children: [
                   _StatChip(
                     icon: Icons.circle,
-                    color: AppColors.success,
-                    label: '${onlinePilots.length} online',
+                    color: Colors.green,
+                    label: 'In gara: $countRacing',
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 10),
                   _StatChip(
                     icon: Icons.circle,
-                    color: AppColors.textSecondary,
-                    label: '${offlinePilots.length} offline',
+                    color: Colors.blue,
+                    label: 'Finiti: $countFinished',
                   ),
-                  const Spacer(),
-                  Text(
-                    '${pilots.length} piloti totali',
-                    style: const TextStyle(
-                        color: AppColors.textSecondary, fontSize: 12),
+                  const SizedBox(width: 10),
+                  _StatChip(
+                    icon: Icons.circle,
+                    color: Colors.grey,
+                    label: 'Rit: $countRetired',
+                  ),
+                  const SizedBox(width: 10),
+                  _StatChip(
+                    icon: Icons.circle,
+                    color: Colors.amber,
+                    label: 'N/P: $countNotStarted',
                   ),
                 ],
               ),
             ),
-            // Start enable toggle
+            // ── Start enable toggle ─────────────────────────────────────────
             Container(
               width: double.infinity,
               color: startEnabled
@@ -187,9 +203,7 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
               child: Row(
                 children: [
                   Icon(
-                    startEnabled
-                        ? Icons.flag
-                        : Icons.hourglass_empty,
+                    startEnabled ? Icons.flag : Icons.hourglass_empty,
                     color: startEnabled
                         ? AppColors.success
                         : AppColors.textSecondary,
@@ -221,7 +235,8 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
                         if (context.mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
-                              content: Text(FirebaseErrorHandler.getMessage(e)),
+                              content:
+                                  Text(FirebaseErrorHandler.getMessage(e)),
                               backgroundColor: AppColors.error,
                             ),
                           );
@@ -229,9 +244,8 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
                       }
                     },
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: startEnabled
-                          ? AppColors.error
-                          : AppColors.success,
+                      backgroundColor:
+                          startEnabled ? AppColors.error : AppColors.success,
                       minimumSize: Size.zero,
                       padding: const EdgeInsets.symmetric(
                           horizontal: 14, vertical: 8),
@@ -249,7 +263,7 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
               ),
             ),
             const Divider(height: 1, color: AppColors.border),
-            // Map
+            // ── Map ─────────────────────────────────────────────────────────
             Expanded(
               child: pilots.isEmpty
                   ? const Center(
@@ -275,31 +289,44 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
                         ],
                       ),
                     )
-                  : FlutterMap(
-                      options: MapOptions(
-                        initialCenter: mapCenter,
-                        initialZoom: 13,
-                      ),
+                  : Stack(
                       children: [
-                        TileLayer(
-                          urlTemplate:
-                              'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                          userAgentPackageName: 'com.ccr.ccr_app',
-                        ),
-                        // Event GPX track in red
-                        if (_eventTrackPoints.length >= 2)
-                          PolylineLayer(polylines: [
-                            Polyline(
-                              points: _eventTrackPoints,
-                              color: Colors.red,
-                              strokeWidth: 3.0,
+                        FlutterMap(
+                          options: MapOptions(
+                            initialCenter: mapCenter,
+                            initialZoom: 13,
+                          ),
+                          children: [
+                            TileLayer(
+                              urlTemplate:
+                                  'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                              userAgentPackageName: 'com.ccr.ccr_app',
                             ),
-                          ]),
-                        MarkerLayer(markers: markers),
+                            if (_eventTrackPoints.length >= 2)
+                              PolylineLayer(polylines: [
+                                Polyline(
+                                  points: _eventTrackPoints,
+                                  color: Colors.red,
+                                  strokeWidth: 3.0,
+                                ),
+                              ]),
+                            MarkerLayer(markers: markers),
+                          ],
+                        ),
+                        // Collapsible legend
+                        Positioned(
+                          left: 12,
+                          bottom: 12,
+                          child: _MapLegend(
+                            expanded: _legendExpanded,
+                            onTap: () => setState(
+                                () => _legendExpanded = !_legendExpanded),
+                          ),
+                        ),
                       ],
                     ),
             ),
-            // Pilot chips
+            // ── Pilot chips ─────────────────────────────────────────────────
             if (pilots.isNotEmpty)
               Container(
                 color: AppColors.cardBackground,
@@ -312,22 +339,237 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
                     itemBuilder: (ctx, i) => _PilotChip(
                       pilot: pilots[i],
                       label: _pilotLabel(pilots[i], regs),
-                      color: _isOnline(pilots[i])
-                          ? _pilotColor(i)
-                          : AppColors.textSecondary,
-                      online: _isOnline(pilots[i]),
+                      color: _statusColor(pilots[i].raceStatus),
                     ),
                   ),
                 ),
               ),
-            // Pilot status table
-            _PilotStatusSection(eventId: widget.eventId, regs: regs, pilots: pilots),
+            // ── Pilot status table ───────────────────────────────────────────
+            _PilotStatusSection(
+                eventId: widget.eventId,
+                regs: regs,
+                pilots: pilots),
           ],
         );
       },
     );
   }
 }
+
+// ── Marker widgets ────────────────────────────────────────────────────────────
+
+class _RacingMarker extends StatefulWidget {
+  final String label;
+  const _RacingMarker({required this.label});
+
+  @override
+  State<_RacingMarker> createState() => _RacingMarkerState();
+}
+
+class _RacingMarkerState extends State<_RacingMarker>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  late Animation<double> _pulse;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat(reverse: true);
+    _pulse = Tween<double>(begin: 0.82, end: 1.0).animate(
+      CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        AnimatedBuilder(
+          animation: _pulse,
+          builder: (ctx, child) =>
+              Transform.scale(scale: _pulse.value, child: child),
+          child: Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: Colors.green,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 2),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.green.withValues(alpha: 0.6),
+                  blurRadius: 10,
+                  spreadRadius: 3,
+                ),
+              ],
+            ),
+            child: const Icon(Icons.gps_fixed, color: Colors.white, size: 18),
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          widget.label,
+          style: const TextStyle(
+            color: Colors.green,
+            fontSize: 9,
+            fontWeight: FontWeight.bold,
+            shadows: [Shadow(color: Colors.black, blurRadius: 2)],
+          ),
+          textAlign: TextAlign.center,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ],
+    );
+  }
+}
+
+class _StatusMarker extends StatelessWidget {
+  final Color color;
+  final IconData icon;
+  final String label;
+
+  const _StatusMarker({
+    required this.color,
+    required this.icon,
+    required this.label,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 36,
+          height: 36,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white, width: 2),
+          ),
+          child: Icon(icon, color: Colors.white, size: 18),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          label,
+          style: TextStyle(
+            color: color,
+            fontSize: 9,
+            fontWeight: FontWeight.bold,
+            shadows: const [Shadow(color: Colors.black, blurRadius: 2)],
+          ),
+          textAlign: TextAlign.center,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ],
+    );
+  }
+}
+
+// ── Map legend ────────────────────────────────────────────────────────────────
+
+class _MapLegend extends StatelessWidget {
+  final bool expanded;
+  final VoidCallback onTap;
+  const _MapLegend({required this.expanded, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.72),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.15)),
+        ),
+        child: expanded ? _buildExpanded() : _buildCollapsed(),
+      ),
+    );
+  }
+
+  Widget _buildCollapsed() {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _dot(Colors.amber),
+        const SizedBox(width: 3),
+        _dot(Colors.green),
+        const SizedBox(width: 3),
+        _dot(Colors.blue),
+        const SizedBox(width: 3),
+        _dot(Colors.grey),
+        const SizedBox(width: 5),
+        const Icon(Icons.chevron_right, color: Colors.white, size: 14),
+      ],
+    );
+  }
+
+  Widget _buildExpanded() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text('Legenda',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold)),
+            const SizedBox(width: 16),
+            const Icon(Icons.chevron_left, color: Colors.white, size: 14),
+          ],
+        ),
+        const SizedBox(height: 6),
+        _legendRow(Colors.amber, Icons.access_time, 'Non partito'),
+        const SizedBox(height: 4),
+        _legendRow(Colors.green, Icons.gps_fixed, 'In gara'),
+        const SizedBox(height: 4),
+        _legendRow(Colors.blue, Icons.check, 'Finito'),
+        const SizedBox(height: 4),
+        _legendRow(Colors.grey, Icons.close, 'Ritirato'),
+      ],
+    );
+  }
+
+  Widget _legendRow(Color color, IconData icon, String label) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 18,
+          height: 18,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          child: Icon(icon, color: Colors.white, size: 10),
+        ),
+        const SizedBox(width: 6),
+        Text(label,
+            style: const TextStyle(color: Colors.white, fontSize: 10)),
+      ],
+    );
+  }
+
+  Widget _dot(Color color) => Container(
+        width: 8,
+        height: 8,
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      );
+}
+
+// ── Shared sub-widgets ────────────────────────────────────────────────────────
 
 class _StatChip extends StatelessWidget {
   final IconData icon;
@@ -339,12 +581,15 @@ class _StatChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
         Icon(icon, color: color, size: 10),
         const SizedBox(width: 5),
         Text(label,
             style: TextStyle(
-                color: color, fontSize: 12, fontWeight: FontWeight.w600)),
+                color: color,
+                fontSize: 12,
+                fontWeight: FontWeight.w600)),
       ],
     );
   }
@@ -354,13 +599,11 @@ class _PilotChip extends StatelessWidget {
   final GpsPointModel pilot;
   final String label;
   final Color color;
-  final bool online;
 
   const _PilotChip({
     required this.pilot,
     required this.label,
     required this.color,
-    required this.online,
   });
 
   String _elapsed() {
@@ -389,10 +632,8 @@ class _PilotChip extends StatelessWidget {
               Container(
                 width: 7,
                 height: 7,
-                decoration: BoxDecoration(
-                  color: online ? AppColors.success : AppColors.textSecondary,
-                  shape: BoxShape.circle,
-                ),
+                decoration:
+                    BoxDecoration(color: color, shape: BoxShape.circle),
               ),
               const SizedBox(width: 5),
               Text(
@@ -415,7 +656,7 @@ class _PilotChip extends StatelessWidget {
   }
 }
 
-// ── Pilot status section ───────────────────────────────────────────────────────
+// ── Pilot status section ──────────────────────────────────────────────────────
 
 class _PilotStatusSection extends ConsumerWidget {
   final String eventId;
@@ -430,16 +671,12 @@ class _PilotStatusSection extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final withdrawalsAv = ref.watch(withdrawalsStreamProvider(eventId));
-    final withdrawals = withdrawalsAv.valueOrNull ?? {};
-
     final approvedRegs = regs
         .where((r) => r.stato == RegistrationStatus.approvato)
         .toList();
 
     if (approvedRegs.isEmpty) return const SizedBox.shrink();
 
-    final now = DateTime.now();
     final pilotMap = {for (final p in pilots) p.userId: p};
 
     return Container(
@@ -471,48 +708,30 @@ class _PilotStatusSection extends ConsumerWidget {
               itemBuilder: (ctx, i) {
                 final reg = approvedRegs[i];
                 final gps = pilotMap[reg.userId];
-                final isWithdrawn = withdrawals.contains(reg.userId);
-                final isOnline = gps != null &&
-                    now.difference(gps.timestamp).inSeconds < 60;
-                final hasGps = gps != null;
-
-                Color color;
-                String statusLabel;
-                IconData statusIcon;
-
-                if (isWithdrawn) {
-                  color = AppColors.error;
-                  statusLabel = 'RIT';
-                  statusIcon = Icons.flag;
-                } else if (isOnline) {
-                  color = AppColors.success;
-                  statusLabel = 'IN GARA';
-                  statusIcon = Icons.gps_fixed;
-                } else if (hasGps) {
-                  color = AppColors.warning;
-                  statusLabel = 'OFFLINE';
-                  statusIcon = Icons.gps_not_fixed;
-                } else {
-                  color = AppColors.textSecondary;
-                  statusLabel = 'N/P';
-                  statusIcon = Icons.person_outline;
-                }
+                final status = gps?.raceStatus ?? _kNotStarted;
+                final color = _statusColor(status);
+                final icon = _statusIcon(status);
+                final statusLabel = switch (status) {
+                  _kRacing => 'IN GARA',
+                  _kFinished => 'FINITO',
+                  _kRetired => 'RIT',
+                  _ => 'N/P',
+                };
 
                 return Container(
-                  margin:
-                      const EdgeInsets.only(right: 8, bottom: 8),
+                  margin: const EdgeInsets.only(right: 8, bottom: 8),
                   padding: const EdgeInsets.symmetric(
                       horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
                     color: color.withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(16),
-                    border: Border.all(
-                        color: color.withValues(alpha: 0.5)),
+                    border:
+                        Border.all(color: color.withValues(alpha: 0.5)),
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(statusIcon, color: color, size: 11),
+                      Icon(icon, color: color, size: 11),
                       const SizedBox(width: 4),
                       Text(
                         '${reg.nome} ${reg.cognome[0]}.',

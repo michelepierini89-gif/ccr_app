@@ -179,6 +179,16 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   Future<void> _toggleRecording() async {
     final gps = ref.read(gpsServiceProvider);
     if (gps.isRecording) {
+      final finEventId = gps.activeEventId;
+      final finUserId = ref.read(authStateProvider).valueOrNull?.uid;
+      gps.blockFurtherWrites();
+      if (finEventId != null && finUserId != null) {
+        try {
+          await ref
+              .read(firestoreServiceProvider)
+              .setRaceStatus(finEventId, finUserId, 'finished');
+        } catch (_) {}
+      }
       await gps.stopRecording();
       setState(() => _elapsed = Duration.zero);
       return;
@@ -287,6 +297,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     final user = ref.read(authStateProvider).valueOrNull;
     final eventId = widget.eventId;
     final partialTrack = List.of(gps.localTrack);
+    gps.blockFurtherWrites();
     await gps.stopRecording();
     setState(() => _elapsed = Duration.zero);
 
@@ -295,6 +306,9 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         await ref
             .read(firestoreServiceProvider)
             .recordWithdrawal(eventId, user.uid, partialTrack: partialTrack);
+        await ref
+            .read(firestoreServiceProvider)
+            .setRaceStatus(eventId, user.uid, 'retired');
       } catch (_) {}
     }
 
