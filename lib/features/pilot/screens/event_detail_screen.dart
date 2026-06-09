@@ -1099,9 +1099,6 @@ class _RegistrationDialogState extends ConsumerState<_RegistrationDialog> {
             Icons.group, 'Squadra', _chosenTeamLabel),
         const SizedBox(height: 10),
         _buildSummaryRow(
-            Icons.person, 'Ruolo', 'Pilota principale'),
-        const SizedBox(height: 10),
-        _buildSummaryRow(
             Icons.badge,
             'Pilota',
             '${widget.userNome} ${widget.userCognome}'),
