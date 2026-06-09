@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import '../../../core/models/classifica_model.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/csv_export.dart';
@@ -261,6 +262,22 @@ class _PilotTimingView extends ConsumerWidget {
             ...entry.specialiCompletati.map(
               (s) => _SpecialTimingRow(special: s),
             ),
+          if (entry.ritirato || entry.hasFinished) ...[
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () =>
+                    context.push('/pilot/event/$eventId/race-result'),
+                icon: const Icon(Icons.map_outlined, size: 16),
+                label: const Text('Vedi traccia'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.accent,
+                  side: const BorderSide(color: AppColors.accent),
+                ),
+              ),
+            ),
+          ],
         ],
       ),
       ),
