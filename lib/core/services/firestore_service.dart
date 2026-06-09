@@ -207,7 +207,7 @@ class FirestoreService {
 
   Future<void> setRaceStatus(
           String eventId, String userId, String status,
-          {String? retiredReason}) =>
+          {String? retiredReason, DateTime? finishedAt}) =>
       _db
           .collection(FirebaseConstants.tracking)
           .doc(eventId)
@@ -216,7 +216,20 @@ class FirestoreService {
           .set({
             'raceStatus': status,
             'retiredReason': ?retiredReason,
+            if (finishedAt != null)
+              'finishedAt': Timestamp.fromDate(finishedAt),
           }, SetOptions(merge: true));
+
+  /// Stream of the current pilot's tracking doc fields (lightweight, no GPS parsing).
+  Stream<Map<String, dynamic>?> myPilotStatusStream(
+          String eventId, String userId) =>
+      _db
+          .collection(FirebaseConstants.tracking)
+          .doc(eventId)
+          .collection(FirebaseConstants.pilots)
+          .doc(userId)
+          .snapshots()
+          .map((doc) => doc.exists ? doc.data() as Map<String, dynamic> : null);
 
   Stream<List<GpsPointModel>> getPilotTracking(String eventId) => _db
       .collection(FirebaseConstants.tracking)

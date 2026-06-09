@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../../core/models/event_model.dart';
@@ -19,6 +21,7 @@ import '../../../core/utils/location_utils.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../admin/providers/admin_provider.dart';
 import '../../classifica/providers/classifica_provider.dart';
+import '../../timing/screens/timing_screen.dart';
 import '../providers/pilot_provider.dart';
 
 class GpsRecordingScreen extends ConsumerStatefulWidget {
@@ -284,7 +287,8 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         try {
           await ref
               .read(firestoreServiceProvider)
-              .setRaceStatus(finEventId, finUserId, 'finished');
+              .setRaceStatus(finEventId, finUserId, 'finished',
+                  finishedAt: DateTime.now());
         } catch (_) {}
       }
       await gps.stopRecording();
@@ -460,6 +464,15 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     final isWithdrawn =
         authUser != null && withdrawnIds.contains(authUser.uid);
 
+    // Pilot's own race status from tracking doc
+    final myStatusAsync = effectiveEventId != null
+        ? ref.watch(myPilotStatusProvider(effectiveEventId))
+        : null;
+    final myStatusData = myStatusAsync?.valueOrNull;
+    final raceStatus = myStatusData?['raceStatus'] as String?;
+    final isFinished = raceStatus == 'finished';
+    final isRetired = isWithdrawn || raceStatus == 'retired';
+
     // Race deadline for countdown — lazy, no setState needed (timer already redraws each second)
     if (isRecording && effectiveEventId != null && event != null) {
       final reg = ref
@@ -468,59 +481,38 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
       _computeDeadlineIfNeeded(event, reg);
     }
 
+    // Determine which screen to show
+    Widget body;
+    if (isRecording) {
+      body = _buildActiveTracking(gps, pos, event);
+    } else if (myStatusAsync?.isLoading == true) {
+      body = const Center(
+          child: CircularProgressIndicator(color: AppColors.accent));
+    } else if (isFinished) {
+      body = _buildRaceDone(
+          statusData: myStatusData,
+          eventId: effectiveEventId,
+          retired: false);
+    } else if (isRetired) {
+      body = _buildRaceDone(
+          statusData: myStatusData,
+          eventId: effectiveEventId,
+          retired: true);
+    } else {
+      body = _buildPreStart(gps, pos, canStart, effectiveEventId);
+    }
+
     return Scaffold(
       backgroundColor: AppColors.background,
-      body: SafeArea(
-        child: isRecording
-            ? _buildActiveTracking(gps, pos, event)
-            : _buildPreStart(gps, pos, canStart, isWithdrawn, effectiveEventId),
-      ),
+      body: SafeArea(child: body),
     );
   }
 
   // ── Pre-start view ──────────────────────────────────────────────────────────
 
   Widget _buildPreStart(
-      GpsService gps, dynamic pos, bool canStart, bool isWithdrawn,
+      GpsService gps, dynamic pos, bool canStart,
       [String? effectiveEventId]) {
-    if (isWithdrawn) {
-      return Column(
-        children: [
-          _TopBar(eventId: effectiveEventId, elapsed: null, isRecording: false),
-          Expanded(
-            child: Center(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 32),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Icon(Icons.flag, color: AppColors.error, size: 64),
-                    const SizedBox(height: 24),
-                    const Text(
-                      'Sei ritirato da questa gara',
-                      style: TextStyle(
-                        color: AppColors.error,
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 16),
-                    const Text(
-                      'Il tuo ritiro è stato registrato.\nNon è possibile riprendere la gara.',
-                      style: TextStyle(
-                          color: AppColors.textSecondary, fontSize: 14),
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ],
-      );
-    }
-
     return Column(
       children: [
         _TopBar(
@@ -550,6 +542,102 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                   const Text('In attesa del segnale GPS...',
                       style:
                           TextStyle(color: AppColors.textSecondary)),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ── Race-done view (finished or retired) ────────────────────────────────────
+
+  Widget _buildRaceDone({
+    required Map<String, dynamic>? statusData,
+    required String? eventId,
+    required bool retired,
+  }) {
+    final finishedAtTs = statusData?['finishedAt'] as Timestamp?;
+    final finishedAt = finishedAtTs?.toDate().toLocal();
+    final timeFmt = DateFormat('HH:mm', 'it');
+
+    return Column(
+      children: [
+        _TopBar(eventId: eventId, elapsed: null, isRecording: false),
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(24, 32, 24, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Icon(
+                  retired ? Icons.flag : Icons.check_circle_rounded,
+                  color: retired ? AppColors.error : AppColors.success,
+                  size: 72,
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  retired ? 'Gara terminata — Ritiro' : 'Gara completata!',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: retired ? AppColors.error : AppColors.success,
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                if (finishedAt != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    retired
+                        ? 'Ritirato alle ${timeFmt.format(finishedAt)}'
+                        : 'Completata alle ${timeFmt.format(finishedAt)}',
+                    style: const TextStyle(
+                        color: AppColors.textSecondary, fontSize: 14),
+                  ),
+                ],
+                const SizedBox(height: 8),
+                Text(
+                  retired
+                      ? 'Il tuo ritiro è stato registrato.\nNon è possibile riprendere la gara.'
+                      : 'Il GPS è stato bloccato.\nNon è possibile riattivare la registrazione.',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      color: AppColors.textSecondary, fontSize: 13),
+                ),
+                const SizedBox(height: 28),
+                if (eventId != null) ...[
+                  SizedBox(
+                    width: double.infinity,
+                    height: 48,
+                    child: OutlinedButton.icon(
+                      onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (ctx) => Scaffold(
+                            appBar: AppBar(
+                                title: const Text('I miei tempi')),
+                            backgroundColor: AppColors.background,
+                            body: TimingScreen(
+                                eventId: eventId, adminView: false),
+                          ),
+                        ),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        side: BorderSide(
+                            color: AppColors.accent
+                                .withValues(alpha: 0.6)),
+                        foregroundColor: AppColors.accent,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10)),
+                      ),
+                      icon: const Icon(Icons.timer, size: 18),
+                      label: const Text('VEDI I MIEI TEMPI',
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 0.5)),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),

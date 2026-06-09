@@ -48,3 +48,15 @@ final gpsServiceProvider = ChangeNotifierProvider<GpsService>((ref) {
     ref.watch(offlineQueueProvider),
   );
 });
+
+/// Streams the raw tracking doc for the logged-in pilot in a given event.
+/// Returns null if the doc doesn't exist yet (pilot never started GPS).
+final myPilotStatusProvider =
+    StreamProvider.autoDispose.family<Map<String, dynamic>?, String>(
+        (ref, eventId) {
+  final user = ref.watch(authStateProvider).valueOrNull;
+  if (user == null) return const Stream.empty();
+  return ref
+      .watch(firestoreServiceProvider)
+      .myPilotStatusStream(eventId, user.uid);
+});
