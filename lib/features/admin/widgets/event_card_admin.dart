@@ -25,6 +25,8 @@ class EventCardAdmin extends StatelessWidget {
         return AppColors.accent;
       case EventStatus.concluso:
         return AppColors.warning;
+      case EventStatus.archiviata:
+        return AppColors.textSecondary;
     }
   }
 
@@ -38,6 +40,8 @@ class EventCardAdmin extends StatelessWidget {
         return 'IN CORSO';
       case EventStatus.concluso:
         return 'CONCLUSO';
+      case EventStatus.archiviata:
+        return 'ARCHIVIATA';
     }
   }
 

@@ -66,7 +66,14 @@ class AdminHomeScreen extends ConsumerWidget {
           ),
         ),
         data: (events) {
-          if (events.isEmpty) {
+          final active = events
+              .where((e) => e.stato != EventStatus.archiviata)
+              .toList();
+          final archived = events
+              .where((e) => e.stato == EventStatus.archiviata)
+              .toList();
+
+          if (active.isEmpty && archived.isEmpty) {
             return Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -103,14 +110,47 @@ class AdminHomeScreen extends ConsumerWidget {
             onRefresh: () async {
               ref.invalidate(adminEventsProvider);
             },
-            child: ListView.builder(
+            child: ListView(
               padding: const EdgeInsets.only(top: 8, bottom: 80),
-              itemCount: events.length,
-              itemBuilder: (context, i) => _EventCardWithBadge(
-                event: events[i],
-                onTap: () =>
-                    context.push('/admin/event/${events[i].id}'),
-              ),
+              children: [
+                // Active / ongoing events
+                for (final e in active)
+                  _EventCardWithBadge(
+                    event: e,
+                    onTap: () => context.push('/admin/event/${e.id}'),
+                  ),
+
+                // Archived events section
+                if (archived.isNotEmpty) ...[
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.archive_outlined,
+                            color: AppColors.textSecondary, size: 16),
+                        const SizedBox(width: 8),
+                        const Text(
+                          'Gare passate',
+                          style: TextStyle(
+                            color: AppColors.textSecondary,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  for (final e in archived)
+                    Opacity(
+                      opacity: 0.65,
+                      child: _EventCardWithBadge(
+                        event: e,
+                        onTap: () => context.push('/admin/event/${e.id}'),
+                      ),
+                    ),
+                ],
+              ],
             ),
           );
         },

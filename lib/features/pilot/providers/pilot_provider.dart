@@ -15,6 +15,10 @@ final openEventsProvider = StreamProvider<List<EventModel>>((ref) {
   return ref.watch(firestoreServiceProvider).getOpenEvents();
 });
 
+final archivedEventsProvider = StreamProvider<List<EventModel>>((ref) {
+  return ref.watch(firestoreServiceProvider).getArchivedEvents();
+});
+
 final myRegistrationsProvider =
     StreamProvider<List<RegistrationModel>>((ref) async* {
   final user = ref.watch(authStateProvider).valueOrNull;

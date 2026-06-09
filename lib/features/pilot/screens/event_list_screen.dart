@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../core/models/event_model.dart';
+import '../../../core/models/registration_model.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/widgets/skeleton_loader.dart';
 import '../providers/pilot_provider.dart';
@@ -150,42 +152,85 @@ class EventListScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final eventsAsync = ref.watch(openEventsProvider);
+    final archivedAsync = ref.watch(archivedEventsProvider);
     final myRegsAsync = ref.watch(myRegistrationsProvider);
 
     return RefreshIndicator(
       color: AppColors.accent,
       backgroundColor: AppColors.cardBackground,
-      onRefresh: () async => ref.invalidate(openEventsProvider),
+      onRefresh: () async {
+        ref.invalidate(openEventsProvider);
+        ref.invalidate(archivedEventsProvider);
+      },
       child: eventsAsync.when(
         loading: _buildSkeleton,
         error: (e, _) => _buildError(e, ref),
         data: (events) {
-          if (events.isEmpty) return _buildEmpty(ref);
-
           final myRegs = myRegsAsync.valueOrNull ?? [];
+          final archived = archivedAsync.valueOrNull ?? [];
 
-          return ListView.builder(
+          if (events.isEmpty && archived.isEmpty) return _buildEmpty(ref);
+
+          return ListView(
             padding: const EdgeInsets.only(top: 8, bottom: 24),
-            itemCount: events.length,
-            itemBuilder: (context, i) {
-              final event = events[i];
-              final reg =
-                  myRegs.where((r) => r.eventId == event.id).firstOrNull;
+            children: [
+              // Active events
+              for (final event in events)
+                _buildEventCard(context, event, myRegs),
 
-              return EventCardPilot(
-                event: event,
-                registration: reg,
-                isLoading: false,
-                onTap: () => context.push('/pilot/event/${event.id}'),
-                // Navigate to event detail where the 2-step dialog is shown
-                onRegister: reg == null
-                    ? () => context.push('/pilot/event/${event.id}')
-                    : null,
-              );
-            },
+              // Past events section
+              if (archived.isNotEmpty) ...[
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.archive_outlined,
+                          color: AppColors.textSecondary, size: 16),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Gare passate',
+                        style: TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                for (final event in archived)
+                  Opacity(
+                    opacity: 0.65,
+                    child: EventCardPilot(
+                      event: event,
+                      registration: myRegs
+                          .where((r) => r.eventId == event.id)
+                          .firstOrNull,
+                      isLoading: false,
+                      onTap: () =>
+                          context.push('/pilot/event/${event.id}'),
+                      onRegister: null, // no new registrations on archived
+                    ),
+                  ),
+              ],
+            ],
           );
         },
       ),
+    );
+  }
+
+  Widget _buildEventCard(BuildContext context, EventModel event,
+      List<RegistrationModel> myRegs) {
+    final reg = myRegs.where((r) => r.eventId == event.id).firstOrNull;
+    return EventCardPilot(
+      event: event,
+      registration: reg,
+      isLoading: false,
+      onTap: () => context.push('/pilot/event/${event.id}'),
+      onRegister:
+          reg == null ? () => context.push('/pilot/event/${event.id}') : null,
     );
   }
 }

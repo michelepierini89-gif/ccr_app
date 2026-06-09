@@ -192,6 +192,7 @@ void main() {
           EventStatus.aperto => 'APERTO',
           EventStatus.inCorso => 'IN CORSO',
           EventStatus.concluso => 'CONCLUSO',
+          EventStatus.archiviata => 'ARCHIVIATA',
         };
         expect(label, entry.value,
             reason: '${entry.key} should map to ${entry.value}');

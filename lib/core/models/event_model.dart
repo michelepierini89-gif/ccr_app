@@ -2,7 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'special_model.dart';
 import 'waypoint_model.dart';
 
-enum EventStatus { bozza, aperto, inCorso, concluso }
+enum EventStatus { bozza, aperto, inCorso, concluso, archiviata }
 
 class StartingSlot {
   final String teamName;

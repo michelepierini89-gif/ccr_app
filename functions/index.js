@@ -1,4 +1,5 @@
 const { onDocumentUpdated } = require('firebase-functions/v2/firestore');
+const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { initializeApp } = require('firebase-admin/app');
 const { getFirestore } = require('firebase-admin/firestore');
 const { getMessaging } = require('firebase-admin/messaging');
@@ -156,5 +157,66 @@ exports.onStartEnabled = onDocumentUpdated(
       android: { priority: 'high' },
       apns: { payload: { aps: { sound: 'default' } } },
     });
+  }
+);
+
+// ── Scheduled: archivia automaticamente gli eventi alla fine del giorno di gara ─
+exports.autoArchiveEvents = onSchedule(
+  {
+    schedule: '59 23 * * *',
+    timeZone: 'Europe/Rome',
+    region: 'europe-west1',
+  },
+  async () => {
+    const db = getFirestore();
+
+    // Calcola la data odierna in timezone Europe/Rome nel formato ISO YYYY-MM-DD
+    const todayRome = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Rome',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date()); // es. "2026-06-09"
+
+    // Recupera tutti gli eventi non ancora archiviati
+    const snapshot = await db
+      .collection('events')
+      .where('stato', '!=', 'archiviata')
+      .get();
+
+    if (snapshot.empty) {
+      console.log('autoArchiveEvents: nessun evento da esaminare.');
+      return;
+    }
+
+    const batch = db.batch();
+    let count = 0;
+
+    for (const doc of snapshot.docs) {
+      const data = doc.data();
+      const eventTimestamp = data.data; // campo 'data' → Firestore Timestamp
+      if (!eventTimestamp) continue;
+
+      const eventDate = eventTimestamp.toDate();
+
+      // Data dell'evento in timezone Europe/Rome (formato YYYY-MM-DD, confrontabile lessicograficamente)
+      const eventDateRome = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Europe/Rome',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(eventDate);
+
+      if (eventDateRome <= todayRome) {
+        batch.update(doc.ref, { stato: 'archiviata' });
+        count++;
+        console.log(`autoArchiveEvents: archivio "${data.nome}" (data gara: ${eventDateRome})`);
+      }
+    }
+
+    if (count > 0) {
+      await batch.commit();
+    }
+    console.log(`autoArchiveEvents: ${count} event${count === 1 ? 'o archiviato' : 'i archiviati'}.`);
   }
 );

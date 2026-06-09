@@ -47,6 +47,13 @@ class FirestoreService {
       .snapshots()
       .map((s) => s.docs.map((d) => EventModel.fromFirestore(d)).toList());
 
+  Stream<List<EventModel>> getArchivedEvents() => _db
+      .collection(FirebaseConstants.events)
+      .where('stato', isEqualTo: 'archiviata')
+      .orderBy('data', descending: true)
+      .snapshots()
+      .map((s) => s.docs.map((d) => EventModel.fromFirestore(d)).toList());
+
   Future<EventModel?> getEvent(String id) async {
     final doc =
         await _db.collection(FirebaseConstants.events).doc(id).get();

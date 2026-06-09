@@ -86,6 +86,8 @@ class _EventManagementScreenState
         return AppColors.accent;
       case EventStatus.concluso:
         return AppColors.warning;
+      case EventStatus.archiviata:
+        return AppColors.textSecondary;
     }
   }
 
@@ -99,6 +101,8 @@ class _EventManagementScreenState
         return 'IN CORSO';
       case EventStatus.concluso:
         return 'CONCLUSO';
+      case EventStatus.archiviata:
+        return 'ARCHIVIATA';
     }
   }
 
@@ -406,33 +410,67 @@ class _EventManagementScreenState
                             ],
                           ),
                         ),
-                        DropdownButton<EventStatus>(
-                          value: event.stato,
-                          dropdownColor: AppColors.cardBackground,
-                          style: TextStyle(
-                              color: statusColor,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 12),
-                          underline: const SizedBox(),
-                          items: EventStatus.values
-                              .map((s) => DropdownMenuItem(
-                                    value: s,
-                                    child: Text(
-                                      _statusLabel(s),
-                                      style: TextStyle(
-                                        color: _statusColor(s),
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 12,
+                        if (event.stato == EventStatus.archiviata)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: AppColors.textSecondary
+                                  .withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                  color: AppColors.textSecondary
+                                      .withValues(alpha: 0.35)),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.archive_outlined,
+                                    size: 13,
+                                    color: AppColors.textSecondary),
+                                SizedBox(width: 4),
+                                Text(
+                                  'ARCHIVIATA',
+                                  style: TextStyle(
+                                    color: AppColors.textSecondary,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 11,
+                                    letterSpacing: 0.5,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          )
+                        else
+                          DropdownButton<EventStatus>(
+                            value: event.stato,
+                            dropdownColor: AppColors.cardBackground,
+                            style: TextStyle(
+                                color: statusColor,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12),
+                            underline: const SizedBox(),
+                            items: EventStatus.values
+                                .where(
+                                    (s) => s != EventStatus.archiviata)
+                                .map((s) => DropdownMenuItem(
+                                      value: s,
+                                      child: Text(
+                                        _statusLabel(s),
+                                        style: TextStyle(
+                                          color: _statusColor(s),
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 12,
+                                        ),
                                       ),
-                                    ),
-                                  ))
-                              .toList(),
-                          onChanged: (s) {
-                            if (s != null && s != event.stato) {
-                              _updateStatus(context, event, s);
-                            }
-                          },
-                        ),
+                                    ))
+                                .toList(),
+                            onChanged: (s) {
+                              if (s != null && s != event.stato) {
+                                _updateStatus(context, event, s);
+                              }
+                            },
+                          ),
                       ],
                     ),
                   ],
