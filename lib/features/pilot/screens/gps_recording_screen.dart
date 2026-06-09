@@ -453,11 +453,13 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                 ? LatLng(pos.latitude, pos.longitude)
                 : const LatLng(44.0, 11.0);
 
-        // Start interpolation toward the new GPS position
+        // Start interpolation toward the Kalman-filtered GPS position.
+        // Falls back to raw coords only if no valid fix has been accepted yet.
         if (liveData != null) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
-            final newPos = LatLng(liveData.latitude, liveData.longitude);
+            final newPos = ref.read(gpsServiceProvider).filteredPosition
+                ?? LatLng(liveData.latitude, liveData.longitude);
             if (_targetPos != newPos) {
               _fromPos = _displayPos ?? newPos;
               _targetPos = newPos;
@@ -510,6 +512,25 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
             if (distance > 200) return const SizedBox.shrink();
             return _FuelPointBanner(distanceMeters: distance);
           }),
+
+        // Thin warning strip: visible only when the last 5+ positions were
+        // discarded for poor accuracy (urban canyon, tunnel, etc.).
+        if (gps.isAccuracyPoor)
+          Container(
+            width: double.infinity,
+            height: 22,
+            color: AppColors.warning.withValues(alpha: 0.15),
+            alignment: Alignment.center,
+            child: const Text(
+              '⚠ Segnale GPS debole',
+              style: TextStyle(
+                color: AppColors.warning,
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.5,
+              ),
+            ),
+          ),
 
         // Live map — RepaintBoundary isola la mappa: rivernicia solo quando
         // cambia la posizione GPS, non quando il timer stats scatta ogni secondo
@@ -759,12 +780,20 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
               _StatCell(
                 icon: Icons.gps_fixed,
                 label: 'PREC',
-                value: hasPos ? '±${accuracy.toStringAsFixed(0)}m' : '—',
-                color: hasPos && accuracy < 10
-                    ? AppColors.success
-                    : hasPos && accuracy < 30
+                value: !hasPos
+                    ? '—'
+                    : gps.isAccuracyPoor
+                        ? '±??'
+                        : '±${accuracy.toStringAsFixed(0)}m',
+                color: !hasPos
+                    ? AppColors.textSecondary
+                    : gps.isAccuracyPoor
                         ? AppColors.warning
-                        : AppColors.error,
+                        : accuracy < 10
+                            ? AppColors.success
+                            : accuracy < 30
+                                ? AppColors.warning
+                                : AppColors.error,
               ),
             ],
           ),

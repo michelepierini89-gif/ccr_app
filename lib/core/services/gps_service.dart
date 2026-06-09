@@ -11,6 +11,7 @@ import '../constants/app_constants.dart';
 import '../services/waypoint_detector.dart';
 import '../services/firestore_service.dart';
 import '../services/offline_queue_service.dart';
+import '../utils/kalman_filter.dart';
 
 enum GpsMode { idle, transfer, inSpecial, nearWaypoint }
 
@@ -44,6 +45,8 @@ class SpecialEntry {
 }
 
 class GpsService extends ChangeNotifier {
+  static const double kMaxAcceptableAccuracyMeters = 25.0;
+
   final FirestoreService _firestoreService;
   final OfflineQueueService _offlineQueue;
 
@@ -73,6 +76,11 @@ class GpsService extends ChangeNotifier {
   final List<LatLng> _localTrack = [];
   double _totalDistanceKm = 0.0;
 
+  // Kalman filter + accuracy filtering state
+  final GpsKalmanFilter _kalmanFilter = GpsKalmanFilter();
+  int _consecutiveDiscarded = 0;
+  LatLng? _filteredPosition;
+
   bool get isRecording => _isRecording;
   String? get activeEventId => _activeEventId;
   GpsMode get mode => _mode;
@@ -89,6 +97,12 @@ class GpsService extends ChangeNotifier {
       : Duration.zero;
   List<WaypointModel> get remainingWaypoints =>
       _waypoints.where((w) => !_passedWaypoints.contains(w.id)).toList();
+
+  /// True when the last 5 consecutive GPS positions were discarded for poor accuracy.
+  bool get isAccuracyPoor => _consecutiveDiscarded >= 5;
+
+  /// Last Kalman-filtered position; null until the first accepted GPS fix.
+  LatLng? get filteredPosition => _filteredPosition;
 
   Future<bool> requestPermissions() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -133,6 +147,9 @@ class GpsService extends ChangeNotifier {
     _totalDistanceKm = 0.0;
     _currentSpecialId = null;
     _currentSpecialNome = null;
+    _consecutiveDiscarded = 0;
+    _filteredPosition = null;
+    _kalmanFilter.reset();
     _isRecording = true;
     _mode = GpsMode.transfer;
     _recordingStart = DateTime.now();
@@ -200,9 +217,25 @@ class GpsService extends ChangeNotifier {
   }
 
   void _onPosition(Position pos) async {
+    // Always store raw position and emit stream — UI uses it for accuracy/speed display.
     _lastPosition = pos;
     _posStreamCtrl.add(pos);
-    final latLng = LatLng(pos.latitude, pos.longitude);
+
+    // Accuracy filter: discard points with excessive uncertainty.
+    if (pos.accuracy > kMaxAcceptableAccuracyMeters) {
+      _consecutiveDiscarded++;
+      notifyListeners();
+      return;
+    }
+    _consecutiveDiscarded = 0;
+
+    // Apply Kalman filter; filtered position is used for all tracking operations.
+    final now = DateTime.now();
+    final filtered = _kalmanFilter.filter(
+        pos.latitude, pos.longitude, pos.accuracy, now);
+    _filteredPosition = filtered;
+    final latLng = filtered;
+
     if (_localTrack.isNotEmpty) {
       _totalDistanceKm += _haversineKm(_localTrack.last, latLng);
     }
@@ -213,7 +246,6 @@ class GpsService extends ChangeNotifier {
         latLng, _waypoints, _passedWaypoints);
     if (wp != null) {
       _passedWaypoints.add(wp.id);
-      final now = DateTime.now();
       final passage = WaypointPassage(waypoint: wp, timestamp: now);
       _passages.add(passage);
 
@@ -278,16 +310,17 @@ class GpsService extends ChangeNotifier {
       _startPositionStream(newInterval);
     }
 
-    // Push live tracking to Firestore — queue offline if unavailable
+    // Push live tracking to Firestore — queue offline if unavailable.
+    // Use Kalman-filtered coordinates; raw accuracy and speed from the sensor.
     if (_activeEventId != null && _activeUserId != null) {
       final point = GpsPointModel(
         userId: _activeUserId!,
         eventId: _activeEventId!,
-        lat: pos.latitude,
-        lng: pos.longitude,
+        lat: latLng.latitude,
+        lng: latLng.longitude,
         accuracy: pos.accuracy,
         speed: pos.speed,
-        timestamp: DateTime.now(),
+        timestamp: now,
         specialeId: _currentSpecialId,
         waypointPassati: _passedWaypoints.toList(),
       );
@@ -309,6 +342,9 @@ class GpsService extends ChangeNotifier {
     _currentSpecialId = null;
     _currentSpecialNome = null;
     _recordingStart = null;
+    _consecutiveDiscarded = 0;
+    _filteredPosition = null;
+    _kalmanFilter.reset();
     WakelockPlus.disable().ignore();
     notifyListeners();
   }

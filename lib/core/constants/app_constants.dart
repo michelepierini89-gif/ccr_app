@@ -1,6 +1,9 @@
 class AppConstants {
   AppConstants._();
   static const double waypointRadiusMeters = 10.0;
+  // Checkpoints (WaypointType.intermedio) use a wider radius: they are boolean
+  // pass/fail only and do not affect special timing, so a larger radius is safe.
+  static const double waypointCheckpointRadiusMeters = 20.0;
   static const int gpsIntervalNearWaypointMs = 250;
   static const int gpsIntervalInSpecialMs = 500;
   static const int gpsIntervalTransferMs = 3000;

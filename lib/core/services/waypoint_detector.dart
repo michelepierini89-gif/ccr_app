@@ -19,7 +19,12 @@ class WaypointDetector {
         wp.lat,
         wp.lng,
       );
-      if (dist <= AppConstants.waypointRadiusMeters) return wp;
+      // Checkpoints (intermedio) use a wider radius because they are
+      // boolean-only and have no impact on special timing accuracy.
+      final radius = wp.type == WaypointType.intermedio
+          ? AppConstants.waypointCheckpointRadiusMeters
+          : AppConstants.waypointRadiusMeters;
+      if (dist <= radius) return wp;
     }
     return null;
   }
