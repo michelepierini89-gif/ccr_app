@@ -772,6 +772,29 @@ class _PilotRegistrationSectionState
                                       letterSpacing: 0.5)),
                             ),
                           ),
+                          const SizedBox(height: 10),
+                          SizedBox(
+                            width: double.infinity,
+                            height: 46,
+                            child: OutlinedButton.icon(
+                              onPressed: () => context.push(
+                                '/pilot/event/${widget.eventId}/starting-order'),
+                              style: OutlinedButton.styleFrom(
+                                side: BorderSide(
+                                    color: AppColors.accent
+                                        .withValues(alpha: 0.6)),
+                                foregroundColor: AppColors.accent,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                              ),
+                              icon: const Icon(Icons.flag_outlined, size: 18),
+                              label: const Text('PARTENZA',
+                                  style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 0.5)),
+                            ),
+                          ),
                         ],
                       ],
                     );

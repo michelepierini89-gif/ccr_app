@@ -20,6 +20,7 @@ import 'features/pilot/screens/pilot_home_screen.dart';
 import 'features/pilot/screens/event_detail_screen.dart';
 import 'features/pilot/screens/team_screen.dart';
 import 'features/pilot/screens/gps_recording_screen.dart';
+import 'features/pilot/screens/starting_order_pilot_screen.dart';
 import 'features/admin/screens/penalty_settings_screen.dart';
 import 'features/classifica/screens/classifica_screen.dart';
 
@@ -143,6 +144,13 @@ final _routerProvider = Provider<GoRouter>((ref) {
                 builder: (context, state) {
                   final eventId = state.pathParameters['id']!;
                   return ClassificaScreen(eventId: eventId);
+                },
+              ),
+              GoRoute(
+                path: 'starting-order',
+                builder: (context, state) {
+                  final eventId = state.pathParameters['id']!;
+                  return StartingOrderPilotScreen(eventId: eventId);
                 },
               ),
             ],
