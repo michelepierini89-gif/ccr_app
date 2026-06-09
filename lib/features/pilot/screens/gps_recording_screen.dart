@@ -853,7 +853,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
             children: [
               // FINE GARA button — abilitato quando tutte le speciali sono completate
               Expanded(
-                flex: 2,
+                flex: 3,
                 child: SizedBox(
                   height: 56,
                   child: Tooltip(
@@ -878,17 +878,21 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                             borderRadius: BorderRadius.circular(12)),
                       ),
                       icon: const Icon(Icons.flag_circle_outlined, size: 20),
-                      label: const Text('FINE GARA',
-                          style: TextStyle(
-                              fontWeight: FontWeight.bold, letterSpacing: 1)),
+                      label: const Text(
+                        'FINE GARA',
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold, letterSpacing: 1),
+                        softWrap: false,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                   ),
                 ),
               ),
               const SizedBox(width: 12),
-              // RITIRO button
+              // RITIRO button — flex:2 garantisce ≥126dp su 360dp (minWidth 110 soddisfatto)
               Expanded(
-                flex: 1,
+                flex: 2,
                 child: AnimatedBuilder(
                   animation: _pulseAnimation,
                   builder: (ctx, child) => Transform.scale(
@@ -909,11 +913,12 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                       label: const Text(
                         'RITIRO',
                         style: TextStyle(
-                          fontSize: 16,
+                          fontSize: 13,
                           fontWeight: FontWeight.bold,
-                          letterSpacing: 1.5,
+                          letterSpacing: 1.0,
                         ),
-                        overflow: TextOverflow.visible,
+                        softWrap: false,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ),
