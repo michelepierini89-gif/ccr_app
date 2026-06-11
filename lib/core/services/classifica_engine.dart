@@ -1,13 +1,12 @@
 import '../models/event_model.dart';
 import '../models/classifica_model.dart';
+import '../models/championship_model.dart';
 import '../models/penalty_settings_model.dart';
 import '../models/registration_model.dart';
 import '../models/team_model.dart';
 import '../models/gps_point_model.dart';
 
 class ClassificaEngine {
-  static const _points = [25, 20, 16, 13, 11, 10, 9, 8, 7, 6];
-
   static List<ClassificaEntry> compute({
     required EventModel event,
     required List<WaypointPassageRecord> passages,
@@ -239,7 +238,7 @@ class ClassificaEngine {
         specialiCompletati: c.speciali,
         totaleSpeciali: totaleSpeciali,
         tempoTotale: c.tempoTotale,
-        punteggioTotale: 0,
+        punteggioTotale: myPos > 0 ? pointsForPosition(myPos) : 0,
         posizione: myPos,
         ritirato: c.entry.ritirato,
         ritiroCompagno: c.entry.ritiroCompagno,
@@ -250,6 +249,98 @@ class ClassificaEngine {
         retiredReason: c.entry.ritirato ? c.entry.retiredReason : null,
       );
     }).toList();
+  }
+
+  /// Calcola la classifica di campionato applicando lo scarto dei 3 risultati
+  /// peggiori. Ogni gara contribuisce con il punteggio per-evento del team
+  /// (somma punti speciali per le gare 'a punti', punti per posizione finale
+  /// per le gare 'a tempi'), normalizzando così tutto in punti.
+  static ChampionshipStandings computeChampionship(
+    ChampionshipModel championship,
+    List<EventModel> events,
+    List<EventResults> results,
+  ) {
+    final eventsById = {for (final e in events) e.id: e};
+    final resultsById = {for (final r in results) r.eventId: r};
+
+    // teamId -> teamNome
+    final teamNames = <String, String>{};
+    // teamId -> list of race scores (in championship event order)
+    final teamRaces = <String, List<ChampionshipRaceScore>>{};
+
+    for (final eventId in championship.eventIds) {
+      final event = eventsById[eventId];
+      final result = resultsById[eventId];
+      if (event == null || result == null) continue;
+
+      for (final entry in result.entries) {
+        if (entry.ritirato) continue;
+        teamNames[entry.entryId] = entry.teamNome;
+        teamRaces.putIfAbsent(entry.entryId, () => []).add(
+              ChampionshipRaceScore(
+                eventId: event.id,
+                eventNome: event.nome,
+                tipologia: event.tipologiaClassifica,
+                points: entry.punteggioTotale,
+                dropped: false,
+              ),
+            );
+      }
+    }
+
+    final standings = teamRaces.entries.map((kv) {
+      final races = [...kv.value];
+      // Indices sorted by points ascending -> the first dropCount are dropped
+      final order = List<int>.generate(races.length, (i) => i)
+        ..sort((a, b) => races[a].points.compareTo(races[b].points));
+      final dropCount = races.length > 3 ? 3 : races.length;
+      final droppedIdx = order.take(dropCount).toSet();
+
+      var total = 0;
+      final finalRaces = <ChampionshipRaceScore>[];
+      for (var i = 0; i < races.length; i++) {
+        final dropped = droppedIdx.contains(i);
+        if (!dropped) total += races[i].points;
+        finalRaces.add(ChampionshipRaceScore(
+          eventId: races[i].eventId,
+          eventNome: races[i].eventNome,
+          tipologia: races[i].tipologia,
+          points: races[i].points,
+          dropped: dropped,
+        ));
+      }
+
+      return (
+        teamId: kv.key,
+        teamNome: teamNames[kv.key] ?? kv.key,
+        races: finalRaces,
+        totalPoints: total,
+      );
+    }).toList()
+      ..sort((a, b) => b.totalPoints.compareTo(a.totalPoints));
+
+    int pos = 1;
+    int? prevPoints;
+    final teamStandings = standings.asMap().entries.map((e) {
+      final s = e.value;
+      int myPos;
+      if (prevPoints != null && prevPoints == s.totalPoints) {
+        myPos = pos - 1;
+      } else {
+        myPos = pos;
+      }
+      prevPoints = s.totalPoints;
+      pos = e.key + 2;
+      return ChampionshipTeamStanding(
+        teamId: s.teamId,
+        teamNome: s.teamNome,
+        races: s.races,
+        totalPoints: s.totalPoints,
+        posizione: myPos,
+      );
+    }).toList();
+
+    return ChampionshipStandings(teams: teamStandings);
   }
 
   static List<ClassificaEntry> _rankByPoints(
@@ -284,9 +375,9 @@ class ClassificaEngine {
           .toList()
         ..sort((a, b) => a.tempo.compareTo(b.tempo));
 
-      for (int i = 0; i < completions.length && i < _points.length; i++) {
+      for (int i = 0; i < completions.length; i++) {
         pointsMap[completions[i].id] =
-            (pointsMap[completions[i].id] ?? 0) + _points[i];
+            (pointsMap[completions[i].id] ?? 0) + pointsForPosition(i + 1);
       }
     }
 

@@ -53,4 +53,14 @@ class WaypointDetector {
     if (inSpecial) return AppConstants.gpsIntervalInSpecialMs;
     return AppConstants.gpsIntervalTransferMs;
   }
+
+  /// Distance in meters from [position] to a danger point.
+  static double dangerPointDistance(LatLng position, DangerPointModel dp) {
+    return LocationUtils.haversineDistance(
+      position.latitude,
+      position.longitude,
+      dp.latitude,
+      dp.longitude,
+    );
+  }
 }

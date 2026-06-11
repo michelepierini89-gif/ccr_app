@@ -154,6 +154,7 @@ class EventListScreen extends ConsumerWidget {
     final eventsAsync = ref.watch(openEventsProvider);
     final archivedAsync = ref.watch(archivedEventsProvider);
     final myRegsAsync = ref.watch(myRegistrationsProvider);
+    final myArchivedRegsAsync = ref.watch(myArchivedRegistrationsProvider);
 
     return RefreshIndicator(
       color: AppColors.accent,
@@ -167,7 +168,12 @@ class EventListScreen extends ConsumerWidget {
         error: (e, _) => _buildError(e, ref),
         data: (events) {
           final myRegs = myRegsAsync.valueOrNull ?? [];
-          final archived = archivedAsync.valueOrNull ?? [];
+          final myArchivedRegs = myArchivedRegsAsync.valueOrNull ?? [];
+          final archivedEventIds =
+              myArchivedRegs.map((r) => r.eventId).toSet();
+          final archived = (archivedAsync.valueOrNull ?? [])
+              .where((e) => archivedEventIds.contains(e.id))
+              .toList();
 
           if (events.isEmpty && archived.isEmpty) return _buildEmpty(ref);
 
@@ -204,7 +210,7 @@ class EventListScreen extends ConsumerWidget {
                     opacity: 0.65,
                     child: EventCardPilot(
                       event: event,
-                      registration: myRegs
+                      registration: myArchivedRegs
                           .where((r) => r.eventId == event.id)
                           .firstOrNull,
                       isLoading: false,

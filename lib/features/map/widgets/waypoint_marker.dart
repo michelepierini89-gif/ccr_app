@@ -8,12 +8,16 @@ class WaypointMarkersLayer extends StatelessWidget {
   final List<WaypointModel> waypoints;
   final List<SpecialModel> specials;
   final void Function(WaypointModel)? onTap;
+  final List<DangerPointModel> dangerPoints;
+  final void Function(DangerPointModel)? onDangerTap;
 
   const WaypointMarkersLayer({
     super.key,
     required this.waypoints,
     required this.specials,
     this.onTap,
+    this.dangerPoints = const [],
+    this.onDangerTap,
   });
 
   /// Colore della speciale a cui appartiene il waypoint (per il bordo del marker
@@ -38,10 +42,31 @@ class WaypointMarkersLayer extends StatelessWidget {
     return null;
   }
 
+  Marker _dangerMarker(BuildContext context, DangerPointModel dp) {
+    return Marker(
+      point: dp.latLng,
+      width: 32,
+      height: 32,
+      child: GestureDetector(
+        onTap: () {
+          onDangerTap?.call(dp);
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('⚠ ${dp.comment}'),
+            backgroundColor: Colors.amber.shade800,
+          ));
+        },
+        child: const Icon(Icons.warning_amber_rounded,
+            color: Colors.amber, size: 32),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return MarkerLayer(
-      markers: waypoints.map((wp) {
+      markers: [
+        for (final dp in dangerPoints) _dangerMarker(context, dp),
+        ...waypoints.map((wp) {
         final labelInfo = _labelFor(wp);
         final specialColor = _specialColorForWaypoint(wp);
         final label = labelInfo?.$1 ?? wp.nome;
@@ -92,7 +117,8 @@ class WaypointMarkersLayer extends StatelessWidget {
             ),
           ),
         );
-      }).toList(),
+      }),
+      ],
     );
   }
 }

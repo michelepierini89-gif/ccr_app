@@ -28,6 +28,10 @@ class StartingSlot {
       };
 }
 
+extension DateTimeExtension on DateTime {
+  DateTime toMidnight() => DateTime(year, month, day, 23, 59, 59);
+}
+
 enum TipologiaClassifica { sommaTempi, punteggioSpeciale }
 
 extension TipologiaClassificaLabel on TipologiaClassifica {
@@ -56,6 +60,7 @@ class EventModel {
   final bool startEnabled;
   final List<StartingSlot> startingOrder;
   final int maxRaceTimeMinutes;
+  final List<DangerPointModel> dangerPoints;
 
   const EventModel({
     required this.id,
@@ -75,6 +80,7 @@ class EventModel {
     this.startEnabled = false,
     this.startingOrder = const [],
     this.maxRaceTimeMinutes = 270,
+    this.dangerPoints = const [],
   });
 
   factory EventModel.fromFirestore(DocumentSnapshot doc) {
@@ -109,6 +115,9 @@ class EventModel {
           .map((e) => StartingSlot.fromMap(e as Map<String, dynamic>))
           .toList(),
       maxRaceTimeMinutes: (d['maxRaceTimeMinutes'] as num?)?.toInt() ?? 270,
+      dangerPoints: (d['dangerPoints'] as List<dynamic>? ?? [])
+          .map((e) => DangerPointModel.fromMap(e as Map<String, dynamic>))
+          .toList(),
     );
   }
 
@@ -129,6 +138,7 @@ class EventModel {
         'startEnabled': startEnabled,
         'startingOrder': startingOrder.map((s) => s.toMap()).toList(),
         'maxRaceTimeMinutes': maxRaceTimeMinutes,
+        'dangerPoints': dangerPoints.map((d) => d.toMap()).toList(),
       };
 
   EventModel copyWith({
@@ -147,6 +157,7 @@ class EventModel {
     bool? startEnabled,
     List<StartingSlot>? startingOrder,
     int? maxRaceTimeMinutes,
+    List<DangerPointModel>? dangerPoints,
   }) =>
       EventModel(
         id: id,
@@ -166,5 +177,6 @@ class EventModel {
         startEnabled: startEnabled ?? this.startEnabled,
         startingOrder: startingOrder ?? this.startingOrder,
         maxRaceTimeMinutes: maxRaceTimeMinutes ?? this.maxRaceTimeMinutes,
+        dangerPoints: dangerPoints ?? this.dangerPoints,
       );
 }

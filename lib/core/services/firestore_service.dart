@@ -220,6 +220,21 @@ class FirestoreService {
               'finishedAt': Timestamp.fromDate(finishedAt),
           }, SetOptions(merge: true));
 
+  /// Persists the full GPS track for post-race replay.
+  /// Called on FINE GARA and RITIRO so the result screen can show the polyline.
+  Future<void> savePilotTrack(
+          String eventId, String userId, List<LatLng> track) =>
+      _db
+          .collection(FirebaseConstants.tracking)
+          .doc(eventId)
+          .collection(FirebaseConstants.pilots)
+          .doc(userId)
+          .set({
+            'pilotTrack': track
+                .map((p) => {'lat': p.latitude, 'lng': p.longitude})
+                .toList(),
+          }, SetOptions(merge: true));
+
   /// Stream of the current pilot's tracking doc fields (lightweight, no GPS parsing).
   Stream<Map<String, dynamic>?> myPilotStatusStream(
           String eventId, String userId) =>

@@ -13,6 +13,7 @@ class TrackMapScreen extends StatefulWidget {
   final List<WaypointModel> waypoints;
   final bool interactive;
   final WaypointModel? fuelPoint;
+  final List<DangerPointModel> dangerPoints;
 
   const TrackMapScreen({
     super.key,
@@ -21,6 +22,7 @@ class TrackMapScreen extends StatefulWidget {
     required this.waypoints,
     this.interactive = true,
     this.fuelPoint,
+    this.dangerPoints = const [],
   });
 
   @override
@@ -90,6 +92,7 @@ class _TrackMapScreenState extends State<TrackMapScreen> {
                 specials: widget.specials,
                 onTap: (wp) =>
                     setState(() => _selectedWaypoint = wp),
+                dangerPoints: widget.dangerPoints,
               ),
               if (widget.fuelPoint != null)
                 MarkerLayer(markers: [

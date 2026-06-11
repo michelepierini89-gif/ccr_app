@@ -9,6 +9,7 @@ class ChampionshipModel {
   final int colorIndex;
   final String createdBy;
   final DateTime createdAt;
+  final bool classPublished;
 
   const ChampionshipModel({
     required this.id,
@@ -19,6 +20,7 @@ class ChampionshipModel {
     required this.colorIndex,
     required this.createdBy,
     required this.createdAt,
+    this.classPublished = false,
   });
 
   factory ChampionshipModel.fromFirestore(DocumentSnapshot doc) {
@@ -32,6 +34,7 @@ class ChampionshipModel {
       colorIndex: d['colorIndex'] ?? 0,
       createdBy: d['createdBy'] ?? '',
       createdAt: (d['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      classPublished: d['classPublished'] ?? false,
     );
   }
 
@@ -43,6 +46,7 @@ class ChampionshipModel {
         'colorIndex': colorIndex,
         'createdBy': createdBy,
         'createdAt': Timestamp.fromDate(createdAt),
+        'classPublished': classPublished,
       };
 
   ChampionshipModel copyWith({
@@ -51,6 +55,7 @@ class ChampionshipModel {
     int? stagione,
     List<String>? eventIds,
     int? colorIndex,
+    bool? classPublished,
   }) =>
       ChampionshipModel(
         id: id,
@@ -61,5 +66,6 @@ class ChampionshipModel {
         colorIndex: colorIndex ?? this.colorIndex,
         createdBy: createdBy,
         createdAt: createdAt,
+        classPublished: classPublished ?? this.classPublished,
       );
 }

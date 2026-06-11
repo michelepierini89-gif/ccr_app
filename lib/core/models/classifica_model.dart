@@ -1,4 +1,15 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'event_model.dart';
+
+/// Tabella punti universale per posizione (1-based).
+const kChampionshipPoints = [25, 20, 16, 13, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1];
+
+/// Restituisce i punti per la posizione [position] (1-based).
+/// Restituisce 0 se [position] è fuori dalla tabella.
+int pointsForPosition(int position) {
+  if (position < 1 || position > kChampionshipPoints.length) return 0;
+  return kChampionshipPoints[position - 1];
+}
 
 class WaypointPassageRecord {
   final String id;
@@ -99,4 +110,55 @@ class ClassificaEntry {
     final cs = (tempoTotale.inMilliseconds % 1000) ~/ 10;
     return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}.${cs.toString().padLeft(2, '0')}';
   }
+}
+
+/// Risultati di classifica già calcolati per una gara, usati come input per
+/// il calcolo della classifica di campionato.
+class EventResults {
+  final String eventId;
+  final List<ClassificaEntry> entries;
+
+  const EventResults({required this.eventId, required this.entries});
+}
+
+/// Punteggio di un team in una singola gara del campionato.
+class ChampionshipRaceScore {
+  final String eventId;
+  final String eventNome;
+  final TipologiaClassifica tipologia;
+  final int points;
+  final bool dropped;
+
+  const ChampionshipRaceScore({
+    required this.eventId,
+    required this.eventNome,
+    required this.tipologia,
+    required this.points,
+    required this.dropped,
+  });
+}
+
+/// Posizione di un team nella classifica di campionato, con il dettaglio
+/// dei punteggi per ogni gara.
+class ChampionshipTeamStanding {
+  final String teamId;
+  final String teamNome;
+  final List<ChampionshipRaceScore> races;
+  final int totalPoints;
+  final int posizione;
+
+  const ChampionshipTeamStanding({
+    required this.teamId,
+    required this.teamNome,
+    required this.races,
+    required this.totalPoints,
+    required this.posizione,
+  });
+}
+
+/// Classifica completa di campionato.
+class ChampionshipStandings {
+  final List<ChampionshipTeamStanding> teams;
+
+  const ChampionshipStandings({required this.teams});
 }

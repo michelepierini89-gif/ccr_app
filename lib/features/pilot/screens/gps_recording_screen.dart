@@ -42,6 +42,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
   late AnimationController _markerController;
+  late AnimationController _dangerBlinkController;
   LatLng? _displayPos;
   LatLng? _fromPos;
   LatLng? _targetPos;
@@ -84,6 +85,10 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
       vsync: this,
       duration: const Duration(milliseconds: 500),
     )..addListener(_onMarkerAnimTick);
+    _dangerBlinkController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 500),
+    )..repeat(reverse: true);
     WakelockPlus.enable().ignore();
     _startElapsedTimer();
     _recoverySub = ref.read(gpsServiceProvider).recoveryStream.listen((msg) {
@@ -225,6 +230,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     _fuelPointTimer?.cancel();
     _pulseController.dispose();
     _markerController.dispose();
+    _dangerBlinkController.dispose();
     _mapController.dispose();
     super.dispose();
   }
@@ -358,6 +364,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         waypoints: waypoints,
         specials: event?.speciali ?? [],
         fuelPoints: event?.fuelPoint != null ? [event!.fuelPoint!] : [],
+        dangerPoints: event?.dangerPoints ?? [],
       );
       setState(() => _followMode = true);
     } catch (e) {
@@ -531,6 +538,13 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           statusData: myStatusData,
           eventId: effectiveEventId,
           retired: true);
+    } else if (event != null &&
+        (event.stato == EventStatus.archiviata ||
+            event.data.toMidnight().isBefore(DateTime.now()))) {
+      body = _buildRaceOver(
+          event: event,
+          statusData: myStatusData,
+          eventId: effectiveEventId);
     } else {
       body = _buildPreStart(gps, pos, canStart, effectiveEventId);
     }
@@ -703,6 +717,88 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     );
   }
 
+  // ── Race-over view (evento archiviato o passato) ────────────────────────────
+
+  Widget _buildRaceOver({
+    required EventModel event,
+    required Map<String, dynamic>? statusData,
+    required String? eventId,
+  }) {
+    final dateFmt = DateFormat('dd/MM/yyyy', 'it');
+    final pilotTrack = statusData?['pilotTrack'] as List<dynamic>?;
+    final hasGpsData = pilotTrack != null && pilotTrack.isNotEmpty;
+
+    return Column(
+      children: [
+        _TopBar(eventId: eventId, elapsed: null, isRecording: false),
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(24, 32, 24, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                const Icon(
+                  Icons.flag_circle_outlined,
+                  color: AppColors.textSecondary,
+                  size: 72,
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'Gara conclusa',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Questa gara si è svolta il ${dateFmt.format(event.data)}',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      color: AppColors.textSecondary, fontSize: 14),
+                ),
+                const SizedBox(height: 28),
+                if (hasGpsData && eventId != null)
+                  SizedBox(
+                    width: double.infinity,
+                    height: 48,
+                    child: ElevatedButton.icon(
+                      onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => RaceResultScreen(eventId: eventId),
+                        ),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.accent,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10)),
+                      ),
+                      icon: const Icon(Icons.map_outlined, size: 18),
+                      label: const Text('VEDI LA MIA TRACCIA',
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 0.5)),
+                    ),
+                  )
+                else
+                  const Text(
+                    'Non hai partecipato a questa gara',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        color: AppColors.textSecondary, fontSize: 13),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   // ── Active tracking view ────────────────────────────────────────────────────
 
   Widget _buildActiveTracking(GpsService gps, dynamic pos, EventModel? event) {
@@ -806,6 +902,25 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                 fontSize: 12,
                 fontWeight: FontWeight.w700,
                 letterSpacing: 0.3,
+              ),
+            ),
+          ),
+
+        // Banner avviso punto pericolo (giallo, statico) — entro 150m
+        if (gps.warningDangerPoint != null && !gps.isDangerBlinking)
+          _DangerWarningBanner(
+            comment: gps.warningDangerPoint!.comment,
+            distanceMeters: gps.warningDangerDistance ?? 0,
+          ),
+
+        // Banner allerta punto pericolo (rosso, lampeggiante) — entro 50m
+        if (gps.isDangerBlinking && gps.alertDangerPoint != null)
+          AnimatedBuilder(
+            animation: _dangerBlinkController,
+            builder: (context, _) => Opacity(
+              opacity: 0.3 + 0.7 * _dangerBlinkController.value,
+              child: _DangerAlertBanner(
+                comment: gps.alertDangerPoint!.comment,
               ),
             ),
           ),
@@ -953,6 +1068,29 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                         ),
                       ),
                     ]),
+                  // Danger points — sempre visibili, triangolo giallo ⚠
+                  if (event != null && event.dangerPoints.isNotEmpty)
+                    MarkerLayer(
+                      markers: event.dangerPoints.map((dp) {
+                        return Marker(
+                          point: dp.latLng,
+                          width: 32,
+                          height: 32,
+                          child: GestureDetector(
+                            onTap: () {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text('⚠ ${dp.comment}'),
+                                  backgroundColor: Colors.amber.shade800,
+                                ),
+                              );
+                            },
+                            child: const Icon(Icons.warning_amber_rounded,
+                                color: Colors.amber, size: 32),
+                          ),
+                        );
+                      }).toList(),
+                    ),
                   // Accuracy circle
                   if (hasPos)
                     CircleLayer(circles: [
@@ -1059,6 +1197,25 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                 bottom: _followMode ? 12 : 60,
                 child: _MapScaleBar(lat: curPos.latitude, zoom: _mapZoom),
               ),
+              // Bordo schermo rosso lampeggiante quando un punto pericolo è in allerta (<50m)
+              if (gps.isDangerBlinking)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: AnimatedBuilder(
+                      animation: _dangerBlinkController,
+                      builder: (context, _) => Container(
+                        decoration: BoxDecoration(
+                          border: Border.all(
+                            color: AppColors.error.withValues(
+                                alpha:
+                                    0.3 + 0.7 * _dangerBlinkController.value),
+                            width: 8,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               // Debug overlay: bearing, rotazione mappa e velocità (solo debug)
               if (kDebugMode)
                 Positioned(
@@ -1498,6 +1655,76 @@ class _FuelPointBanner extends StatelessWidget {
               fontWeight: FontWeight.bold,
               fontSize: 12,
               letterSpacing: 0.5,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DangerWarningBanner extends StatelessWidget {
+  final String comment;
+  final double distanceMeters;
+  const _DangerWarningBanner(
+      {required this.comment, required this.distanceMeters});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      color: Colors.amber.withValues(alpha: 0.18),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.warning_amber_rounded,
+              color: Colors.amber, size: 16),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              '⚠ ATTENZIONE: $comment tra ~${distanceMeters.round()}m',
+              style: const TextStyle(
+                color: Colors.amber,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+                letterSpacing: 0.3,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DangerAlertBanner extends StatelessWidget {
+  final String comment;
+  const _DangerAlertBanner({required this.comment});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      color: AppColors.error.withValues(alpha: 0.25),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.warning_amber_rounded,
+              color: AppColors.error, size: 18),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              '⚠ PERICOLO: $comment',
+              style: const TextStyle(
+                color: AppColors.error,
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+                letterSpacing: 0.3,
+              ),
+              overflow: TextOverflow.ellipsis,
             ),
           ),
         ],

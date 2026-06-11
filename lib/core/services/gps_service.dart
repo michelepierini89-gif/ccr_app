@@ -80,6 +80,14 @@ class GpsService extends ChangeNotifier {
   final Set<String> _passedWaypoints = {};
   List<WaypointModel> _fuelPoints = [];
   final Set<String> _passedFuelPoints = {};
+  List<DangerPointModel> _dangerPoints = [];
+  // Punti pericolo "attivi" (entro 150m): rimossi quando la distanza torna > 100m.
+  final Set<String> _alertedDangerPoints = {};
+  DangerPointModel? _warningDangerPoint;
+  double? _warningDangerDistance;
+  DangerPointModel? _alertDangerPoint;
+  double? _alertDangerDistance;
+  bool _dangerBlinking = false;
   final List<WaypointPassage> _passages = [];
   String? _currentSpecialId;
   String? _currentSpecialNome;
@@ -164,6 +172,15 @@ class GpsService extends ChangeNotifier {
 
   /// Emits a localised message each time a fuel point is passed for the first time.
   Stream<String> get fuelPointStream => _fuelPointStreamCtrl.stream;
+
+  /// Punto pericolo più vicino entro la soglia di avviso (150m), o null.
+  DangerPointModel? get warningDangerPoint => _warningDangerPoint;
+  double? get warningDangerDistance => _warningDangerDistance;
+
+  /// Punto pericolo in stato di allerta (entro 50m, lampeggio attivo), o null.
+  DangerPointModel? get alertDangerPoint => _alertDangerPoint;
+  double? get alertDangerDistance => _alertDangerDistance;
+  bool get isDangerBlinking => _dangerBlinking;
 
   /// Computes the forward azimuth from [from] to [to] in degrees [0, 360).
   static double _computeBearingDeg(LatLng from, LatLng to) {
@@ -296,6 +313,7 @@ class GpsService extends ChangeNotifier {
     required List<WaypointModel> waypoints,
     List<SpecialModel> specials = const [],
     List<WaypointModel> fuelPoints = const [],
+    List<DangerPointModel> dangerPoints = const [],
   }) async {
     if (_isRecording) return;
     final hasPermission = await requestPermissions();
@@ -319,6 +337,13 @@ class GpsService extends ChangeNotifier {
     _passedWaypoints.clear();
     _fuelPoints = fuelPoints;
     _passedFuelPoints.clear();
+    _dangerPoints = dangerPoints;
+    _alertedDangerPoints.clear();
+    _warningDangerPoint = null;
+    _warningDangerDistance = null;
+    _alertDangerPoint = null;
+    _alertDangerDistance = null;
+    _dangerBlinking = false;
     _passages.clear();
     _specialEntries.clear();
     _localTrack.clear();
@@ -554,6 +579,46 @@ class GpsService extends ChangeNotifier {
       }
     }
 
+    // Punti pericolo: aggiorna soglie di prossimità avviso (150m) e allerta (50m)
+    final wasDangerNear = _alertedDangerPoints.isNotEmpty;
+    DangerPointModel? warnPoint;
+    double? warnDist;
+    for (final dp in _dangerPoints) {
+      final distM = WaypointDetector.dangerPointDistance(latLng, dp);
+      if (distM <= AppConstants.dangerWarningRadiusMeters) {
+        _alertedDangerPoints.add(dp.id);
+      } else if (distM > AppConstants.dangerRemoveRadiusMeters) {
+        _alertedDangerPoints.remove(dp.id);
+      }
+      if (_alertedDangerPoints.contains(dp.id)) {
+        if (warnDist == null || distM < warnDist) {
+          warnDist = distM;
+          warnPoint = dp;
+        }
+      }
+    }
+    _warningDangerPoint = warnPoint;
+    _warningDangerDistance = warnDist;
+    if (warnPoint != null && warnDist! <= AppConstants.dangerAlertRadiusMeters) {
+      _alertDangerPoint = warnPoint;
+      _alertDangerDistance = warnDist;
+      _dangerBlinking = true;
+    } else if (_dangerBlinking) {
+      if (warnPoint != null && warnPoint.id == _alertDangerPoint?.id) {
+        _alertDangerDistance = warnDist;
+        if (warnDist! > AppConstants.dangerAlertClearRadiusMeters) {
+          _dangerBlinking = false;
+          _alertDangerPoint = null;
+          _alertDangerDistance = null;
+        }
+      } else {
+        _dangerBlinking = false;
+        _alertDangerPoint = null;
+        _alertDangerDistance = null;
+      }
+    }
+    final dangerNear = _alertedDangerPoints.isNotEmpty;
+
     // Determine mode
     final remainingForMode =
         _waypoints.where((w) => !_passedWaypoints.contains(w.id)).toList();
@@ -564,11 +629,14 @@ class GpsService extends ChangeNotifier {
         ? GpsMode.nearWaypoint
         : (_currentSpecialId != null ? GpsMode.inSpecial : GpsMode.transfer);
 
-    // Adapt interval if mode changed
-    if (newMode != _mode) {
+    // Adapt interval if mode or danger-zone proximity changed
+    if (newMode != _mode || dangerNear != wasDangerNear) {
       _mode = newMode;
-      final newInterval = WaypointDetector.adaptiveInterval(
+      var newInterval = WaypointDetector.adaptiveInterval(
           nearest, _currentSpecialId != null);
+      if (dangerNear) {
+        newInterval = min(newInterval, AppConstants.gpsIntervalNearDangerMs);
+      }
       _startPositionStream(newInterval);
     }
 
@@ -619,6 +687,12 @@ class GpsService extends ChangeNotifier {
     _bearingDeg = 0.0;
     _recoveryAttempted.clear();
     _trackTimestamps.clear();
+    _alertedDangerPoints.clear();
+    _warningDangerPoint = null;
+    _warningDangerDistance = null;
+    _alertDangerPoint = null;
+    _alertDangerDistance = null;
+    _dangerBlinking = false;
     WakelockPlus.disable().ignore();
     notifyListeners();
   }

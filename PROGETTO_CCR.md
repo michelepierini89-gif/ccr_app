@@ -574,6 +574,114 @@ gsutil cors get gs://ccr-enduro.firebasestorage.app
 
 ---
 
+### Step 17 — Recovery inizio speciale + Auto-archiviazione eventi (06-09 giugno 2026) ✅
+
+**17a — Recovery retroattivo inizio speciale mancato (06 giugno 2026):**
+
+Algoritmo per recuperare automaticamente un inizio speciale non registrato (es. GPS debole al momento del passaggio).
+
+**Costanti** (`gps_constants.dart`):
+- `kSpecialStartRecoveryRadiusMeters = 80.0` — distanza massima dal waypoint START per considerare il recovery valido
+- `kSpecialStartRecoveryLookbackSeconds = 30` — finestra temporale in secondi da scandire nel tracciato registrato
+
+**Logica** (`gps_service.dart` → `_trySpecialStartRecovery`):
+1. Per ogni speciale non ancora iniziata e non già tentata: se la posizione GPS corrente è entro 3× raggio (240m) dal waypoint START → attiva recovery
+2. Scansiona gli ultimi 30s di `_localTrack` / `_trackTimestamps` cercando il punto più vicino al waypoint START
+3. Se quel punto è < 80m dal waypoint → imposta il suo timestamp come `entryTime` retroattivo
+4. `_recoveryAttempted` set: un solo tentativo per speciale (evita loop infiniti)
+5. Firestore: crea passage con `recoveredStart: true` via `recordWaypointPassage` (parametro opzionale)
+6. Fallback offline queue se Firestore non disponibile
+
+**UI** (`gps_recording_screen.dart`):
+- Banner 26px light-blue (`Color(0xFF29B6F6)`) 18% opacity: "⚡ Inizio SP X recuperato"
+- Auto-dismiss dopo 3 secondi via `Timer`
+- `StreamSubscription<String>` su `recoveryStream` (StreamController nel GPS service)
+
+**Deploy:**
+- `flutter analyze`: zero warning
+- `git commit`: "feat: recovery retroattivo inizio speciale mancato" (0fba78e)
+- `firebase deploy --only hosting` ✅
+- `git push origin main` ✅
+
+---
+
+**17b — Auto-archiviazione automatica eventi (06-09 giugno 2026):**
+
+**1 — Enum EventStatus aggiornato** (`event_model.dart`):
+- Aggiunto `archiviata` → `enum EventStatus { bozza, aperto, inCorso, concluso, archiviata }`
+- Aggiornati tutti gli switch exhaustivi: `event_card_admin.dart`, `event_card_pilot.dart`, `event_management_screen.dart`, test
+
+**2 — Cloud Function `autoArchiveEvents`** (`functions/index.js`):
+- Schedule: `"59 23 * * *"`, timezone: `Europe/Rome`, region: `europe-west1`
+- Legge tutti gli eventi con `stato != 'archiviata'`
+- Confronta `data` evento con la data odierna in timezone Rome via `Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Rome' })`
+- Se `eventDateRome <= todayRome` → `batch.update(doc.ref, { stato: 'archiviata' })`
+- Deploy richiede filesystem Linux nativo (vedi nota WSL2 sotto)
+
+**3 — UI sezione "Gare passate":**
+- `admin_home_screen.dart` e `event_list_screen.dart`: lista attivi + sezione "Gare passate" con `Opacity(opacity: 0.65)` per eventi archiviati
+- Pulsante iscrizione non mostrato per eventi archiviati
+- `event_management_screen.dart`: chip read-only "ARCHIVIATA" (con `Icons.archive_outlined`) al posto del dropdown stato
+
+**4 — Firestore:**
+- `getArchivedEvents()` in `firestore_service.dart`: query `stato == 'archiviata'` + `orderBy('data', descending: true)`
+- `archivedEventsProvider` in `pilot_provider.dart`
+- Index `stato ASC + data DESC` aggiunto in `firestore.indexes.json`
+
+**Nota WSL2 — Deploy Cloud Functions:**
+- Deploy da `/mnt/d/` (NTFS via WSL2) fallisce con timeout 10s: `require('firebase-admin')` impiega ~12s su NTFS vs ~0.1s su ext4
+- Workaround: copiare `index.js` + `package.json` in `~/ccr_functions_deploy/`, eseguire `npm install` lì, creare `~/ccr_deploy_temp/firebase.json` con `"source": "/home/mikypierr/ccr_functions_deploy"`, fare deploy da lì
+- Alternativa permanente: spostare il progetto nel filesystem nativo Linux (`~/`) oppure deployare da Windows PowerShell
+
+**Deploy:**
+- `flutter analyze`: zero warning
+- `git commit`: "feat: auto-archiviazione evento a 23:59 via Cloud Function scheduled" (d90a0b9)
+- Functions deploy: `firebase deploy --only functions:autoArchiveEvents` ✅ (via path Linux nativo)
+- `firebase deploy --only hosting` ✅
+- `git push origin main` ✅
+
+---
+
+---
+
+**18 — Blocco GPS gare archiviate, filtro gare passate, punti pericolo, classifiche campionato (12 giugno 2026):**
+
+**A — Blocco GPS per gare archiviate/passate:**
+- `event_model.dart`: estensione `DateTimeExtension.toMidnight()` → `DateTime(year, month, day, 23, 59, 59)`
+- `gps_recording_screen.dart`: nuovo branch in `build()` (dopo `isFinished`/`isRetired`) → se `event.stato == archiviata` o `event.data` passata, mostra schermata "Gara conclusa" con icona bandiera, data svolgimento, pulsante "Vedi la mia traccia" (se il pilota ha una traccia GPS, naviga a `RaceResultScreen`) oppure testo "Non hai partecipato a questa gara"
+- `event_detail_screen.dart`: per eventi archiviati, pulsante GPS sostituito da "Vedi risultati" → `RaceResultScreen`; pulsante "Iscriviti" nascosto
+
+**B — Filtro "Gare passate" per partecipazione pilota:**
+- `pilot_provider.dart`: nuovo `myArchivedRegistrationsProvider` (stream delle iscrizioni approvate del pilota sugli eventi archiviati)
+- `event_list_screen.dart`: sezione "Gare passate" mostra solo eventi con iscrizione approvata del pilota; sezione (incluso header) nascosta se nessun evento corrisponde
+
+**C — Punti pericolo su traccia:**
+- `waypoint_model.dart`: nuova classe `DangerPointModel` (id, latitude, longitude, comment, createdAt) con fromMap/toMap/copyWith
+- `event_model.dart`: campo `dangerPoints` (List<DangerPointModel>, default `[]`) con fromFirestore/toFirestore/copyWith
+- `specials_editor_screen.dart`: modalità "Inserimento pericolo" (icona ⚠ amber in AppBar) → tap su mappa apre BottomSheet "Descrizione pericolo" con Salva/Annulla; marker amber esistenti tappabili per modifica/eliminazione (con conferma); sezione sinottica "Punti pericolo (N)" con coordinate + commento
+- `waypoint_marker.dart` / `track_map_screen.dart` / `gps_recording_screen.dart` / `event_detail_screen.dart`: marker ⚠ amber (32px) sempre visibili sulla mappa pilota, tap mostra commento in SnackBar
+- `app_constants.dart`: soglie `dangerWarningRadiusMeters` (150m), `dangerAlertRadiusMeters` (50m), `dangerAlertClearRadiusMeters` (60m), `dangerRemoveRadiusMeters` (100m), `gpsIntervalNearDangerMs` (500ms)
+- `waypoint_detector.dart`: `dangerPointDistance()`
+- `gps_service.dart`: tracking prossimità punti pericolo con isteresi (`_alertedDangerPoints`); banner giallo statico "ATTENZIONE" a 150m, banner rosso lampeggiante "PERICOLO" + bordo schermo lampeggiante a 50m (si ferma a >60m); GPS a 500ms entro 150m da un pericolo
+- `gps_recording_screen.dart`: `_DangerWarningBanner`/`_DangerAlertBanner`, `AnimationController` per il lampeggio (500ms, opacity 0.3↔1.0)
+
+**D — Classifiche campionato:**
+- `classifica_model.dart`: tabella punti universale `kChampionshipPoints = [25,20,16,13,11,10,9,8,7,6,5,4,3,2,1]` + `pointsForPosition(position)`; nuovi modelli `EventResults`, `ChampionshipRaceScore`, `ChampionshipTeamStanding`, `ChampionshipStandings`
+- `classifica_engine.dart`: `_rankByPoints`/`_rankByTime` ora valorizzano `punteggioTotale` per-evento usando `pointsForPosition` (somma punti speciali per gare 'a punti', punti per posizione finale per gare 'a tempi'); nuovo `computeChampionship()` che normalizza tutto in punti per-evento, scarta i 3 peggiori risultati per team e somma il resto
+- `championship_model.dart`: nuovo campo `classPublished` (default `false`)
+- `classifica_provider.dart`: `championshipStandingsProvider` (calcola `ChampionshipStandings` per un campionato) e `myChampionshipEntryIdProvider` (entryId del pilota corrente, per evidenziare la propria squadra)
+- `championship_standings_table.dart` (nuovo widget condiviso): tabella Pos | Squadra | Punti totali con dettaglio per gara espandibile (badge "Gara a tempi"/"Gara a punti", punti scartati in grigio/barrati), podio per i primi 3
+- `championship_screen.dart`: nuovo `ChampionshipAdminStandingsScreen` (route `/admin/championships/:id/standings`) con pulsante "Pubblica classifica" → imposta `classPublished = true`
+- `championship_standings_screen.dart` (pilota, route `/pilot/championships/:id`, tab "Campionati" già presente in `pilot_home_screen.dart`): visibile solo se `classPublished == true`, riga della propria squadra evidenziata in accent (#e53e1e)
+
+**Deploy:**
+- `flutter analyze`: zero warning
+- `git commit`: "feat: blocco GPS gare archiviate + filtro gare passate pilota + punti pericolo con avviso lampeggiante + classifiche campionato"
+- `flutter build web --release` + `firebase deploy --only hosting` ✅
+- `git push origin main` ✅
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**

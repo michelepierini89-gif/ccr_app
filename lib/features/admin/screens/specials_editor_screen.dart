@@ -83,12 +83,16 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
   _SelectionMode _selectionMode = _SelectionMode.none;
   int _activeControlPointIdx = -1;
 
+  late List<DangerPointModel> _dangerPoints;
+  bool _dangerInsertMode = false;
+
   double? _cachedTotalLength;
 
   @override
   void initState() {
     super.initState();
     _specials = List.from(widget.event.speciali);
+    _dangerPoints = List.from(widget.event.dangerPoints);
     _cachedTotalLength = _computeTotalLength();
   }
 
@@ -353,7 +357,8 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
     });
 
     try {
-      final updated = widget.event.copyWith(speciali: _specials);
+      final updated = widget.event
+          .copyWith(speciali: _specials, dangerPoints: _dangerPoints);
       await ref.read(firestoreServiceProvider).updateEvent(updated);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -378,7 +383,8 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
   Future<void> _save() async {
     setState(() => _isSaving = true);
     try {
-      final updated = widget.event.copyWith(speciali: _specials);
+      final updated = widget.event
+          .copyWith(speciali: _specials, dangerPoints: _dangerPoints);
       await ref.read(firestoreServiceProvider).updateEvent(updated);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -404,6 +410,11 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
   // ── Map interactions ──────────────────────────────────────────────────────
 
   void _onMapTap(LatLng latlng) {
+    if (_dangerInsertMode) {
+      setState(() => _dangerInsertMode = false);
+      _openDangerPointSheet(point: latlng);
+      return;
+    }
     if (_selectionMode == _SelectionMode.none) return;
     if (widget.parsedTrack.points.isEmpty) return;
     final idx = _nearestTrackIdx(latlng);
@@ -435,6 +446,137 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
       _selectionMode = _SelectionMode.none;
       _activeControlPointIdx = -1;
     });
+  }
+
+  void _openDangerPointSheet({DangerPointModel? existing, required LatLng point}) {
+    final controller = TextEditingController(text: existing?.comment ?? '');
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.cardBackground,
+      isScrollControlled: true,
+      builder: (ctx) {
+        return Padding(
+          padding: EdgeInsets.only(
+            left: 16,
+            right: 16,
+            top: 16,
+            bottom: MediaQuery.of(ctx).viewInsets.bottom + 16,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.warning_amber_rounded,
+                      color: Colors.amber, size: 28),
+                  const SizedBox(width: 8),
+                  Text(
+                    existing == null
+                        ? 'Nuovo punto pericolo'
+                        : 'Modifica punto pericolo',
+                    style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                maxLines: 3,
+                style: const TextStyle(color: AppColors.textPrimary),
+                decoration: const InputDecoration(
+                  labelText: 'Descrizione pericolo',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  if (existing != null)
+                    TextButton.icon(
+                      onPressed: () {
+                        Navigator.of(ctx).pop();
+                        _confirmDeleteDangerPoint(existing);
+                      },
+                      icon: const Icon(Icons.delete, color: AppColors.error),
+                      label: const Text('Elimina',
+                          style: TextStyle(color: AppColors.error)),
+                    ),
+                  const Spacer(),
+                  TextButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    child: const Text('Annulla'),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.accent),
+                    onPressed: () {
+                      final comment = controller.text.trim();
+                      if (comment.isEmpty) return;
+                      setState(() {
+                        if (existing == null) {
+                          _dangerPoints.add(DangerPointModel(
+                            id: const Uuid().v4(),
+                            latitude: point.latitude,
+                            longitude: point.longitude,
+                            comment: comment,
+                            createdAt: DateTime.now(),
+                          ));
+                        } else {
+                          final idx = _dangerPoints
+                              .indexWhere((d) => d.id == existing.id);
+                          if (idx != -1) {
+                            _dangerPoints[idx] =
+                                existing.copyWith(comment: comment);
+                          }
+                        }
+                      });
+                      Navigator.of(ctx).pop();
+                    },
+                    child: const Text('Salva'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _confirmDeleteDangerPoint(DangerPointModel dp) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: const Text('Elimina punto pericolo',
+            style: TextStyle(color: AppColors.textPrimary)),
+        content: const Text(
+            'Sei sicuro di voler eliminare questo punto di pericolo?',
+            style: TextStyle(color: AppColors.textSecondary)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Annulla'),
+          ),
+          TextButton(
+            onPressed: () {
+              setState(() {
+                _dangerPoints.removeWhere((d) => d.id == dp.id);
+              });
+              Navigator.of(ctx).pop();
+            },
+            child: const Text('Elimina',
+                style: TextStyle(color: AppColors.error)),
+          ),
+        ],
+      ),
+    );
   }
 
   // ── Map overlays ──────────────────────────────────────────────────────────
@@ -485,9 +627,26 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
     return polylines;
   }
 
+  Marker _dangerMarkerAt(DangerPointModel dp) {
+    return Marker(
+      point: dp.latLng,
+      width: 32,
+      height: 32,
+      child: GestureDetector(
+        onTap: () => _openDangerPointSheet(existing: dp, point: dp.latLng),
+        child: const Icon(Icons.warning_amber_rounded,
+            color: Colors.amber, size: 32),
+      ),
+    );
+  }
+
   List<Marker> _buildMarkers() {
     final markers = <Marker>[];
     final pts = widget.parsedTrack.points;
+
+    for (final dp in _dangerPoints) {
+      markers.add(_dangerMarkerAt(dp));
+    }
 
     for (var i = 0; i < _specials.length; i++) {
       if (i == _editingIndex) continue;
@@ -600,8 +759,9 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
   MapOptions get _mapOptions {
     final pts = widget.parsedTrack.points;
     final isSelecting = _selectionMode != _SelectionMode.none;
-    final tapHandler =
-        isSelecting ? (TapPosition _, LatLng ll) => _onMapTap(ll) : null;
+    final tapHandler = (isSelecting || _dangerInsertMode)
+        ? (TapPosition _, LatLng ll) => _onMapTap(ll)
+        : null;
 
     if (pts.isNotEmpty) {
       return MapOptions(
@@ -632,6 +792,19 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
           onPressed: () => context.pop(),
         ),
         actions: [
+          IconButton(
+            icon: Icon(Icons.warning_amber_rounded,
+                color: _dangerInsertMode
+                    ? Colors.amber
+                    : AppColors.textSecondary),
+            tooltip: 'Inserisci punto pericolo',
+            onPressed: () {
+              setState(() {
+                _dangerInsertMode = !_dangerInsertMode;
+                if (_dangerInsertMode) _selectionMode = _SelectionMode.none;
+              });
+            },
+          ),
           if (_isSaving)
             const Padding(
               padding: EdgeInsets.all(16),
@@ -687,7 +860,9 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
   Widget _buildMap() {
     final isSelecting = _selectionMode != _SelectionMode.none;
     String bannerText = '';
-    if (isSelecting) {
+    if (_dangerInsertMode) {
+      bannerText = 'Clicca sulla mappa per inserire un punto di pericolo';
+    } else if (isSelecting) {
       if (_selectionMode == _SelectionMode.inizio) {
         bannerText = 'Clicca sulla traccia per selezionare l\'INIZIO';
       } else if (_selectionMode == _SelectionMode.fine) {
@@ -719,7 +894,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
             ],
           ),
         ),
-        if (isSelecting)
+        if (isSelecting || _dangerInsertMode)
           Positioned(
             top: 8,
             left: 8,
@@ -730,7 +905,10 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
               decoration: BoxDecoration(
                 color: AppColors.cardBackground.withValues(alpha: 0.92),
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: AppColors.accent),
+                border: Border.all(
+                    color: _dangerInsertMode
+                        ? Colors.amber
+                        : AppColors.accent),
               ),
               child: Text(bannerText,
                   style: const TextStyle(
@@ -831,6 +1009,51 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
               onToggleAnnulla: () => _toggleAnnullata(i),
             ),
           ),
+        if (_dangerPoints.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          Text('Punti pericolo (${_dangerPoints.length})',
+              style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 17,
+                  fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          ..._dangerPoints.map((dp) => Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: AppColors.cardBackground,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: InkWell(
+                  onTap: () =>
+                      _openDangerPointSheet(existing: dp, point: dp.latLng),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.warning_amber_rounded,
+                          color: Colors.amber, size: 20),
+                      const SizedBox(width: 8),
+                      Text(
+                        '${dp.latitude.toStringAsFixed(5)}, '
+                        '${dp.longitude.toStringAsFixed(5)}',
+                        style: const TextStyle(
+                            color: AppColors.textSecondary, fontSize: 12),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          dp.comment,
+                          style: const TextStyle(
+                              color: AppColors.textPrimary, fontSize: 13),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              )),
+        ],
       ],
     );
   }

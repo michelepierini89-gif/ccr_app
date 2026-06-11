@@ -5,6 +5,8 @@ import 'package:go_router/go_router.dart';
 import '../../../core/models/championship_model.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../auth/providers/auth_provider.dart';
+import '../../classifica/providers/classifica_provider.dart';
+import '../../classifica/widgets/championship_standings_table.dart';
 import '../providers/admin_provider.dart';
 
 final _adminChampionshipsProvider =
@@ -640,28 +642,164 @@ class _ChampionshipManagementScreenState
       '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
 }
 
-// ── Championship standings entry ─────────────────────────────────────────────
+// ── Championship standings (admin) ───────────────────────────────────────────
 
-class ChampStandingEntry {
-  final String teamNome;
-  final Duration totalTime;
-  final int eventsScored;
-
-  const ChampStandingEntry({
-    required this.teamNome,
-    required this.totalTime,
-    required this.eventsScored,
+class ChampionshipAdminStandingsScreen extends ConsumerStatefulWidget {
+  final String championshipId;
+  const ChampionshipAdminStandingsScreen({
+    super.key,
+    required this.championshipId,
   });
 
-  String get totalFormatted {
-    if (totalTime == Duration.zero) return '--:--';
-    final h = totalTime.inHours;
-    final m = totalTime.inMinutes % 60;
-    final s = totalTime.inSeconds % 60;
-    final cs = (totalTime.inMilliseconds % 1000) ~/ 10;
-    if (h > 0) {
-      return '${h}h ${m.toString().padLeft(2, '0')}m ${s.toString().padLeft(2, '0')}s';
+  @override
+  ConsumerState<ChampionshipAdminStandingsScreen> createState() =>
+      _ChampionshipAdminStandingsScreenState();
+}
+
+class _ChampionshipAdminStandingsScreenState
+    extends ConsumerState<ChampionshipAdminStandingsScreen> {
+  bool _publishing = false;
+
+  Future<void> _publish(ChampionshipModel champ) async {
+    setState(() => _publishing = true);
+    try {
+      await ref
+          .read(firestoreServiceProvider)
+          .updateChampionship(champ.copyWith(classPublished: true));
+    } finally {
+      if (mounted) setState(() => _publishing = false);
     }
-    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}.${cs.toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final champAsync =
+        ref.watch(_championshipByIdProvider(widget.championshipId));
+    final standingsAsync =
+        ref.watch(championshipStandingsProvider(widget.championshipId));
+
+    final champ = champAsync.valueOrNull;
+    final color = champ != null
+        ? AppColors.specialColors[
+            champ.colorIndex.clamp(0, AppColors.specialColors.length - 1)]
+        : AppColors.accent;
+
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      appBar: AppBar(
+        title: Text(champ?.nome ?? 'Classifica campionato'),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => context.pop(),
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Aggiorna',
+            onPressed: () => ref.invalidate(
+                championshipStandingsProvider(widget.championshipId)),
+          ),
+        ],
+      ),
+      body: champAsync.when(
+        loading: () => const Center(
+            child: CircularProgressIndicator(color: AppColors.accent)),
+        error: (e, _) => Center(
+            child: Text('Errore: $e',
+                style: const TextStyle(color: AppColors.error))),
+        data: (champ) {
+          if (champ == null) {
+            return const Center(
+                child: Text('Campionato non trovato',
+                    style: TextStyle(color: AppColors.textSecondary)));
+          }
+          return standingsAsync.when(
+            loading: () => const Center(
+                child: CircularProgressIndicator(color: AppColors.accent)),
+            error: (e, _) => Center(
+                child: Text('Errore: $e',
+                    style: const TextStyle(color: AppColors.error))),
+            data: (standings) {
+              return Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: champ.classPublished
+                                  ? AppColors.success.withValues(alpha: 0.12)
+                                  : AppColors.cardBackground,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                color: champ.classPublished
+                                    ? AppColors.success
+                                    : AppColors.border,
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  champ.classPublished
+                                      ? Icons.visibility
+                                      : Icons.visibility_off,
+                                  color: champ.classPublished
+                                      ? AppColors.success
+                                      : AppColors.textSecondary,
+                                  size: 18,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    champ.classPublished
+                                        ? 'Classifica pubblicata ai piloti'
+                                        : 'Classifica non pubblicata',
+                                    style: const TextStyle(
+                                        color: AppColors.textPrimary,
+                                        fontSize: 13),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        if (!champ.classPublished)
+                          ElevatedButton.icon(
+                            onPressed:
+                                _publishing ? null : () => _publish(champ),
+                            icon: _publishing
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2, color: Colors.white),
+                                  )
+                                : const Icon(Icons.publish, size: 18),
+                            label: const Text('Pubblica classifica'),
+                            style: ElevatedButton.styleFrom(
+                                backgroundColor: AppColors.accent,
+                                foregroundColor: Colors.white),
+                          ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: ChampionshipStandingsTable(
+                      teams: standings.teams,
+                      color: color,
+                    ),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      ),
+    );
   }
 }

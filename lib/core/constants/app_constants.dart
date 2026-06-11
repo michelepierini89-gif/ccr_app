@@ -10,6 +10,13 @@ class AppConstants {
   static const int gpsIntervalInSpecialMs = 250;
   static const int gpsIntervalTransferMs = 1000;
   static const double nearWaypointThresholdMeters = 50.0;
+
+  // Punti pericolo: soglie di prossimità per i banner di avviso/allerta.
+  static const double dangerWarningRadiusMeters = 150.0;
+  static const double dangerAlertRadiusMeters = 50.0;
+  static const double dangerAlertClearRadiusMeters = 60.0;
+  static const double dangerRemoveRadiusMeters = 100.0;
+  static const int gpsIntervalNearDangerMs = 500;
   static const String adminSecretCode = 'CCR2024';
 
   // FCM VAPID key per web push.

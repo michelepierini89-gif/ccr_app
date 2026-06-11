@@ -33,6 +33,24 @@ final myRegistrationsProvider =
   yield regs;
 });
 
+/// Registrazioni approvate del pilota loggato per le gare archiviate
+/// (usato per filtrare la sezione "Gare passate").
+final myArchivedRegistrationsProvider =
+    StreamProvider<List<RegistrationModel>>((ref) async* {
+  final user = ref.watch(authStateProvider).valueOrNull;
+  if (user == null) return;
+  final events = await ref.watch(archivedEventsProvider.future);
+  final service = ref.watch(firestoreServiceProvider);
+  final regs = <RegistrationModel>[];
+  for (final event in events) {
+    final reg = await service.getMyRegistration(event.id, user.uid);
+    if (reg != null && reg.stato == RegistrationStatus.approvato) {
+      regs.add(reg);
+    }
+  }
+  yield regs;
+});
+
 final myRegistrationStreamProvider =
     StreamProvider.family<RegistrationModel?, String>((ref, eventId) {
   final user = ref.watch(authStateProvider).valueOrNull;

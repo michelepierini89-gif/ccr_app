@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart';
+import '../../../core/models/event_model.dart';
 import '../../../core/models/registration_model.dart';
 import '../../../core/models/special_model.dart';
 import '../../../core/models/team_model.dart';
@@ -18,6 +19,7 @@ import '../../admin/providers/admin_provider.dart';
 import '../../map/screens/track_map_screen.dart';
 import '../../timing/screens/timing_screen.dart';
 import '../providers/pilot_provider.dart';
+import 'race_result_screen.dart';
 
 class EventDetailScreen extends ConsumerStatefulWidget {
   final String eventId;
@@ -333,6 +335,7 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
                                     [s.waypointInizio, s.waypointFine])
                                 .toList(),
                             interactive: false,
+                            dangerPoints: event.dangerPoints,
                           ),
                         ),
                   const Divider(height: 1, color: AppColors.border),
@@ -419,6 +422,7 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
                   eventId: widget.eventId,
                   eventNome: event.nome,
                   maxSquadra: event.maxSquadra,
+                  isArchived: event.stato == EventStatus.archiviata,
                 ),
               ],
             ),
@@ -436,11 +440,13 @@ class _PilotRegistrationSection extends ConsumerStatefulWidget {
   final String eventId;
   final String eventNome;
   final int maxSquadra;
+  final bool isArchived;
 
   const _PilotRegistrationSection({
     required this.eventId,
     required this.eventNome,
     required this.maxSquadra,
+    this.isArchived = false,
   });
 
   @override
@@ -714,29 +720,59 @@ class _PilotRegistrationSectionState
                         // GPS button for approved pilots
                         if (reg.stato == RegistrationStatus.approvato) ...[
                           const SizedBox(height: 16),
-                          SizedBox(
-                            width: double.infinity,
-                            height: 54,
-                            child: ElevatedButton.icon(
-                              onPressed: () => context.push(
-                                  '/pilot/gps?eventId=${widget.eventId}'),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: AppColors.accent,
-                                foregroundColor: Colors.white,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(10),
+                          if (widget.isArchived)
+                            SizedBox(
+                              width: double.infinity,
+                              height: 54,
+                              child: ElevatedButton.icon(
+                                onPressed: () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => RaceResultScreen(
+                                        eventId: widget.eventId),
+                                  ),
+                                ),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppColors.accent,
+                                  foregroundColor: Colors.white,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                ),
+                                icon: const Icon(Icons.map_outlined),
+                                label: const Text(
+                                  'VEDI RISULTATI',
+                                  style: TextStyle(
+                                      fontWeight: FontWeight.w900,
+                                      fontSize: 16,
+                                      letterSpacing: 1),
                                 ),
                               ),
-                              icon: const Icon(Icons.gps_fixed),
-                              label: const Text(
-                                'AVVIA GPS',
-                                style: TextStyle(
-                                    fontWeight: FontWeight.w900,
-                                    fontSize: 16,
-                                    letterSpacing: 1),
+                            )
+                          else
+                            SizedBox(
+                              width: double.infinity,
+                              height: 54,
+                              child: ElevatedButton.icon(
+                                onPressed: () => context.push(
+                                    '/pilot/gps?eventId=${widget.eventId}'),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppColors.accent,
+                                  foregroundColor: Colors.white,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                ),
+                                icon: const Icon(Icons.gps_fixed),
+                                label: const Text(
+                                  'AVVIA GPS',
+                                  style: TextStyle(
+                                      fontWeight: FontWeight.w900,
+                                      fontSize: 16,
+                                      letterSpacing: 1),
+                                ),
                               ),
                             ),
-                          ),
                           const SizedBox(height: 10),
                           SizedBox(
                             width: double.infinity,
@@ -801,6 +837,7 @@ class _PilotRegistrationSectionState
                   }
 
                   // ── Not registered: single register button ───────────
+                  if (widget.isArchived) return const SizedBox();
                   return Column(
                     children: [
                       SizedBox(

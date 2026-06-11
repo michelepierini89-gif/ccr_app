@@ -1,7 +1,9 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/models/classifica_model.dart';
+import '../../../core/models/event_model.dart';
 import '../../../core/models/gps_point_model.dart';
 import '../../../core/models/penalty_settings_model.dart';
+import '../../../core/models/registration_model.dart';
 import '../../../core/models/user_model.dart';
 import '../../../core/services/classifica_engine.dart';
 import '../../admin/providers/admin_provider.dart';
@@ -72,4 +74,67 @@ final classificaProvider =
         penaltyAv.valueOrNull ??
         const PenaltySettingsModel(),
   ));
+});
+
+/// Calcola la classifica di campionato (con scarto dei 3 risultati peggiori),
+/// ricalcolando la classifica di ogni gara inclusa nel campionato.
+final championshipStandingsProvider =
+    FutureProvider.family<ChampionshipStandings, String>(
+        (ref, championshipId) async {
+  final svc = ref.watch(firestoreServiceProvider);
+
+  final championship = await svc.getChampionshipById(championshipId).first;
+  if (championship == null || championship.eventIds.isEmpty) {
+    return const ChampionshipStandings(teams: []);
+  }
+
+  final events = <EventModel>[];
+  final results = <EventResults>[];
+
+  for (final eventId in championship.eventIds) {
+    final event = await svc.getEvent(eventId);
+    if (event == null) continue;
+    events.add(event);
+
+    final penalties = await svc.getEffectivePenaltySettings(eventId);
+    final passages = await svc.getPassagesOnce(eventId);
+    final registrations = await svc.getRegistrationsOnce(eventId);
+    final teams = await svc.getTeamsOnce(eventId);
+    final withdrawals = await svc.getWithdrawalsOnce(eventId);
+
+    final entries = ClassificaEngine.compute(
+      event: event,
+      passages: passages,
+      registrations: registrations,
+      teams: teams,
+      withdrawals: withdrawals,
+      liveTracking: const <GpsPointModel>[],
+      penalties: penalties,
+    );
+
+    results.add(EventResults(eventId: eventId, entries: entries));
+  }
+
+  return ClassificaEngine.computeChampionship(championship, events, results);
+});
+
+/// entryId (teamId o userId) del pilota corrente in un campionato, basato
+/// sulla sua iscrizione (approvata) a una qualunque gara del campionato.
+final myChampionshipEntryIdProvider =
+    FutureProvider.family<String?, String>((ref, championshipId) async {
+  final user = ref.watch(authStateProvider).valueOrNull;
+  if (user == null) return null;
+  final svc = ref.watch(firestoreServiceProvider);
+
+  final championship = await svc.getChampionshipById(championshipId).first;
+  if (championship == null) return null;
+
+  for (final eventId in championship.eventIds) {
+    final regs = await svc.getRegistrationsOnce(eventId);
+    final myReg = regs.where((r) => r.userId == user.uid).firstOrNull;
+    if (myReg != null && myReg.stato == RegistrationStatus.approvato) {
+      return myReg.squadraId ?? myReg.userId;
+    }
+  }
+  return null;
 });

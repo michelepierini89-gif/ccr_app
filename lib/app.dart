@@ -75,7 +75,7 @@ final _routerProvider = Provider<GoRouter>((ref) {
                     path: 'standings',
                     builder: (context, state) {
                       final id = state.pathParameters['id']!;
-                      return ChampionshipStandingsScreen(
+                      return ChampionshipAdminStandingsScreen(
                           championshipId: id);
                     },
                   ),
