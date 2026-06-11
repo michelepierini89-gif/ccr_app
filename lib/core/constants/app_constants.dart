@@ -7,8 +7,8 @@ class AppConstants {
   // Radius within which a fuel point ("punto ristoro") is considered passed.
   static const double fuelPointRadiusMeters = 15.0;
   static const int gpsIntervalNearWaypointMs = 250;
-  static const int gpsIntervalInSpecialMs = 500;
-  static const int gpsIntervalTransferMs = 3000;
+  static const int gpsIntervalInSpecialMs = 250;
+  static const int gpsIntervalTransferMs = 1000;
   static const double nearWaypointThresholdMeters = 50.0;
   static const String adminSecretCode = 'CCR2024';
 

@@ -349,16 +349,20 @@ class GpsService extends ChangeNotifier {
 
   void _startPositionStream(int intervalMs) {
     _positionSub?.cancel();
+    // Vicino a un waypoint o in speciale ogni punto conta indipendentemente
+    // dallo spostamento (0m); in trasferimento si filtra lo stazionamento (2m).
+    final distanceFilter =
+        (_mode == GpsMode.nearWaypoint || _mode == GpsMode.inSpecial) ? 0 : 2;
     final LocationSettings settings;
     if (kIsWeb) {
-      settings = const LocationSettings(
+      settings = LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 2,
+        distanceFilter: distanceFilter,
       );
     } else if (defaultTargetPlatform == TargetPlatform.android) {
       settings = AndroidSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 2,
+        distanceFilter: distanceFilter,
         intervalDuration: Duration(milliseconds: intervalMs),
         foregroundNotificationConfig: const ForegroundNotificationConfig(
           notificationText: 'CCR Rally — GPS attivo in background',
@@ -371,7 +375,7 @@ class GpsService extends ChangeNotifier {
     } else {
       settings = AppleSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 2,
+        distanceFilter: distanceFilter,
         activityType: ActivityType.fitness,
         pauseLocationUpdatesAutomatically: false,
         showBackgroundLocationIndicator: true,
