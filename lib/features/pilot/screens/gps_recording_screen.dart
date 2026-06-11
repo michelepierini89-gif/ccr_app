@@ -756,7 +756,9 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         // No double-rotation: either the map rotates OR the arrow rotates, never both.
         final arrowAngle = _headingMode ? 0.0 : gps.bearingDeg * pi / 180;
         final hasPos = liveData != null || pos != null;
-        final speed = liveData?.speed ?? pos?.speed ?? 0.0;
+        // Velocità geometrica (distanza/tempo tra punti GPS accettati),
+        // coerente col filtro jump — non position.speed, inaffidabile.
+        final speedKmh = gps.geometricSpeedKmh;
         final accuracy = liveData?.accuracy ?? pos?.accuracy ?? 0.0;
 
     return Column(
@@ -1068,7 +1070,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                     child: Text(
                       'B:${gps.bearingDeg.toStringAsFixed(0)}° '
                       'M:${(_headingMode ? -gps.bearingDeg : 0.0).toStringAsFixed(0)}° '
-                      'V:${(speed * 3.6).toStringAsFixed(0)}km/h',
+                      'V:${speedKmh.toStringAsFixed(0)}km/h',
                       style: const TextStyle(color: Colors.white, fontSize: 11),
                     ),
                   ),
@@ -1090,7 +1092,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                 icon: Icons.speed,
                 label: 'VEL',
                 value: hasPos
-                    ? '${(speed * 3.6).clamp(0, 300).toStringAsFixed(0)} km/h'
+                    ? '${speedKmh.clamp(0, 300).toStringAsFixed(0)} km/h'
                     : '—',
                 color: AppColors.accent,
               ),

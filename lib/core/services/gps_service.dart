@@ -50,6 +50,13 @@ class SpecialEntry {
 class GpsService extends ChangeNotifier {
   static const double kMaxAcceptableAccuracyMeters = 25.0;
 
+  // Geometric speed filter: second safety net after the Kalman filter.
+  // 250 km/h è il massimo fisicamente credibile per enduro.
+  // Su strada asfaltata il limite reale è ~150 km/h.
+  // Usiamo 250 come soglia conservativa per non scartare
+  // punti legittimi ad alta velocità in discesa.
+  static const double kMaxSpeedFilterKmh = 250.0;
+
   final FirestoreService _firestoreService;
   final OfflineQueueService _offlineQueue;
 
@@ -86,6 +93,12 @@ class GpsService extends ChangeNotifier {
   final GpsKalmanFilter _kalmanFilter = GpsKalmanFilter();
   int _consecutiveDiscarded = 0;
   LatLng? _filteredPosition;
+
+  // Geometric speed filter state (raw points, before Kalman)
+  LatLng? _lastAcceptedRawLatLng;
+  DateTime? _lastAcceptedRawTime;
+  int _jumpCount = 0;
+  double _geometricSpeedKmh = 0.0;
 
   // Bearing computation: circular buffer of last 5 valid filtered points
   static const double _kMinSpeedKmh = 5.0;
@@ -134,6 +147,11 @@ class GpsService extends ChangeNotifier {
   /// Freezes at the last value recorded above 5 km/h to avoid jitter at low speed.
   /// Never uses position.heading (unreliable below ~8 km/h on most chipsets).
   double get bearingDeg => _bearingDeg;
+
+  /// Geometric speed in km/h, computed from the distance and time elapsed
+  /// between the last two accepted raw GPS points (same value used by the
+  /// jump filter). More reliable than `position.speed` on many devices.
+  double get geometricSpeedKmh => _geometricSpeedKmh;
 
   /// Emits a localised message string each time a missed special start is
   /// retroactively recovered. Subscribers should display a timed banner.
@@ -310,6 +328,10 @@ class GpsService extends ChangeNotifier {
     _consecutiveDiscarded = 0;
     _filteredPosition = null;
     _kalmanFilter.reset();
+    _lastAcceptedRawLatLng = null;
+    _lastAcceptedRawTime = null;
+    _jumpCount = 0;
+    _geometricSpeedKmh = 0.0;
     _recentPoints.clear();
     _lastHighSpeedBearingDeg = 0.0;
     _bearingDeg = 0.0;
@@ -395,8 +417,42 @@ class GpsService extends ChangeNotifier {
     }
     _consecutiveDiscarded = 0;
 
-    // Apply Kalman filter; filtered position is used for all tracking operations.
     final now = DateTime.now();
+    final rawLatLng = LatLng(pos.latitude, pos.longitude);
+
+    // Geometric jump filter: second safety net after the Kalman filter.
+    // Discards points implying a physically impossible speed, unless 3
+    // consecutive jumps have already been discarded — in that case the GPS
+    // likely "teleported" after a long gap (tunnel, signal loss) and the
+    // point is accepted with the Kalman filter reset.
+    if (_lastAcceptedRawLatLng != null && _lastAcceptedRawTime != null) {
+      final deltaT =
+          now.difference(_lastAcceptedRawTime!).inMilliseconds / 1000.0;
+      if (deltaT > 0) {
+        final distanceM =
+            _haversineKm(_lastAcceptedRawLatLng!, rawLatLng) * 1000;
+        final speedKmh = (distanceM / deltaT) * 3.6;
+        if (speedKmh > kMaxSpeedFilterKmh) {
+          if (_jumpCount < 3) {
+            _jumpCount++;
+            debugPrint(
+                'GPS JUMP scartato: ${speedKmh.toStringAsFixed(0)} km/h');
+            notifyListeners();
+            return;
+          }
+          // 4th consecutive jump: accept as a GPS teleport, reset filters.
+          _kalmanFilter.reset();
+          _jumpCount = 0;
+        } else {
+          _jumpCount = 0;
+        }
+        _geometricSpeedKmh = speedKmh;
+      }
+    }
+    _lastAcceptedRawLatLng = rawLatLng;
+    _lastAcceptedRawTime = now;
+
+    // Apply Kalman filter; filtered position is used for all tracking operations.
     final filtered = _kalmanFilter.filter(
         pos.latitude, pos.longitude, pos.accuracy, now);
     _filteredPosition = filtered;
@@ -550,6 +606,10 @@ class GpsService extends ChangeNotifier {
     _consecutiveDiscarded = 0;
     _filteredPosition = null;
     _kalmanFilter.reset();
+    _lastAcceptedRawLatLng = null;
+    _lastAcceptedRawTime = null;
+    _jumpCount = 0;
+    _geometricSpeedKmh = 0.0;
     _recentPoints.clear();
     _lastHighSpeedBearingDeg = 0.0;
     _bearingDeg = 0.0;
