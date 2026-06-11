@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -984,12 +985,17 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                     }).toList(),
                   ),
                   // Current position: bearing arrow — NON const, si aggiorna ad ogni emit
+                  // rotate: _headingMode annulla la rotazione ambiente della mappa
+                  // (MobileLayerTransformer ruota l'intero layer di camera.rotationRad);
+                  // senza questo, in modalità HEADING la freccia ereditava -bearingDeg
+                  // dalla mappa oltre alla propria rotazione → doppia rotazione variabile.
                   if (hasPos)
                     MarkerLayer(markers: [
                       Marker(
                         point: curPos,
                         width: 36,
                         height: 36,
+                        rotate: _headingMode,
                         child: Transform.rotate(
                           angle: arrowAngle,
                           child: Icon(
@@ -1051,6 +1057,22 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                 bottom: _followMode ? 12 : 60,
                 child: _MapScaleBar(lat: curPos.latitude, zoom: _mapZoom),
               ),
+              // Debug overlay: bearing, rotazione mappa e velocità (solo debug)
+              if (kDebugMode)
+                Positioned(
+                  bottom: 80,
+                  left: 8,
+                  child: Container(
+                    color: Colors.black54,
+                    padding: const EdgeInsets.all(4),
+                    child: Text(
+                      'B:${gps.bearingDeg.toStringAsFixed(0)}° '
+                      'M:${(_headingMode ? -gps.bearingDeg : 0.0).toStringAsFixed(0)}° '
+                      'V:${(speed * 3.6).toStringAsFixed(0)}km/h',
+                      style: const TextStyle(color: Colors.white, fontSize: 11),
+                    ),
+                  ),
+                ),
             ],
           ),
           ), // RepaintBoundary
