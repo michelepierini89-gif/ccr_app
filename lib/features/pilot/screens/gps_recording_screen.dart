@@ -23,6 +23,7 @@ import '../../admin/providers/admin_provider.dart';
 import '../../classifica/providers/classifica_provider.dart';
 import '../../timing/screens/timing_screen.dart';
 import '../providers/pilot_provider.dart';
+import 'race_result_screen.dart';
 
 class GpsRecordingScreen extends ConsumerStatefulWidget {
   final String? eventId;
@@ -58,6 +59,10 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   String? _recoveryMessage;
   Timer? _recoveryTimer;
 
+  StreamSubscription<String>? _fuelPointSub;
+  String? _fuelPointMessage;
+  Timer? _fuelPointTimer;
+
   DateTime? _raceDeadline;
   bool _isTimeExpired = false;
   bool _showingTimeoutDialog = false;
@@ -86,6 +91,14 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
       _recoveryTimer?.cancel();
       _recoveryTimer = Timer(const Duration(seconds: 3), () {
         if (mounted) setState(() => _recoveryMessage = null);
+      });
+    });
+    _fuelPointSub = ref.read(gpsServiceProvider).fuelPointStream.listen((msg) {
+      if (!mounted) return;
+      setState(() => _fuelPointMessage = msg);
+      _fuelPointTimer?.cancel();
+      _fuelPointTimer = Timer(const Duration(seconds: 3), () {
+        if (mounted) setState(() => _fuelPointMessage = null);
       });
     });
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadEventTrack());
@@ -184,6 +197,11 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         await ref.read(firestoreServiceProvider).setRaceStatus(
             eid, user.uid, 'retired',
             retiredReason: 'timeout');
+        if (partialTrack.isNotEmpty) {
+          await ref
+              .read(firestoreServiceProvider)
+              .savePilotTrack(eid, user.uid, partialTrack);
+        }
       } catch (_) {}
     }
     if (mounted) {
@@ -202,6 +220,8 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     _elapsedTimer?.cancel();
     _recoverySub?.cancel();
     _recoveryTimer?.cancel();
+    _fuelPointSub?.cancel();
+    _fuelPointTimer?.cancel();
     _pulseController.dispose();
     _markerController.dispose();
     _mapController.dispose();
@@ -282,6 +302,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     if (gps.isRecording) {
       final finEventId = gps.activeEventId;
       final finUserId = ref.read(authStateProvider).valueOrNull?.uid;
+      final finTrack = List.of(gps.localTrack); // capture before stop clears it
       gps.blockFurtherWrites();
       if (finEventId != null && finUserId != null) {
         try {
@@ -289,6 +310,11 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
               .read(firestoreServiceProvider)
               .setRaceStatus(finEventId, finUserId, 'finished',
                   finishedAt: DateTime.now());
+          if (finTrack.isNotEmpty) {
+            await ref
+                .read(firestoreServiceProvider)
+                .savePilotTrack(finEventId, finUserId, finTrack);
+          }
         } catch (_) {}
       }
       await gps.stopRecording();
@@ -330,6 +356,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         userId: user.uid,
         waypoints: waypoints,
         specials: event?.speciali ?? [],
+        fuelPoints: event?.fuelPoint != null ? [event!.fuelPoint!] : [],
       );
       setState(() => _followMode = true);
     } catch (e) {
@@ -411,6 +438,11 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         await ref
             .read(firestoreServiceProvider)
             .setRaceStatus(eventId, user.uid, 'retired');
+        if (partialTrack.isNotEmpty) {
+          await ref
+              .read(firestoreServiceProvider)
+              .savePilotTrack(eventId, user.uid, partialTrack);
+        }
       } catch (_) {}
     }
 
@@ -609,6 +641,30 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                   SizedBox(
                     width: double.infinity,
                     height: 48,
+                    child: ElevatedButton.icon(
+                      onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => RaceResultScreen(eventId: eventId),
+                        ),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.accent,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10)),
+                      ),
+                      icon: const Icon(Icons.map_outlined, size: 18),
+                      label: const Text('VEDI LA MIA TRACCIA',
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 0.5)),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 48,
                     child: OutlinedButton.icon(
                       onPressed: () => Navigator.push(
                         context,
@@ -721,15 +777,35 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         // Mode banner
         _ModeBanner(color: modeColor, label: _modeLabel(gps.mode)),
 
-        // Banner punto ristoro: appare quando il pilota è entro 200m
-        if (event?.fuelPoint != null)
+        // Banner punto ristoro: appare quando il pilota è entro 200m e non
+        // l'ha ancora superato (gps.passedFuelPoints persiste anche in background)
+        if (event?.fuelPoint != null &&
+            !gps.passedFuelPoints.contains(event!.fuelPoint!.id))
           Builder(builder: (context) {
-            final fuel = event!.fuelPoint!;
+            final fuel = event.fuelPoint!;
             final distance = LocationUtils.haversineDistance(
                 curPos.latitude, curPos.longitude, fuel.lat, fuel.lng);
             if (distance > 200) return const SizedBox.shrink();
             return _FuelPointBanner(distanceMeters: distance);
           }),
+
+        // Banner punto ristoro raggiunto: mostrato una sola volta al passaggio
+        if (_fuelPointMessage != null)
+          Container(
+            width: double.infinity,
+            height: 26,
+            color: AppColors.success.withValues(alpha: 0.18),
+            alignment: Alignment.center,
+            child: Text(
+              _fuelPointMessage!,
+              style: const TextStyle(
+                color: AppColors.success,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.3,
+              ),
+            ),
+          ),
 
         // Thin warning strip: visible only when the last 5+ positions were
         // discarded for poor accuracy (urban canyon, tunnel, etc.).

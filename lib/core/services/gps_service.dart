@@ -71,6 +71,8 @@ class GpsService extends ChangeNotifier {
   final Map<String, String> _inizioToSpecial = {};
   final Map<String, String> _fineToSpecial = {};
   final Set<String> _passedWaypoints = {};
+  List<WaypointModel> _fuelPoints = [];
+  final Set<String> _passedFuelPoints = {};
   final List<WaypointPassage> _passages = [];
   String? _currentSpecialId;
   String? _currentSpecialNome;
@@ -97,6 +99,10 @@ class GpsService extends ChangeNotifier {
   final Set<String> _recoveryAttempted = {};
   final List<DateTime> _trackTimestamps = [];
   final StreamController<String> _recoveryStreamCtrl =
+      StreamController<String>.broadcast();
+
+  // Fuel point ("punto ristoro") passage notifications
+  final StreamController<String> _fuelPointStreamCtrl =
       StreamController<String>.broadcast();
 
   bool get isRecording => _isRecording;
@@ -132,6 +138,14 @@ class GpsService extends ChangeNotifier {
   /// Emits a localised message string each time a missed special start is
   /// retroactively recovered. Subscribers should display a timed banner.
   Stream<String> get recoveryStream => _recoveryStreamCtrl.stream;
+
+  /// IDs of fuel points ("punti ristoro") already passed in this race.
+  /// Persists for the lifetime of the GpsService (survives background/foreground)
+  /// so the "approaching" banner never reappears once a point has been passed.
+  Set<String> get passedFuelPoints => Set.unmodifiable(_passedFuelPoints);
+
+  /// Emits a localised message each time a fuel point is passed for the first time.
+  Stream<String> get fuelPointStream => _fuelPointStreamCtrl.stream;
 
   /// Computes the forward azimuth from [from] to [to] in degrees [0, 360).
   static double _computeBearingDeg(LatLng from, LatLng to) {
@@ -263,6 +277,7 @@ class GpsService extends ChangeNotifier {
     required String userId,
     required List<WaypointModel> waypoints,
     List<SpecialModel> specials = const [],
+    List<WaypointModel> fuelPoints = const [],
   }) async {
     if (_isRecording) return;
     final hasPermission = await requestPermissions();
@@ -284,6 +299,8 @@ class GpsService extends ChangeNotifier {
       _fineToSpecial[s.waypointFine.id] = s.id;
     }
     _passedWaypoints.clear();
+    _fuelPoints = fuelPoints;
+    _passedFuelPoints.clear();
     _passages.clear();
     _specialEntries.clear();
     _localTrack.clear();
@@ -465,6 +482,18 @@ class GpsService extends ChangeNotifier {
     // Recovery: retroactively detect missed special starts
     await _trySpecialStartRecovery(latLng, now);
 
+    // Fuel point passage: mark as passed once within radius, notify exactly once.
+    // After this, the "approaching" banner stops even if a GPS jump brings the
+    // pilot virtually back near the fuel point.
+    for (final fp in _fuelPoints) {
+      if (_passedFuelPoints.contains(fp.id)) continue;
+      final distM = _haversineKm(latLng, LatLng(fp.lat, fp.lng)) * 1000.0;
+      if (distM <= AppConstants.fuelPointRadiusMeters) {
+        _passedFuelPoints.add(fp.id);
+        _fuelPointStreamCtrl.add('✅ Punto ristoro raggiunto');
+      }
+    }
+
     // Determine mode
     final remainingForMode =
         _waypoints.where((w) => !_passedWaypoints.contains(w.id)).toList();
@@ -535,6 +564,7 @@ class GpsService extends ChangeNotifier {
     _positionSub?.cancel();
     _posStreamCtrl.close();
     _recoveryStreamCtrl.close();
+    _fuelPointStreamCtrl.close();
     super.dispose();
   }
 }
