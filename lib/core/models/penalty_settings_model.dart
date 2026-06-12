@@ -10,7 +10,7 @@ class PenaltySettingsModel {
     this.cp2Mancati = 180,
     this.cp3oPiuMancati = 360,
     this.ritiroCompagno = 600,
-    this.pilotaMancante = 300,
+    this.pilotaMancante = 600,
   });
 
   factory PenaltySettingsModel.fromMap(Map<String, dynamic> d) =>
@@ -19,7 +19,7 @@ class PenaltySettingsModel {
         cp2Mancati: (d['cp2Mancati'] as int?) ?? 180,
         cp3oPiuMancati: (d['cp3oPiuMancati'] as int?) ?? 360,
         ritiroCompagno: (d['ritiroCompagno'] as int?) ?? 600,
-        pilotaMancante: (d['pilotaMancante'] as int?) ?? 300,
+        pilotaMancante: (d['pilotaMancante'] as int?) ?? 600,
       );
 
   Map<String, dynamic> toMap() => {

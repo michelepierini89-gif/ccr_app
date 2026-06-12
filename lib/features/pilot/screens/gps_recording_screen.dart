@@ -13,7 +13,9 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../../core/models/event_model.dart';
 import '../../../core/models/registration_model.dart';
 import '../../../core/models/waypoint_model.dart';
+import '../../../core/providers/track_appearance_provider.dart';
 import '../../../core/services/gps_service.dart';
+import '../../../core/services/track_appearance_service.dart';
 import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
@@ -607,6 +609,8 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     final finishedAtTs = statusData?['finishedAt'] as Timestamp?;
     final finishedAt = finishedAtTs?.toDate().toLocal();
     final timeFmt = DateFormat('HH:mm', 'it');
+    final pilotTrack = statusData?['pilotTrack'] as List<dynamic>?;
+    final hasGpsData = pilotTrack != null && pilotTrack.isNotEmpty;
 
     return Column(
       children: [
@@ -653,29 +657,38 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                 ),
                 const SizedBox(height: 28),
                 if (eventId != null) ...[
-                  SizedBox(
-                    width: double.infinity,
-                    height: 48,
-                    child: ElevatedButton.icon(
-                      onPressed: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => RaceResultScreen(eventId: eventId),
+                  if (hasGpsData)
+                    SizedBox(
+                      width: double.infinity,
+                      height: 56,
+                      child: ElevatedButton.icon(
+                        onPressed: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) =>
+                                RaceResultScreen(eventId: eventId),
+                          ),
                         ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.accent,
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10)),
+                        ),
+                        icon: const Icon(Icons.map_outlined, size: 18),
+                        label: const Text('VEDI RISULTATO TRACCIA',
+                            style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 0.5)),
                       ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.accent,
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10)),
-                      ),
-                      icon: const Icon(Icons.map_outlined, size: 18),
-                      label: const Text('VEDI LA MIA TRACCIA',
-                          style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 0.5)),
+                    )
+                  else
+                    const Text(
+                      'Non hai partecipato a questa gara',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          color: AppColors.textSecondary, fontSize: 13),
                     ),
-                  ),
                   const SizedBox(height: 10),
                   SizedBox(
                     width: double.infinity,
@@ -763,7 +776,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                 if (hasGpsData && eventId != null)
                   SizedBox(
                     width: double.infinity,
-                    height: 48,
+                    height: 56,
                     child: ElevatedButton.icon(
                       onPressed: () => Navigator.push(
                         context,
@@ -778,7 +791,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                             borderRadius: BorderRadius.circular(10)),
                       ),
                       icon: const Icon(Icons.map_outlined, size: 18),
-                      label: const Text('VEDI LA MIA TRACCIA',
+                      label: const Text('VEDI RISULTATO TRACCIA',
                           style: TextStyle(
                               fontWeight: FontWeight.bold,
                               letterSpacing: 0.5)),
@@ -804,6 +817,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   Widget _buildActiveTracking(GpsService gps, dynamic pos, EventModel? event) {
     final modeColor = _modeColor(gps.mode);
     final lastPassage = gps.passages.isNotEmpty ? gps.passages.last : null;
+    final trackAppearance = ref.watch(trackAppearanceProvider);
 
     return StreamBuilder<Position>(
       stream: _gpsStream,
@@ -864,6 +878,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           eventId: widget.eventId,
           elapsed: _elapsed,
           isRecording: true,
+          onSettingsTap: _showTrackAppearanceSheet,
         ),
 
         // Countdown strip (visible only when deadline is set)
@@ -998,13 +1013,13 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                         strokeWidth: 3.0,
                       ),
                     ]),
-                  // Pilot's recorded track (blue to distinguish from red GPX event track)
+                  // Pilot's recorded track — colore/larghezza personalizzabili
                   if (gps.localTrack.length >= 2)
                     PolylineLayer(polylines: [
                       Polyline(
                         points: gps.localTrack,
-                        color: const Color(0xFF2196F3),
-                        strokeWidth: 4.0,
+                        color: trackAppearance.trackColor,
+                        strokeWidth: trackAppearance.trackWidth,
                       ),
                     ]),
                   // PS start/end markers from event specials
@@ -1473,6 +1488,123 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     return LocationUtils.formatTimestamp(passage.timestamp);
   }
 
+  static const _trackColorOptions = [
+    Colors.blue,
+    Colors.cyan,
+    Colors.green,
+    Colors.yellow,
+    Colors.orange,
+    Color(0xFFFF00FF), // magenta
+    Colors.white,
+    Colors.red,
+  ];
+
+  Future<void> _showTrackAppearanceSheet() async {
+    final current = ref.read(trackAppearanceProvider);
+    double width = current.trackWidth;
+    Color color = current.trackColor;
+
+    await showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.cardBackground,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (sheetCtx) {
+        return StatefulBuilder(builder: (sheetCtx, setSheetState) {
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Aspetto traccia',
+                    style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold)),
+                const SizedBox(height: 16),
+                Text('Larghezza: ${width.toStringAsFixed(1)}',
+                    style: const TextStyle(color: AppColors.textSecondary)),
+                Container(
+                  height: 28,
+                  alignment: Alignment.center,
+                  child: Container(
+                    height: width,
+                    decoration: BoxDecoration(
+                      color: color,
+                      borderRadius: BorderRadius.circular(width / 2),
+                    ),
+                  ),
+                ),
+                Slider(
+                  value: width,
+                  min: TrackAppearanceService.minWidth,
+                  max: TrackAppearanceService.maxWidth,
+                  divisions: ((TrackAppearanceService.maxWidth -
+                              TrackAppearanceService.minWidth) /
+                          0.5)
+                      .round(),
+                  activeColor: AppColors.accent,
+                  label: width.toStringAsFixed(1),
+                  onChanged: (v) => setSheetState(() => width = v),
+                ),
+                const SizedBox(height: 8),
+                const Text('Colore',
+                    style: TextStyle(color: AppColors.textSecondary)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: _trackColorOptions.map((c) {
+                    final selected = c.toARGB32() == color.toARGB32();
+                    return GestureDetector(
+                      onTap: () => setSheetState(() => color = c),
+                      child: Container(
+                        width: 36,
+                        height: 36,
+                        decoration: BoxDecoration(
+                          color: c,
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: selected
+                                ? AppColors.accent
+                                : AppColors.border,
+                            width: selected ? 3 : 1,
+                          ),
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 20),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton(
+                    onPressed: () async {
+                      final notifier = ref.read(trackAppearanceProvider.notifier);
+                      await notifier.setWidth(width);
+                      await notifier.setColor(color);
+                      if (sheetCtx.mounted) Navigator.pop(sheetCtx);
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.accent,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                    ),
+                    child: const Text('Applica',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              ],
+            ),
+          );
+        });
+      },
+    );
+  }
+
   bool _allSpecialsCompleted(GpsService gps, EventModel? event) {
     if (event == null || event.speciali.isEmpty) {
       return gps.remainingWaypoints.isEmpty;
@@ -1497,11 +1629,13 @@ class _TopBar extends ConsumerWidget {
   final String? eventId;
   final Duration? elapsed;
   final bool isRecording;
+  final VoidCallback? onSettingsTap;
 
   const _TopBar(
       {required this.eventId,
       required this.elapsed,
-      required this.isRecording});
+      required this.isRecording,
+      this.onSettingsTap});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -1572,6 +1706,12 @@ class _TopBar extends ConsumerWidget {
                           fontSize: 11)),
                 ],
               ),
+            ),
+          if (onSettingsTap != null)
+            IconButton(
+              onPressed: onSettingsTap,
+              icon: const Icon(Icons.settings, color: AppColors.textSecondary),
+              tooltip: 'Aspetto traccia',
             ),
         ],
       ),

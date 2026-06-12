@@ -13,9 +13,11 @@ import '../../../core/providers/offline_provider.dart';
 import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/utils/gpx_utils.dart';
 import '../../../core/widgets/skeleton_loader.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../admin/providers/admin_provider.dart';
+import '../../map/danger_marker_icon.dart';
 import '../../map/screens/track_map_screen.dart';
 import '../../timing/screens/timing_screen.dart';
 import '../providers/pilot_provider.dart';
@@ -335,6 +337,7 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
                                     [s.waypointInizio, s.waypointFine])
                                 .toList(),
                             interactive: false,
+                            fuelPoint: event.fuelPoint,
                             dangerPoints: event.dangerPoints,
                           ),
                         ),
@@ -360,6 +363,10 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
                       children: event.speciali.map((s) {
                         final kmLen = _specialLengthKm(s, trackPoints);
                         final cpCount = s.controlPoints.length;
+                        final dangerCount = trackPoints.isNotEmpty
+                            ? GpxUtils.countDangerPointsInSpecial(
+                                s, event.dangerPoints, trackPoints)
+                            : 0;
                         return Container(
                           margin: const EdgeInsets.only(bottom: 8),
                           padding: const EdgeInsets.symmetric(
@@ -402,6 +409,24 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
                                         style: const TextStyle(
                                           color: AppColors.textSecondary,
                                           fontSize: 12,
+                                        ),
+                                      ),
+                                    if (dangerCount > 0)
+                                      Padding(
+                                        padding: const EdgeInsets.only(top: 2),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const DangerMarkerIcon(size: 16),
+                                            const SizedBox(width: 4),
+                                            Text(
+                                              'Pericoli: $dangerCount',
+                                              style: const TextStyle(
+                                                color: AppColors.textSecondary,
+                                                fontSize: 12,
+                                              ),
+                                            ),
+                                          ],
                                         ),
                                       ),
                                   ],

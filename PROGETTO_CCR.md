@@ -682,6 +682,48 @@ Algoritmo per recuperare automaticamente un inizio speciale non registrato (es. 
 
 ---
 
+---
+
+**19 — Traccia personalizzabile, marker pericolo migliorati, snap su traccia, riepiloghi completi, penalità default 10min (12 giugno 2026):**
+
+**1 — Aspetto traccia pilota personalizzabile:**
+- `track_appearance_service.dart` (nuovo): persiste su SharedPreferences larghezza (`trackWidth`, 2.0-10.0, default 5.0) e colore (`trackColor`, default blu) della polyline della traccia GPS pilota
+- `track_appearance_provider.dart` (nuovo): `trackAppearanceServiceProvider` + `TrackAppearanceNotifier`/`trackAppearanceProvider` (Riverpod `Notifier`)
+- `gps_recording_screen.dart`: icona ⚙ in AppBar (`_TopBar`, nuovo param `onSettingsTap`) apre BottomSheet "Aspetto traccia" con anteprima, slider larghezza (step 0.5) e 8 colori predefiniti (blu, ciano, verde, giallo, arancione, magenta, bianco, rosso), pulsante "Applica"; la polyline della traccia pilota in `_buildActiveTracking` legge `trackAppearanceProvider`
+
+**2 — Marker pericolo più visibile:**
+- `danger_marker_icon.dart` (nuovo): widget `DangerMarkerIcon` riutilizzabile — cerchio amber con bordo nero 2px, `Icons.warning_amber_rounded` nero centrato, ombra
+- Sostituito il vecchio marker ⚠ amber (32px semplice) con `DangerMarkerIcon` in `waypoint_marker.dart` (mappa pilota/admin, 36px), `specials_editor_screen.dart` (marker mappa 36px, header bottom sheet 28px, lista sinottica 20px)
+
+**3 — Pulsante "Vedi risultato traccia" post-gara:**
+- `gps_recording_screen.dart`: per gare concluse (finished/retired) o archiviate, se il pilota ha dati GPS, pulsante full-width 56px (`AppColors.accent`, `Icons.map_outlined`, testo "VEDI RISULTATO TRACCIA") → `RaceResultScreen`; altrimenti testo centrato "Non hai partecipato a questa gara"; uniformato anche per `_buildRaceOver` (gare archiviate)
+
+**4 — Snap su traccia per punti pericolo/ristoro:**
+- `gpx_utils.dart` (nuovo): `GpxUtils.snapToTrack()` (proiezione perpendicolare sul segmento più vicino della traccia GPX), `distanceToTrack()`, `nearestTrackIndex()`, `countDangerPointsInSpecial()`
+- `app_constants.dart`: nuova costante `trackSnapMaxDistanceMeters = 50.0`
+- `specials_editor_screen.dart` (inserimento punto pericolo) e `event_management_screen.dart` (`_FuelPointDialogState`, inserimento punto ristoro): tap sulla mappa esegue lo snap sulla traccia GPX di riferimento; se la distanza dal punto toccato supera 50m, mostra SnackBar "Il punto deve essere vicino al percorso" e non inserisce il marker
+
+**5 — Riepiloghi completi (marker PS inizio/fine, pericoli, ristoro):**
+- `event_management_screen.dart` (`_mapWidget`): `TrackMapScreen` ora riceve anche i waypoint inizio/fine di tutte le speciali, `fuelPoint` e `dangerPoints`
+- `event_detail_screen.dart`: aggiunto `fuelPoint: event.fuelPoint` alla `TrackMapScreen` esistente (già presenti waypoint PS e `dangerPoints`)
+
+**6 — Conteggio punti pericolo per PS:**
+- `GpxUtils.countDangerPointsInSpecial()`: determina se un punto pericolo cade tra l'inizio e la fine di una speciale tramite indice del punto più vicino sulla traccia
+- `special_tile.dart`: nuovo campo `dangerCount`, riga "⚠ Pericoli: N" (con `DangerMarkerIcon` 16px) mostrata solo se N > 0
+- `specials_editor_screen.dart` ed `event_management_screen.dart`: calcolano e passano `dangerCount` a `SpecialTile`
+- `event_detail_screen.dart`: stessa riga "Pericoli: N" nelle card riepilogo PS lato pilota
+
+**7 — Penalità "pilota mancante" default 10 minuti:**
+- `penalty_settings_model.dart`: default `pilotaMancante` da 300s (5 min) a 600s (10 min); applicato solo alle nuove gare, le gare esistenti con valore 5 min non sono modificate retroattivamente
+
+**Deploy:**
+- `flutter analyze`: zero warning
+- `git commit`: "feat: traccia personalizzabile + marker pericolo migliorati + snap su traccia + riepiloghi completi + penalità default 10min"
+- `flutter build web --release` + `firebase deploy --only hosting` ✅
+- `git push origin main` ✅
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**

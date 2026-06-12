@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import '../../../core/models/special_model.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../map/danger_marker_icon.dart';
 
 class SpecialTile extends StatelessWidget {
   final SpecialModel special;
   final double? lengthKm;
+  final int dangerCount;
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
   final VoidCallback? onToggleAnnulla;
@@ -13,6 +15,7 @@ class SpecialTile extends StatelessWidget {
     super.key,
     required this.special,
     this.lengthKm,
+    this.dangerCount = 0,
     this.onEdit,
     this.onDelete,
     this.onToggleAnnulla,
@@ -146,6 +149,20 @@ class SpecialTile extends StatelessWidget {
                           color: AppColors.textSecondary, fontSize: 12),
                       overflow: TextOverflow.ellipsis,
                     ),
+                  ),
+                ],
+              ),
+            ],
+            if (dangerCount > 0) ...[
+              const SizedBox(height: 2),
+              Row(
+                children: [
+                  const DangerMarkerIcon(size: 16),
+                  const SizedBox(width: 4),
+                  Text(
+                    'Pericoli: $dangerCount',
+                    style: const TextStyle(
+                        color: AppColors.textSecondary, fontSize: 12),
                   ),
                 ],
               ),

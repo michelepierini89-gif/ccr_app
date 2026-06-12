@@ -3,6 +3,7 @@ import 'package:flutter_map/flutter_map.dart';
 import '../../../core/models/waypoint_model.dart';
 import '../../../core/models/special_model.dart';
 import '../../../core/theme/app_colors.dart';
+import '../danger_marker_icon.dart';
 
 class WaypointMarkersLayer extends StatelessWidget {
   final List<WaypointModel> waypoints;
@@ -45,8 +46,8 @@ class WaypointMarkersLayer extends StatelessWidget {
   Marker _dangerMarker(BuildContext context, DangerPointModel dp) {
     return Marker(
       point: dp.latLng,
-      width: 32,
-      height: 32,
+      width: 36,
+      height: 36,
       child: GestureDetector(
         onTap: () {
           onDangerTap?.call(dp);
@@ -55,8 +56,7 @@ class WaypointMarkersLayer extends StatelessWidget {
             backgroundColor: Colors.amber.shade800,
           ));
         },
-        child: const Icon(Icons.warning_amber_rounded,
-            color: Colors.amber, size: 32),
+        child: const DangerMarkerIcon(),
       ),
     );
   }

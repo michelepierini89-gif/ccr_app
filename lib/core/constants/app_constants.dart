@@ -17,6 +17,10 @@ class AppConstants {
   static const double dangerAlertClearRadiusMeters = 60.0;
   static const double dangerRemoveRadiusMeters = 100.0;
   static const int gpsIntervalNearDangerMs = 500;
+
+  // Distanza massima tra un tap sulla mappa e la traccia di riferimento
+  // per accettare l'inserimento di un punto pericolo o ristoro.
+  static const double trackSnapMaxDistanceMeters = 50.0;
   static const String adminSecretCode = 'CCR2024';
 
   // FCM VAPID key per web push.

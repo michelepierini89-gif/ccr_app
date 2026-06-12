@@ -5,11 +5,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:uuid/uuid.dart';
+import '../../../core/constants/app_constants.dart';
 import '../../../core/models/event_model.dart';
 import '../../../core/models/special_model.dart';
 import '../../../core/models/waypoint_model.dart';
 import '../../../core/services/gpx_parser.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/utils/gpx_utils.dart';
+import '../../map/danger_marker_icon.dart';
 import '../providers/admin_provider.dart';
 import '../widgets/special_tile.dart';
 
@@ -411,8 +414,18 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
 
   void _onMapTap(LatLng latlng) {
     if (_dangerInsertMode) {
+      final trackPoints = widget.parsedTrack.points;
+      final snapped = GpxUtils.snapToTrack(latlng, trackPoints);
+      final distance = GpxUtils.distanceToTrack(latlng, snapped);
+      if (distance > AppConstants.trackSnapMaxDistanceMeters) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Il punto deve essere vicino al percorso'),
+          backgroundColor: AppColors.error,
+        ));
+        return;
+      }
       setState(() => _dangerInsertMode = false);
-      _openDangerPointSheet(point: latlng);
+      _openDangerPointSheet(point: snapped);
       return;
     }
     if (_selectionMode == _SelectionMode.none) return;
@@ -468,8 +481,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
             children: [
               Row(
                 children: [
-                  const Icon(Icons.warning_amber_rounded,
-                      color: Colors.amber, size: 28),
+                  const DangerMarkerIcon(size: 28),
                   const SizedBox(width: 8),
                   Text(
                     existing == null
@@ -630,12 +642,11 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
   Marker _dangerMarkerAt(DangerPointModel dp) {
     return Marker(
       point: dp.latLng,
-      width: 32,
-      height: 32,
+      width: 36,
+      height: 36,
       child: GestureDetector(
         onTap: () => _openDangerPointSheet(existing: dp, point: dp.latLng),
-        child: const Icon(Icons.warning_amber_rounded,
-            color: Colors.amber, size: 32),
+        child: const DangerMarkerIcon(),
       ),
     );
   }
@@ -1004,6 +1015,10 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
                       _ensureTrackIdx(_specials[i].waypointInizio),
                       _ensureTrackIdx(_specials[i].waypointFine))
                   : null,
+              dangerCount: widget.parsedTrack.points.isNotEmpty
+                  ? GpxUtils.countDangerPointsInSpecial(
+                      _specials[i], _dangerPoints, widget.parsedTrack.points)
+                  : 0,
               onEdit: () => _startEdit(i),
               onDelete: () => _deleteSpeciale(i),
               onToggleAnnulla: () => _toggleAnnullata(i),
@@ -1031,8 +1046,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
                       _openDangerPointSheet(existing: dp, point: dp.latLng),
                   child: Row(
                     children: [
-                      const Icon(Icons.warning_amber_rounded,
-                          color: Colors.amber, size: 20),
+                      const DangerMarkerIcon(size: 20),
                       const SizedBox(width: 8),
                       Text(
                         '${dp.latitude.toStringAsFixed(5)}, '

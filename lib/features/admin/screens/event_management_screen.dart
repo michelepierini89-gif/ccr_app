@@ -8,12 +8,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart';
+import '../../../core/constants/app_constants.dart';
 import '../../../core/models/event_model.dart';
 import '../../../core/models/waypoint_model.dart';
 import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/firebase_error_handler.dart';
+import '../../../core/utils/gpx_utils.dart';
 import '../../map/screens/track_map_screen.dart';
 import '../providers/admin_provider.dart';
 import '../widgets/special_tile.dart';
@@ -819,8 +821,13 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
       return TrackMapScreen(
         trackPoints: widget.parsedTrack!.points,
         specials: widget.event.speciali,
-        waypoints: widget.parsedTrack!.waypoints,
+        waypoints: [
+          ...widget.parsedTrack!.waypoints,
+          ...widget.event.speciali
+              .expand((s) => [s.waypointInizio, s.waypointFine]),
+        ],
         fuelPoint: widget.event.fuelPoint,
+        dangerPoints: widget.event.dangerPoints,
         interactive: true,
       );
     }
@@ -1131,12 +1138,15 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
           const SizedBox(height: 8),
           ...event.speciali.map((s) {
             double? len;
+            var dangerCount = 0;
             if (parsedTrack != null && parsedTrack.points.isNotEmpty) {
               final a = _ensureTrackIdx(s.waypointInizio);
               final b = _ensureTrackIdx(s.waypointFine);
               len = _sectionLength(a, b);
+              dangerCount = GpxUtils.countDangerPointsInSpecial(
+                  s, event.dangerPoints, parsedTrack.points);
             }
-            return SpecialTile(special: s, lengthKm: len);
+            return SpecialTile(special: s, lengthKm: len, dangerCount: dangerCount);
           }),
         ],
       ],
@@ -1209,6 +1219,23 @@ class _FuelPointDialogState extends State<_FuelPointDialog> {
     _picked = widget.initial;
   }
 
+  void _onMapTap(LatLng ll) {
+    if (widget.trackPoints.isEmpty) {
+      setState(() => _picked = ll);
+      return;
+    }
+    final snapped = GpxUtils.snapToTrack(ll, widget.trackPoints);
+    final distance = GpxUtils.distanceToTrack(ll, snapped);
+    if (distance > AppConstants.trackSnapMaxDistanceMeters) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Il punto deve essere vicino al percorso'),
+        backgroundColor: AppColors.error,
+      ));
+      return;
+    }
+    setState(() => _picked = snapped);
+  }
+
   MapOptions get _mapOptions {
     if (widget.trackPoints.isNotEmpty) {
       return MapOptions(
@@ -1216,13 +1243,13 @@ class _FuelPointDialogState extends State<_FuelPointDialog> {
           bounds: LatLngBounds.fromPoints(widget.trackPoints),
           padding: const EdgeInsets.all(32),
         ),
-        onTap: (_, ll) => setState(() => _picked = ll),
+        onTap: (_, ll) => _onMapTap(ll),
       );
     }
     return MapOptions(
       initialCenter: const LatLng(44.0, 11.0),
       initialZoom: 13,
-      onTap: (_, ll) => setState(() => _picked = ll),
+      onTap: (_, ll) => _onMapTap(ll),
     );
   }
 
