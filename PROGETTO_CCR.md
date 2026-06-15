@@ -801,6 +801,31 @@ Riscrittura completa del sistema di filtraggio GPS per risolvere il collasso in 
 
 ---
 
+**21 (continua) — Fix UI navigazione GPS: traccia rossa, marker pericolo, notifica unica (15 giugno 2026):**
+
+**6 — Traccia evento di riferimento più visibile (`gps_recording_screen.dart`):**
+- La polyline rossa del tracciato GPX di riferimento durante la navigazione passa da `strokeWidth: 3.0` a `strokeWidth: 6.0`, con bordo `borderStrokeWidth: 1.5` di colore `Colors.red.shade900` per maggiore contrasto sulla mappa
+
+**7 — Marker punti pericolo visibili in navigazione (`gps_recording_screen.dart`, `danger_marker_icon.dart`):**
+- I punti pericolo durante la navigazione GPS usavano un'icona inline (`Icon(Icons.warning_amber_rounded, color: Colors.amber, size: 32)`) invece del widget condiviso `DangerMarkerIcon` già usato nell'editor admin e nella scheda evento
+- Ora il `MarkerLayer` dei punti pericolo in navigazione usa `DangerMarkerIcon`, mantenendo il tap per mostrare il commento del punto in una SnackBar
+
+**8 — Centramento icona triangolo di avviso (`danger_marker_icon.dart`):**
+- L'icona `Icons.warning_amber_rounded` dentro `DangerMarkerIcon` era posizionata in alto a sinistra del cerchio invece che al centro; ora è racchiusa in un `Center()`
+
+**9 — Notifica "punto pericolo superato" una sola volta per sessione (`gps_service.dart`, `gps_recording_screen.dart`, `app_constants.dart`):**
+- Nuova costante `dangerPassedRadiusMeters = 15.0`
+- Nuovo set permanente `_passedDangerPoints` (resettato solo in `startRecording`, NON in `stopRecording`): un punto pericolo già "superato" entro 15m non genera più banner di avviso (50m) o allerta (150m) per il resto della sessione, anche se il pilota torna indietro
+- Nuovo `dangerPassedStream`: alla prima volta che un punto viene superato entro 15m, emette un messaggio mostrato come SnackBar verde (`Colors.green.shade700`, 2s) — "✓ Punto pericolo superato"
+
+**Deploy:**
+- `flutter analyze`: zero warning (161.5s)
+- `git commit c936acb`: "fix: ghost points 120kmh + doppia conferma waypoint + sanity PS tempi + recovery timestamp + traccia rossa 6px + marker pericolo navigazione + centramento icona + notifica pericolo una sola volta"
+- `flutter build web --release` + `firebase deploy --only hosting` ✅
+- `git push origin main` ✅
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**
