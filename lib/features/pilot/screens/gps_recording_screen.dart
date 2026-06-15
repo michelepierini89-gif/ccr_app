@@ -906,6 +906,49 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         // Mode banner
         _ModeBanner(color: modeColor, label: _modeLabel(gps.mode)),
 
+        // Banner GPS in ripristino (riavvio automatico stream in corso)
+        if (gps.isRestartingGps)
+          Container(
+            color: Colors.orange.shade800,
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: const Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white),
+                ),
+                SizedBox(width: 8),
+                Text('⟳ GPS in ripristino...',
+                    style: TextStyle(
+                        color: Colors.white, fontWeight: FontWeight.bold)),
+              ],
+            ),
+          )
+        // Banner GPS bloccato: tap per riavvio manuale come ultima risorsa
+        else if (gps.isGpsFrozen)
+          GestureDetector(
+            onTap: () => gps.attemptGpsRestart(),
+            child: Container(
+              color: Colors.red.shade800,
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.gps_off, color: Colors.white, size: 18),
+                  SizedBox(width: 8),
+                  Text('GPS BLOCCATO — Tocca per ripristinare',
+                      style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13)),
+                ],
+              ),
+            ),
+          ),
+
         // Banner punto ristoro: appare quando il pilota è entro 200m e non
         // l'ha ancora superato (gps.passedFuelPoints persiste anche in background)
         if (event?.fuelPoint != null &&

@@ -48,13 +48,13 @@ class SpecialEntry {
 }
 
 class GpsService extends ChangeNotifier {
-  // STEP 1 — Filtro accuracy adattivo.
-  // Soglia normale 15m; soglia di fallback 40m se nessun punto è stato
-  // accettato da più di [kAccuracyFallbackSeconds] secondi, per evitare
-  // un freeze totale quando il segnale resta scadente a lungo.
-  static const double kAccuracyThresholdNormal = 15.0;
-  static const double kAccuracyThresholdFallback = 40.0;
-  static const int kAccuracyFallbackSeconds = 4;
+  // STEP 1 — Doppia soglia accuracy: DISPLAY (Kalman/polyline) vs DETECTION
+  // (waypoint timing). Con ±8m dichiarati l'errore reale può essere 20-30m:
+  // un punto così impreciso corrompe il Kalman, ma scartarlo del tutto
+  // rischia di perdere il passaggio di un waypoint. Soglia display più
+  // restrittiva (meglio gaps che scatter), soglia detection più permissiva.
+  static const double kMaxAccuracyDisplayMeters = 10.0;
+  static const double kMaxAccuracyDetectionMeters = 25.0;
 
   // STEP 2 — Filtro jump geometrico: secondo livello dopo il Kalman 4D.
   // Scarta SEMPRE i punti che implicherebbero una velocità superiore a
@@ -63,10 +63,6 @@ class GpsService extends ChangeNotifier {
   // multipath, non velocità reali: nessuna eccezione di "jump accettato"
   // (causava il pattern a ventaglio e i tempi PS impossibili).
   static const double kMaxSpeedFilterKmh = 120.0;
-
-  // STEP 4 — Spostamento minimo per aggiornare polyline/distanza, per
-  // evitare il pattern "a ventaglio" generato dal rumore GPS da fermo.
-  static const double kMinDisplacementMeters = 1.5;
 
   // Bearing: sotto questa velocità geometrica il bearing resta congelato
   // (evita jitter della freccia da fermo); sopra, smoothing esponenziale.
@@ -123,10 +119,18 @@ class GpsService extends ChangeNotifier {
   StreamSubscription<Position>? _positionSub;
   double _totalDistanceKm = 0.0;
 
-  // Display/distance track: only points that moved >= kMinDisplacementMeters
-  // from the previous one (STEP 4). Used for the pilot polyline and for
-  // the cumulative distance — avoids accumulating GPS jitter as distance.
+  // Display/distance track: only points that moved past the display anchor
+  // (see _displayAnchor below). Used for the pilot polyline and for the
+  // cumulative distance — avoids accumulating GPS jitter as distance.
   final List<LatLng> _trackPoints = [];
+
+  // Anchor per il display della polyline: si sposta solo quando il pilota si
+  // è mosso davvero (soglia adattiva alla velocità in _anchorThresholdMeters).
+  // Un displacement check punto-precedente lascia passare scatter da 2-3m che
+  // formano catene e disegnano il pattern "a ventaglio"; un anchor fisso no.
+  // Controlla SOLO la polyline blu: bearing, waypoint detection, recovery
+  // track e tracking live su Firestore usano sempre filteredPos direttamente.
+  LatLng? _displayAnchor;
 
   // Recovery track: every accepted (post-Kalman) point with its timestamp,
   // used only for the special-start retroactive lookback.
@@ -160,9 +164,26 @@ class GpsService extends ChangeNotifier {
   final StreamController<String> _recoveryStreamCtrl =
       StreamController<String>.broadcast();
 
+  // Special-end recovery (recovery retroattivo della fine PS, speculare
+  // al recovery dell'inizio sopra)
+  static const double kSpecialEndRecoveryRadiusMeters = 80.0;
+  static const int kSpecialEndRecoveryLookbackSeconds = 30;
+  final Set<String> _endRecoveryAttempted = {};
+
   // Fuel point ("punto ristoro") passage notifications
   final StreamController<String> _fuelPointStreamCtrl =
       StreamController<String>.broadcast();
+
+  // GPS freeze watchdog: _lastRawPositionTs è aggiornato ad OGNI posizione
+  // ricevuta (valida o scartata dai filtri), per distinguere "GPS che non
+  // manda più nulla" da "GPS che manda solo punti scartati".
+  DateTime? _lastRawPositionTs;
+  bool _isGpsFrozen = false;
+  bool _isRestartingGps = false;
+  Timer? _freezeDetectionTimer;
+  int _currentIntervalMs = AppConstants.gpsIntervalTransferMs;
+  static const int kFreezeDetectionSeconds = 8;
+  static const int kFreezeRestartSeconds = 15;
 
   bool get isRecording => _isRecording;
   String? get activeEventId => _activeEventId;
@@ -183,8 +204,10 @@ class GpsService extends ChangeNotifier {
   List<WaypointModel> get remainingWaypoints =>
       _waypoints.where((w) => !_passedWaypoints.contains(w.id)).toList();
 
-  /// True when the last 5 consecutive GPS positions were discarded for poor accuracy.
-  bool get isAccuracyPoor => _consecutiveDiscarded >= 5;
+  /// True when the last 3 consecutive GPS positions were discarded for poor
+  /// accuracy (abbassato da 5: con soglia display 10m gli scarti sono più
+  /// frequenti).
+  bool get isAccuracyPoor => _consecutiveDiscarded >= 3;
 
   /// Last Kalman-filtered position; null until the first accepted GPS fix.
   LatLng? get filteredPosition => _filteredPosition;
@@ -229,6 +252,13 @@ class GpsService extends ChangeNotifier {
   /// prima volta in questa sessione (mostrare una SnackBar verde, 2s).
   Stream<String> get dangerPassedStream => _dangerPassedStreamCtrl.stream;
 
+  /// True se non arriva nessuna posizione GPS (valida o no) da almeno
+  /// [kFreezeDetectionSeconds] secondi.
+  bool get isGpsFrozen => _isGpsFrozen;
+
+  /// True durante il riavvio automatico/manuale dello stream GPS.
+  bool get isRestartingGps => _isRestartingGps;
+
   /// Computes the forward azimuth from [from] to [to] in degrees [0, 360).
   static double _computeBearingDeg(LatLng from, LatLng to) {
     final lat1 = from.latitude * pi / 180;
@@ -252,6 +282,16 @@ class GpsService extends ChangeNotifier {
   static double _angularInterp(double from, double to, double alpha) {
     final diff = ((to - from + 540) % 360) - 180;
     return (from + alpha * diff + 360) % 360;
+  }
+
+  /// Soglia di spostamento dall'anchor display, adattiva alla velocità
+  /// geometrica corrente: più si va piano, più serve spostamento reale per
+  /// muovere la polyline (evita il pattern "a ventaglio" da fermo).
+  double _anchorThresholdMeters() {
+    if (_geometricSpeedKmh > 60) return 2.0;
+    if (_geometricSpeedKmh > 20) return 3.5;
+    if (_geometricSpeedKmh > 5) return 6.0;
+    return 10.0;
   }
 
   /// Retroactively detects a missed special-start waypoint.
@@ -374,6 +414,170 @@ class GpsService extends ChangeNotifier {
     }
   }
 
+  /// Registra un passaggio waypoint confermato da [WaypointDetector]:
+  /// aggiorna i passaggi, l'apertura/chiusura delle speciali e persiste su
+  /// Firestore (con fallback su coda offline). Usata sia per i punti che
+  /// superano il filtro accuracy display, sia per i punti scartati dal
+  /// display ma ancora validi per la detection (STEP 1).
+  Future<void> _handleWaypointDetection(WaypointPassageResult detection) async {
+    final wp = detection.waypoint;
+    final passageTs = detection.timestamp;
+    _passedWaypoints.add(wp.id);
+    final passage = WaypointPassage(waypoint: wp, timestamp: passageTs);
+    _passages.add(passage);
+
+    // Special entry/exit detection
+    if (_inizioToSpecial.containsKey(wp.id) && _currentSpecialId == null) {
+      final specialId = _inizioToSpecial[wp.id]!;
+      final special = _specials.where((s) => s.id == specialId).firstOrNull;
+      _currentSpecialId = specialId;
+      _currentSpecialNome = special?.nome;
+      _specialEntries.add(SpecialEntry(
+        specialeId: specialId,
+        specialeNome: special?.nome ?? specialId,
+        entryTime: passageTs,
+      ));
+    } else if (_fineToSpecial.containsKey(wp.id) &&
+        _currentSpecialId == _fineToSpecial[wp.id]) {
+      final idx = _specialEntries.lastIndexWhere((e) => e.exitTime == null);
+      if (idx >= 0) {
+        _specialEntries[idx] = _specialEntries[idx].withExit(passageTs);
+      }
+      _currentSpecialId = null;
+      _currentSpecialNome = null;
+    }
+
+    if (_activeEventId != null && _activeUserId != null) {
+      try {
+        await _firestoreService.recordWaypointPassage(
+          eventId: _activeEventId!,
+          userId: _activeUserId!,
+          waypointId: wp.id,
+          waypointNome: wp.nome,
+          timestamp: passage.timestamp,
+        );
+      } catch (_) {
+        await _offlineQueue.queuePassage(
+          eventId: _activeEventId!,
+          userId: _activeUserId!,
+          waypointId: wp.id,
+          waypointNome: wp.nome,
+          timestamp: passage.timestamp,
+        );
+      }
+    }
+  }
+
+  /// Recovery retroattivo della fine PS non rilevata (speculare a
+  /// [_trySpecialStartRecovery]).
+  ///
+  /// Per ogni speciale avviata e non ancora conclusa: se la posizione
+  /// corrente è "oltre" il waypoint di fine (tra 1× e 4× il raggio di
+  /// recovery, cioè l'abbiamo superato senza rilevarlo), scandisce gli
+  /// ultimi [kSpecialEndRecoveryLookbackSeconds] secondi di [_recoveryTrack]
+  /// cercando il punto più vicino al waypoint di fine. Se trovato entro
+  /// [kSpecialEndRecoveryRadiusMeters], registra la fine PS retroattiva con
+  /// quel timestamp.
+  Future<void> _trySpecialEndRecovery(LatLng currentPos, DateTime now) async {
+    for (final special in _specials) {
+      if (special.annullata) continue;
+      if (_endRecoveryAttempted.contains(special.id)) continue;
+
+      final entryIdx = _specialEntries
+          .lastIndexWhere((e) => e.specialeId == special.id && e.exitTime == null);
+      if (entryIdx < 0) continue; // non avviata, o già conclusa
+
+      final endWp = special.waypointFine;
+      final endPt = LatLng(endWp.lat, endWp.lng);
+      final distToEndM = _haversineKm(currentPos, endPt) * 1000.0;
+
+      // Trigger: siamo "oltre" l'END (l'abbiamo superato senza rilevarlo)
+      if (distToEndM <= kSpecialEndRecoveryRadiusMeters ||
+          distToEndM >= kSpecialEndRecoveryRadiusMeters * 4) {
+        continue;
+      }
+
+      _endRecoveryAttempted.add(special.id);
+
+      // Lookback: trova il punto del tracciato più vicino all'END nella finestra temporale
+      final cutoff =
+          now.subtract(Duration(seconds: kSpecialEndRecoveryLookbackSeconds));
+      double bestDistM = double.infinity;
+      int bestIdx = -1;
+      for (int i = _recoveryTrack.length - 1; i >= 0; i--) {
+        if (_recoveryTimestamps[i].isBefore(cutoff)) break;
+        final d = _haversineKm(_recoveryTrack[i], endPt) * 1000.0;
+        if (d < bestDistM) {
+          bestDistM = d;
+          bestIdx = i;
+        }
+      }
+
+      if (bestIdx < 0 || bestDistM >= kSpecialEndRecoveryRadiusMeters) continue;
+
+      final recoveredTime = _recoveryTimestamps[bestIdx];
+
+      // Validazione timestamp: stesse regole del recovery START
+      final ageSeconds = now.difference(recoveredTime).inSeconds;
+      if (ageSeconds > 60 || recoveredTime.isAfter(now)) {
+        debugPrint('RECOVERY END RIFIUTATO: timestamp non valido '
+            '(age: ${ageSeconds}s)');
+        continue;
+      }
+      if (_recordingStart != null && recoveredTime.isBefore(_recordingStart!)) {
+        debugPrint('RECOVERY END RIFIUTATO: timestamp precedente '
+            'all\'avvio sessione');
+        continue;
+      }
+
+      // Sanity check: durata PS plausibile
+      final entryTime = _specialEntries[entryIdx].entryTime;
+      final durationMin = recoveredTime.difference(entryTime).inMinutes;
+      if (durationMin > 90 || durationMin < 0) {
+        debugPrint('RECOVERY END RIFIUTATO: durata PS implausibile '
+            '(${durationMin}min)');
+        continue;
+      }
+
+      // Registra fine PS retroattiva
+      _specialEntries[entryIdx] =
+          _specialEntries[entryIdx].withExit(recoveredTime);
+      if (_currentSpecialId == special.id) {
+        _currentSpecialId = null;
+        _currentSpecialNome = null;
+      }
+      _passedWaypoints.add(endWp.id);
+      _passages.add(WaypointPassage(waypoint: endWp, timestamp: recoveredTime));
+
+      debugPrint('RECOVERY END speciale ${special.id}: '
+          'fine retroattiva a $recoveredTime '
+          '(dist: ${bestDistM.toStringAsFixed(1)}m)');
+
+      _recoveryStreamCtrl.add('⚡ Fine ${special.nome} recuperata');
+
+      if (_activeEventId != null && _activeUserId != null) {
+        try {
+          await _firestoreService.recordWaypointPassage(
+            eventId: _activeEventId!,
+            userId: _activeUserId!,
+            waypointId: endWp.id,
+            waypointNome: endWp.nome,
+            timestamp: recoveredTime,
+            recoveredEnd: true,
+          );
+        } catch (_) {
+          await _offlineQueue.queuePassage(
+            eventId: _activeEventId!,
+            userId: _activeUserId!,
+            waypointId: endWp.id,
+            waypointNome: endWp.nome,
+            timestamp: recoveredTime,
+          );
+        }
+      }
+    }
+  }
+
   Future<bool> requestPermissions() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) return false;
@@ -427,6 +631,7 @@ class GpsService extends ChangeNotifier {
     _passages.clear();
     _specialEntries.clear();
     _trackPoints.clear();
+    _displayAnchor = null;
     _recoveryTrack.clear();
     _recoveryTimestamps.clear();
     _totalDistanceKm = 0.0;
@@ -443,18 +648,27 @@ class GpsService extends ChangeNotifier {
     _recentFilteredPoints.clear();
     _bearingDeg = 0.0;
     _recoveryAttempted.clear();
+    _endRecoveryAttempted.clear();
     _waypointDetector.reset();
     _isRecording = true;
     _mode = GpsMode.transfer;
     _recordingStart = DateTime.now();
+    _lastRawPositionTs = DateTime.now();
+    _isGpsFrozen = false;
+    _isRestartingGps = false;
     WakelockPlus.enable().ignore();
     notifyListeners();
 
     _firestoreService.setRaceStatus(eventId, userId, 'racing').catchError((_) {});
     _startPositionStream(AppConstants.gpsIntervalTransferMs);
+
+    _freezeDetectionTimer?.cancel();
+    _freezeDetectionTimer =
+        Timer.periodic(const Duration(seconds: 3), (_) => _checkFreeze());
   }
 
   void _startPositionStream(int intervalMs) {
+    _currentIntervalMs = intervalMs;
     _positionSub?.cancel();
     // distanceFilter fisso a kDistanceFilterMeters per tutte le modalità:
     // 0 causava l'accettazione di ogni scatter GPS come punto valido
@@ -523,17 +737,29 @@ class GpsService extends ChangeNotifier {
     final now = DateTime.now();
     final rawLatLng = LatLng(pos.latitude, pos.longitude);
 
-    // ── STEP 1: filtro accuracy adattivo ──────────────────────────────────
-    // Soglia normale 15m; soglia di fallback 40m se nessun punto è stato
-    // accettato da più di kAccuracyFallbackSeconds secondi (evita un
-    // freeze totale quando il segnale resta scadente a lungo).
-    final accuracyThreshold = (_lastAcceptedTs != null &&
-            now.difference(_lastAcceptedTs!).inSeconds >
-                kAccuracyFallbackSeconds)
-        ? kAccuracyThresholdFallback
-        : kAccuracyThresholdNormal;
-    if (pos.accuracy > accuracyThreshold) {
+    // Watchdog: aggiornato ad OGNI posizione ricevuta, valida o no, PRIMA di
+    // qualsiasi filtro — distingue "GPS muto" da "GPS che manda solo scarti".
+    _lastRawPositionTs = now;
+    if (_isGpsFrozen) {
+      _isGpsFrozen = false;
+      notifyListeners();
+    }
+
+    // ── STEP 1: doppia soglia accuracy DISPLAY vs DETECTION ──────────────
+    // Oltre kMaxAccuracyDisplayMeters il punto è troppo impreciso per
+    // Kalman/polyline e viene scartato, ma se è ancora entro
+    // kMaxAccuracyDetectionMeters la detection waypoint viene comunque
+    // eseguita sulla posizione raw, per non perdere passaggi con segnale
+    // debole.
+    if (pos.accuracy > kMaxAccuracyDisplayMeters) {
       _consecutiveDiscarded++;
+      if (pos.accuracy <= kMaxAccuracyDetectionMeters) {
+        final detection = _waypointDetector.detectPassage(
+            rawLatLng, now, _waypoints, _passedWaypoints);
+        if (detection != null) {
+          await _handleWaypointDetection(detection);
+        }
+      }
       notifyListeners();
       return;
     }
@@ -589,16 +815,22 @@ class GpsService extends ChangeNotifier {
     }
     _filteredPosition = filteredPos;
 
-    // ── STEP 4: filtro spostamento minimo ───────────────────────────────────
-    // Fix diretto al pattern "a ventaglio": sotto soglia non si aggiorna la
-    // polyline/distanza, ma si prosegue comunque con bearing, waypoint
-    // detection, recovery e tracking live.
-    var updatePolyline = true;
-    if (_lastAcceptedFilteredPos != null) {
-      final dispM =
-          _haversineKm(_lastAcceptedFilteredPos!, filteredPos) * 1000.0;
-      if (dispM < kMinDisplacementMeters) {
-        updatePolyline = false;
+    // ── STEP 4: filtro display anchor-based ─────────────────────────────────
+    // Fix diretto al pattern "a ventaglio": un anchor fisso si sposta solo
+    // con movimento reale sostenuto (soglia adattiva alla velocità). Sotto
+    // soglia non si aggiorna la polyline/distanza, ma si prosegue comunque
+    // con bearing, waypoint detection, recovery e tracking live, che usano
+    // sempre filteredPos direttamente.
+    var updatePolyline = false;
+    if (_displayAnchor == null) {
+      _displayAnchor = filteredPos;
+      updatePolyline = true;
+    } else {
+      final distFromAnchorM =
+          _haversineKm(_displayAnchor!, filteredPos) * 1000.0;
+      if (distFromAnchorM >= _anchorThresholdMeters()) {
+        _displayAnchor = filteredPos;
+        updatePolyline = true;
       }
     }
 
@@ -642,57 +874,12 @@ class GpsService extends ChangeNotifier {
     final detection = _waypointDetector.detectPassage(
         filteredPos, now, _waypoints, _passedWaypoints);
     if (detection != null) {
-      final wp = detection.waypoint;
-      final passageTs = detection.timestamp;
-      _passedWaypoints.add(wp.id);
-      final passage = WaypointPassage(waypoint: wp, timestamp: passageTs);
-      _passages.add(passage);
-
-      // Special entry/exit detection
-      if (_inizioToSpecial.containsKey(wp.id) && _currentSpecialId == null) {
-        final specialId = _inizioToSpecial[wp.id]!;
-        final special = _specials.where((s) => s.id == specialId).firstOrNull;
-        _currentSpecialId = specialId;
-        _currentSpecialNome = special?.nome;
-        _specialEntries.add(SpecialEntry(
-          specialeId: specialId,
-          specialeNome: special?.nome ?? specialId,
-          entryTime: passageTs,
-        ));
-      } else if (_fineToSpecial.containsKey(wp.id) &&
-          _currentSpecialId == _fineToSpecial[wp.id]) {
-        final idx =
-            _specialEntries.lastIndexWhere((e) => e.exitTime == null);
-        if (idx >= 0) {
-          _specialEntries[idx] = _specialEntries[idx].withExit(passageTs);
-        }
-        _currentSpecialId = null;
-        _currentSpecialNome = null;
-      }
-
-      if (_activeEventId != null && _activeUserId != null) {
-        try {
-          await _firestoreService.recordWaypointPassage(
-            eventId: _activeEventId!,
-            userId: _activeUserId!,
-            waypointId: wp.id,
-            waypointNome: wp.nome,
-            timestamp: passage.timestamp,
-          );
-        } catch (_) {
-          await _offlineQueue.queuePassage(
-            eventId: _activeEventId!,
-            userId: _activeUserId!,
-            waypointId: wp.id,
-            waypointNome: wp.nome,
-            timestamp: passage.timestamp,
-          );
-        }
-      }
+      await _handleWaypointDetection(detection);
     }
 
-    // Recovery: retroactively detect missed special starts
+    // Recovery: retroactively detect missed special starts/ends
     await _trySpecialStartRecovery(filteredPos, now);
+    await _trySpecialEndRecovery(filteredPos, now);
 
     // Fuel point passage: mark as passed once within radius, notify exactly once.
     // After this, the "approaching" banner stops even if a GPS jump brings the
@@ -785,9 +972,9 @@ class GpsService extends ChangeNotifier {
     }
 
     // ── STEP 6: aggiorna polyline display + distanza totale ─────────────────
-    // Solo se lo spostamento (STEP 4) è >= kMinDisplacementMeters, per non
-    // accumulare rumore GPS come distanza e non disegnare il pattern "a
-    // ventaglio" da fermo.
+    // Solo se l'anchor display (STEP 4) si è spostato, per non accumulare
+    // rumore GPS come distanza e non disegnare il pattern "a ventaglio" da
+    // fermo.
     if (updatePolyline) {
       if (_trackPoints.isNotEmpty) {
         _totalDistanceKm += _haversineKm(_trackPoints.last, filteredPos);
@@ -819,6 +1006,56 @@ class GpsService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Controllo periodico (ogni 3s) del watchdog GPS: se non arriva nessuna
+  /// posizione raw da [kFreezeDetectionSeconds] secondi mostra il banner
+  /// "GPS bloccato"; da [kFreezeRestartSeconds] secondi tenta un riavvio
+  /// automatico dello stream.
+  void _checkFreeze() {
+    if (!_isRecording) return;
+    final now = DateTime.now();
+    if (_lastRawPositionTs == null) return;
+
+    final secSinceLast = now.difference(_lastRawPositionTs!).inSeconds;
+
+    if (secSinceLast >= kFreezeDetectionSeconds && !_isGpsFrozen) {
+      _isGpsFrozen = true;
+      notifyListeners();
+      debugPrint('GPS FREEZE rilevato: ${secSinceLast}s senza posizioni');
+    }
+
+    if (secSinceLast >= kFreezeRestartSeconds) {
+      _attemptGpsRestart();
+    }
+  }
+
+  /// Riavvia lo stream GPS cancellando e ricreando la subscription.
+  /// Chiamato automaticamente dal watchdog, o manualmente tramite
+  /// [attemptGpsRestart] dal banner "GPS bloccato".
+  Future<void> _attemptGpsRestart() async {
+    if (_isRestartingGps) return;
+    debugPrint('GPS RESTART automatico...');
+    _isRestartingGps = true;
+    notifyListeners();
+
+    await _positionSub?.cancel();
+    _positionSub = null;
+
+    await Future.delayed(const Duration(seconds: 1));
+
+    _startPositionStream(_currentIntervalMs);
+
+    _isRestartingGps = false;
+    _lastRawPositionTs = DateTime.now();
+    notifyListeners();
+
+    debugPrint('GPS RESTART completato');
+  }
+
+  /// Riavvio manuale dello stream GPS, richiamabile dalla UI (tap sul
+  /// banner "GPS bloccato") come ultima risorsa se il riavvio automatico
+  /// del watchdog non ha funzionato.
+  Future<void> attemptGpsRestart() => _attemptGpsRestart();
+
   Future<void> stopRecording() async {
     _positionSub?.cancel();
     _positionSub = null;
@@ -841,8 +1078,10 @@ class GpsService extends ChangeNotifier {
     _recentFilteredPoints.clear();
     _bearingDeg = 0.0;
     _recoveryAttempted.clear();
+    _endRecoveryAttempted.clear();
     _waypointDetector.reset();
     _trackPoints.clear();
+    _displayAnchor = null;
     _recoveryTrack.clear();
     _recoveryTimestamps.clear();
     _alertedDangerPoints.clear();
@@ -851,6 +1090,11 @@ class GpsService extends ChangeNotifier {
     _alertDangerPoint = null;
     _alertDangerDistance = null;
     _dangerBlinking = false;
+    _freezeDetectionTimer?.cancel();
+    _freezeDetectionTimer = null;
+    _isGpsFrozen = false;
+    _isRestartingGps = false;
+    _lastRawPositionTs = null;
     WakelockPlus.disable().ignore();
     notifyListeners();
   }
@@ -858,6 +1102,7 @@ class GpsService extends ChangeNotifier {
   @override
   void dispose() {
     _positionSub?.cancel();
+    _freezeDetectionTimer?.cancel();
     _posStreamCtrl.close();
     _recoveryStreamCtrl.close();
     _fuelPointStreamCtrl.close();

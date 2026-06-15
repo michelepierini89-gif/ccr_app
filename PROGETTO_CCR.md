@@ -826,6 +826,45 @@ Riscrittura completa del sistema di filtraggio GPS per risolvere il collasso in 
 
 ---
 
+---
+
+### Step 22 — 4 fix critici sistema GPS: anchor display, doppia soglia accuracy, recovery fine PS, watchdog freeze (15 giugno 2026) ✅
+
+**1 — Filtro display anchor-based (fix fan/zigzag) (`gps_service.dart`):**
+- Il filtro spostamento minimo (1.5m) confrontava ogni punto col PRECEDENTE: scatter da 2-3m formavano catene che disegnavano il pattern "a ventaglio"
+- Sostituito con un anchor `_displayAnchor` che si sposta solo con movimento reale sostenuto, soglia adattiva alla velocità geometrica (`_anchorThresholdMeters()`: 2m sopra 60km/h, 3.5m sopra 20km/h, 6m sopra 5km/h, 10m da fermo)
+- L'anchor controlla SOLO la polyline blu e la distanza totale; bearing, waypoint detection, recovery track e tracking live su Firestore usano sempre `filteredPos` direttamente
+- Reset di `_displayAnchor` in `startRecording()`/`stopRecording()`
+
+**2 — Doppia soglia accuracy: display vs detection (`gps_service.dart`):**
+- Soglia unica 15m sostituita da `kMaxAccuracyDisplayMeters = 10.0` (Kalman/polyline, più restrittiva: meglio gap che scatter) e `kMaxAccuracyDetectionMeters = 25.0` (waypoint timing, più permissiva: non perdere passaggi con segnale debole)
+- I punti con accuracy tra 10m e 25m vengono scartati da Kalman/display ma la detection waypoint viene comunque eseguita sulla posizione raw
+- Estratto `_handleWaypointDetection()` (logica di passaggio waypoint/apertura-chiusura speciale/persistenza Firestore) per essere riutilizzabile sia dal percorso normale (punto Kalman-filtrato) sia dal percorso "solo detection" (punto raw scartato dal display)
+- `isAccuracyPoor` ora `true` con 3 scarti consecutivi (abbassato da 5, coerente con soglia display più stretta)
+
+**3 — Recovery retroattivo fine PS (`gps_service.dart`):**
+- Nuovo `_trySpecialEndRecovery()`, speculare a `_trySpecialStartRecovery()`: per ogni speciale avviata e non conclusa, se la posizione corrente ha superato il waypoint END (tra 1× e 4× `kSpecialEndRecoveryRadiusMeters = 80m`) senza rilevarlo, scandisce gli ultimi `kSpecialEndRecoveryLookbackSeconds = 30s` di `_recoveryTrack` cercando il punto più vicino all'END
+- Stesse validazioni del recovery START: età timestamp ≤60s, non nel futuro, non precedente a `_recordingStart`, durata PS plausibile (≤90min)
+- Notifica via `recoveryStream` ("⚡ Fine {speciale} recuperata"), stesso banner azzurro 3s già usato per il recovery START
+- `recordWaypointPassage()` (`firestore_service.dart`): nuovo parametro opzionale `recoveredEnd`
+- `_endRecoveryAttempted` set (un tentativo per speciale), reset in `startRecording()`/`stopRecording()`
+
+**4 — Watchdog GPS freeze + riavvio automatico (`gps_service.dart`, `gps_recording_screen.dart`):**
+- Il vecchio watchdog monitorava solo i punti VALIDI accettati: con accuracy sempre > soglia l'app risultava di fatto congelata senza che scattasse nulla
+- Nuovo `_lastRawPositionTs`, aggiornato ad OGNI posizione ricevuta (valida o no) PRIMA di qualsiasi filtro in `_onPosition`
+- `_freezeDetectionTimer` (periodico, 3s) → `_checkFreeze()`: se non arriva nulla da `kFreezeDetectionSeconds = 8s` mostra banner "GPS BLOCCATO"; da `kFreezeRestartSeconds = 15s` chiama `_attemptGpsRestart()` (cancella e ricrea la subscription dello stream, con `_currentIntervalMs` salvato ad ogni `_startPositionStream`)
+- Getter pubblici `isGpsFrozen`/`isRestartingGps`; `attemptGpsRestart()` pubblico per il riavvio manuale
+- UI: banner arancione "⟳ GPS in ripristino..." durante il riavvio automatico; banner rosso "GPS BLOCCATO — Tocca per ripristinare" (tap → riavvio manuale come ultima risorsa), sparisce automaticamente al primo punto raw post-riavvio
+- Timer cancellato in `stopRecording()` e `dispose()`
+
+**Deploy:**
+- `flutter analyze`: zero warning
+- `git commit`: "fix: anchor display filter + dual accuracy threshold + PS end recovery + GPS freeze watchdog con restart automatico"
+- `flutter build web --release` + `firebase deploy --only hosting` ✅
+- `git push origin main` ✅
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**
