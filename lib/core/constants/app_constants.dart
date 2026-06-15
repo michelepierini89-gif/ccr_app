@@ -16,6 +16,7 @@ class AppConstants {
   static const double dangerAlertRadiusMeters = 50.0;
   static const double dangerAlertClearRadiusMeters = 60.0;
   static const double dangerRemoveRadiusMeters = 100.0;
+  static const double dangerPassedRadiusMeters = 15.0;
   static const int gpsIntervalNearDangerMs = 500;
 
   // Distanza massima tra un tap sulla mappa e la traccia di riferimento

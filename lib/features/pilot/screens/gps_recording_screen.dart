@@ -21,6 +21,7 @@ import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/firebase_error_handler.dart';
 import '../../../core/utils/location_utils.dart';
+import '../../map/danger_marker_icon.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../admin/providers/admin_provider.dart';
 import '../../classifica/providers/classifica_provider.dart';
@@ -67,6 +68,8 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   String? _fuelPointMessage;
   Timer? _fuelPointTimer;
 
+  StreamSubscription<String>? _dangerPassedSub;
+
   DateTime? _raceDeadline;
   bool _isTimeExpired = false;
   bool _showingTimeoutDialog = false;
@@ -108,6 +111,17 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
       _fuelPointTimer = Timer(const Duration(seconds: 3), () {
         if (mounted) setState(() => _fuelPointMessage = null);
       });
+    });
+    _dangerPassedSub =
+        ref.read(gpsServiceProvider).dangerPassedStream.listen((msg) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(msg),
+          backgroundColor: Colors.green.shade700,
+          duration: const Duration(seconds: 2),
+        ),
+      );
     });
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadEventTrack());
   }
@@ -230,6 +244,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     _recoveryTimer?.cancel();
     _fuelPointSub?.cancel();
     _fuelPointTimer?.cancel();
+    _dangerPassedSub?.cancel();
     _pulseController.dispose();
     _markerController.dispose();
     _dangerBlinkController.dispose();
@@ -1010,7 +1025,9 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                       Polyline(
                         points: _eventTrackPoints,
                         color: Colors.red,
-                        strokeWidth: 3.0,
+                        strokeWidth: 6.0,
+                        borderStrokeWidth: 1.5,
+                        borderColor: Colors.red.shade900,
                       ),
                     ]),
                   // Pilot's recorded track — colore/larghezza personalizzabili
@@ -1083,14 +1100,14 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                         ),
                       ),
                     ]),
-                  // Danger points — sempre visibili, triangolo giallo ⚠
+                  // Danger points — sempre visibili, DangerMarkerIcon
                   if (event != null && event.dangerPoints.isNotEmpty)
                     MarkerLayer(
                       markers: event.dangerPoints.map((dp) {
                         return Marker(
                           point: dp.latLng,
-                          width: 32,
-                          height: 32,
+                          width: 36,
+                          height: 36,
                           child: GestureDetector(
                             onTap: () {
                               ScaffoldMessenger.of(context).showSnackBar(
@@ -1100,8 +1117,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                                 ),
                               );
                             },
-                            child: const Icon(Icons.warning_amber_rounded,
-                                color: Colors.amber, size: 32),
+                            child: const DangerMarkerIcon(),
                           ),
                         );
                       }).toList(),

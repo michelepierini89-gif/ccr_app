@@ -25,10 +25,12 @@ class DangerMarkerIcon extends StatelessWidget {
           ),
         ],
       ),
-      child: Icon(
-        Icons.warning_amber_rounded,
-        color: Colors.black,
-        size: size * 22 / 36,
+      child: Center(
+        child: Icon(
+          Icons.warning_amber_rounded,
+          color: Colors.black,
+          size: size * 22 / 36,
+        ),
       ),
     );
   }

@@ -104,6 +104,12 @@ class GpsService extends ChangeNotifier {
   List<DangerPointModel> _dangerPoints = [];
   // Punti pericolo "attivi" (entro 150m): rimossi quando la distanza torna > 100m.
   final Set<String> _alertedDangerPoints = {};
+  // Punti pericolo già superati (entro 15m) in questa sessione: niente più
+  // banner di avviso/allerta per questi, anche se il pilota torna indietro.
+  // Resettato solo in startRecording (nuova sessione), non in stopRecording.
+  final Set<String> _passedDangerPoints = {};
+  final StreamController<String> _dangerPassedStreamCtrl =
+      StreamController<String>.broadcast();
   DangerPointModel? _warningDangerPoint;
   double? _warningDangerDistance;
   DangerPointModel? _alertDangerPoint;
@@ -215,6 +221,13 @@ class GpsService extends ChangeNotifier {
   DangerPointModel? get alertDangerPoint => _alertDangerPoint;
   double? get alertDangerDistance => _alertDangerDistance;
   bool get isDangerBlinking => _dangerBlinking;
+
+  /// IDs dei punti pericolo già superati (entro 15m) in questa sessione.
+  Set<String> get passedDangerPoints => Set.unmodifiable(_passedDangerPoints);
+
+  /// Emette un messaggio quando un punto pericolo viene superato per la
+  /// prima volta in questa sessione (mostrare una SnackBar verde, 2s).
+  Stream<String> get dangerPassedStream => _dangerPassedStreamCtrl.stream;
 
   /// Computes the forward azimuth from [from] to [to] in degrees [0, 360).
   static double _computeBearingDeg(LatLng from, LatLng to) {
@@ -405,6 +418,7 @@ class GpsService extends ChangeNotifier {
     _passedFuelPoints.clear();
     _dangerPoints = dangerPoints;
     _alertedDangerPoints.clear();
+    _passedDangerPoints.clear();
     _warningDangerPoint = null;
     _warningDangerDistance = null;
     _alertDangerPoint = null;
@@ -698,6 +712,23 @@ class GpsService extends ChangeNotifier {
     double? warnDist;
     for (final dp in _dangerPoints) {
       final distM = WaypointDetector.dangerPointDistance(filteredPos, dp);
+
+      // Superato (entro 15m): segna come passato permanentemente per la
+      // sessione, notifica una sola volta e non mostrare più avvisi per
+      // questo punto, anche se il pilota torna indietro.
+      if (distM <= AppConstants.dangerPassedRadiusMeters &&
+          !_passedDangerPoints.contains(dp.id)) {
+        _passedDangerPoints.add(dp.id);
+        _alertedDangerPoints.remove(dp.id);
+        if (_alertDangerPoint?.id == dp.id) {
+          _alertDangerPoint = null;
+          _alertDangerDistance = null;
+          _dangerBlinking = false;
+        }
+        _dangerPassedStreamCtrl.add('✓ Punto pericolo superato');
+      }
+      if (_passedDangerPoints.contains(dp.id)) continue;
+
       if (distM <= AppConstants.dangerWarningRadiusMeters) {
         _alertedDangerPoints.add(dp.id);
       } else if (distM > AppConstants.dangerRemoveRadiusMeters) {
@@ -830,6 +861,7 @@ class GpsService extends ChangeNotifier {
     _posStreamCtrl.close();
     _recoveryStreamCtrl.close();
     _fuelPointStreamCtrl.close();
+    _dangerPassedStreamCtrl.close();
     super.dispose();
   }
 }
