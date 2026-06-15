@@ -767,6 +767,40 @@ Riscrittura completa del sistema di filtraggio GPS per risolvere il collasso in 
 
 ---
 
+---
+
+**21 — Bugfix critico GPS: ghost points 479km/h, pattern a ventaglio, freccia che torna indietro, PS da 795 minuti (15 giugno 2026):**
+
+**1 — Filtro jump geometrico senza eccezioni (`gps_service.dart`):**
+- `kMaxSpeedFilterKmh` abbassato da 200 a 120 km/h (massimo realistico per un enduro su sentiero)
+- Rimossa la regola del "4° salto accettato" (e la relativa `kMaxConsecutiveJumps`/`_jumpCount`): qualsiasi punto che implichi una velocità >120 km/h viene SEMPRE scartato, senza eccezioni — era questa regola a permettere ai ghost points multipath (es. 479 km/h) di "teletrasportare" il Kalman e generare il pattern a ventaglio
+
+**2 — Doppia conferma waypoint (`waypoint_detector.dart`, `gps_service.dart`):**
+- `WaypointDetector` convertito da classe statica a istanza con stato (`_consecutiveNearCount`, `_firstNearTs`), nuovo metodo `detectPassage()` e `reset()`
+- Un waypoint è confermato solo dopo `kRequiredConsecutiveDetections = 2` rilevazioni consecutive entro il raggio; il timestamp usato per inizio/fine PS è quello della PRIMA rilevazione, non della seconda — un singolo ghost point non può più triggerare l'inizio/fine di una speciale
+- `GpsService` mantiene un'istanza `_waypointDetector`, resettata in `startRecording()`/`stopRecording()`
+
+**3 — Sanity check tempi PS (`classifica_model.dart`, `classifica_engine.dart`, `timing_screen.dart`, `classifica_screen.dart`):**
+- Nuova costante `kMaxSpecialDurationMinutes = 90`: un tempo PS superiore non è plausibile (es. recovery con timestamp corrotto → 795 minuti) e viene marcato `timingError = 'rilevamento_non_valido'`
+- `SpecialTempo`: nuovi campi opzionali `timingError`, `rawStartTime`, `rawEndTime`
+- Il tempo invalido viene escluso dal calcolo del tempo totale e sostituito dalla penalità massima prevista (`penalties.cp3oPiuMancati`)
+- UI: al posto del tempo numerico viene mostrato "⚠ Rilevamento non valido" / "⚠ non valido" in arancione (`AppColors.warning`); in `timing_screen.dart` la riga è espandibile (tap) per mostrare all'admin i timestamp grezzi `rawStartTime`/`rawEndTime`
+
+**4 — Validazione timestamp di recovery (`gps_service.dart`, `_trySpecialStartRecovery`):**
+- Un timestamp di recovery viene rifiutato se: età >60s, è nel futuro, oppure precede `_recordingStart` — evita che timestamp corrotti (da inizializzazione GPS o sessione precedente) producano PS con durate assurde
+
+**5 — Filtro spostamento minimo e sanity check post-Kalman (`gps_service.dart`):**
+- `kMinDisplacementMeters` abbassato da 3.0 a 1.5 metri
+- Nuovo STEP 3b: se la velocità implicita dalla stima Kalman supera `kMaxSpeedFilterKmh * 1.2`, il filtro Kalman viene resettato e il punto raw rifiltrato da zero come nuovo anchor — protegge da uno stato interno del Kalman corrotto
+
+**Deploy:**
+- `flutter analyze`: zero warning
+- `git commit`: "fix: ghost points filter 120kmh + doppia conferma waypoint + sanity check PS tempi + recovery timestamp validation + min displacement 1.5m"
+- `flutter build web --release` + `firebase deploy --only hosting` ✅
+- `git push origin main` ✅
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**
