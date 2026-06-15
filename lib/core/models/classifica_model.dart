@@ -46,6 +46,9 @@ class SpecialTempo {
   final bool controlPointsOk;
   final List<int> missedCpPositions; // 1-based positions of missed control points
   final int penaltySeconds;          // secondi di penalità CP aggiunti
+  final String? timingError;  // non-null se il rilevamento PS non è plausibile
+  final DateTime? rawStartTime; // timestamp grezzo di inizio (debug admin)
+  final DateTime? rawEndTime;   // timestamp grezzo di fine (debug admin)
 
   const SpecialTempo({
     required this.specialeId,
@@ -55,6 +58,9 @@ class SpecialTempo {
     required this.controlPointsOk,
     this.missedCpPositions = const [],
     this.penaltySeconds = 0,
+    this.timingError,
+    this.rawStartTime,
+    this.rawEndTime,
   });
 
   String get tempoFormatted {

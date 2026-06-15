@@ -57,17 +57,16 @@ class GpsService extends ChangeNotifier {
   static const int kAccuracyFallbackSeconds = 4;
 
   // STEP 2 — Filtro jump geometrico: secondo livello dopo il Kalman 4D.
-  // Scarta punti che implicherebbero una velocità superiore a 200 km/h,
-  // a meno che [kMaxConsecutiveJumps] punti consecutivi siano già stati
-  // scartati — in tal caso il GPS ha probabilmente "teletrasportato"
-  // (tunnel, perdita di segnale) e il punto viene accettato resettando
-  // il filtro Kalman.
-  static const double kMaxSpeedFilterKmh = 200.0;
-  static const int kMaxConsecutiveJumps = 4;
+  // Scarta SEMPRE i punti che implicherebbero una velocità superiore a
+  // kMaxSpeedFilterKmh — 120 km/h è già il massimo realistico per un
+  // enduro su sentiero. Tra 120 e 200 km/h ci sono solo ghost points
+  // multipath, non velocità reali: nessuna eccezione di "jump accettato"
+  // (causava il pattern a ventaglio e i tempi PS impossibili).
+  static const double kMaxSpeedFilterKmh = 120.0;
 
   // STEP 4 — Spostamento minimo per aggiornare polyline/distanza, per
   // evitare il pattern "a ventaglio" generato dal rumore GPS da fermo.
-  static const double kMinDisplacementMeters = 3.0;
+  static const double kMinDisplacementMeters = 1.5;
 
   // Bearing: sotto questa velocità geometrica il bearing resta congelato
   // (evita jitter della freccia da fermo); sopra, smoothing esponenziale.
@@ -137,7 +136,9 @@ class GpsService extends ChangeNotifier {
   // Geometric jump filter state (raw points, before Kalman)
   LatLng? _lastAcceptedRawPos;
   DateTime? _lastAcceptedTs;
-  int _jumpCount = 0;
+
+  // Doppia conferma waypoint: protegge la rilevazione PS dai ghost points.
+  final WaypointDetector _waypointDetector = WaypointDetector();
 
   // Geometric speed (between consecutive filtered points) + bearing state
   LatLng? _lastAcceptedFilteredPos;
@@ -296,6 +297,23 @@ class GpsService extends ChangeNotifier {
 
       // Recovery confirmed
       final recoveredTime = _recoveryTimestamps[bestIdx];
+
+      // STEP 4 — validazione timestamp: rifiuta recovery con timestamp
+      // corrotti (es. da inizializzazione GPS o sessione precedente), che
+      // produrrebbero PS con durata enorme (es. 795 minuti).
+      final ageSeconds = now.difference(recoveredTime).inSeconds;
+      if (ageSeconds > 60 || recoveredTime.isAfter(now)) {
+        debugPrint('RECOVERY RIFIUTATO: timestamp non valido '
+            '(age: ${ageSeconds}s)');
+        continue;
+      }
+      if (_recordingStart != null &&
+          recoveredTime.isBefore(_recordingStart!)) {
+        debugPrint('RECOVERY RIFIUTATO: timestamp precedente '
+            'all\'avvio sessione');
+        continue;
+      }
+
       debugPrint(
           'RECOVERY speciale ${special.id}: '
           'start retroattivo a $recoveredTime '
@@ -405,13 +423,13 @@ class GpsService extends ChangeNotifier {
     _kalmanFilter.reset();
     _lastAcceptedRawPos = null;
     _lastAcceptedTs = null;
-    _jumpCount = 0;
     _lastAcceptedFilteredPos = null;
     _lastFilteredTs = null;
     _geometricSpeedKmh = 0.0;
     _recentFilteredPoints.clear();
     _bearingDeg = 0.0;
     _recoveryAttempted.clear();
+    _waypointDetector.reset();
     _isRecording = true;
     _mode = GpsMode.transfer;
     _recordingStart = DateTime.now();
@@ -508,34 +526,53 @@ class GpsService extends ChangeNotifier {
     _consecutiveDiscarded = 0;
 
     // ── STEP 2: filtro jump geometrico ────────────────────────────────────
-    // Scarta punti che implicano una velocità fisicamente impossibile, a
-    // meno che kMaxConsecutiveJumps punti consecutivi siano già stati
-    // scartati — in tal caso il GPS ha "teletrasportato" (tunnel, perdita
-    // di segnale) e il punto viene accettato resettando il Kalman.
+    // Punti che implicherebbero una velocità superiore a kMaxSpeedFilterKmh
+    // sono fisicamente impossibili per un enduro su sentiero e vengono
+    // SEMPRE scartati, senza eccezioni: non esiste più una regola di "jump
+    // accettato" che permetteva al Kalman di "teletrasportarsi" su un ghost
+    // point multipath. Se il segnale GPS è perso (tunnel), si prosegue con
+    // l'ultima stima Kalman finché non arriva un punto plausibile; il reset
+    // automatico del Kalman dopo un gap > 10s (kalman_filter.dart) gestisce
+    // comunque la ripresa.
     if (_lastAcceptedRawPos != null && _lastAcceptedTs != null) {
       final dtMs = now.difference(_lastAcceptedTs!).inMilliseconds;
-      final impliedSpeedKmh = _computeGeometricSpeedKmh(
-          _lastAcceptedRawPos!, rawLatLng, Duration(milliseconds: dtMs));
-      if (impliedSpeedKmh > kMaxSpeedFilterKmh) {
-        _jumpCount++;
-        if (_jumpCount < kMaxConsecutiveJumps) {
+      if (dtMs > 0) {
+        final impliedSpeedKmh = _computeGeometricSpeedKmh(
+            _lastAcceptedRawPos!, rawLatLng, Duration(milliseconds: dtMs));
+        if (impliedSpeedKmh > kMaxSpeedFilterKmh) {
           debugPrint(
               'GPS JUMP scartato: ${impliedSpeedKmh.toStringAsFixed(0)} km/h');
           notifyListeners();
           return;
         }
-        _kalmanFilter.reset();
-        _jumpCount = 0;
-      } else {
-        _jumpCount = 0;
       }
     }
     _lastAcceptedRawPos = rawLatLng;
     _lastAcceptedTs = now;
 
     // ── STEP 3: Kalman filter 4D cinematico ─────────────────────────────────
-    final filteredPos =
+    var filteredPos =
         _kalmanFilter.filter(pos.latitude, pos.longitude, pos.accuracy, now);
+
+    // ── STEP 3b: sanity check post-Kalman ───────────────────────────────────
+    // Se la stima Kalman implica una velocità anche più assurda della soglia
+    // jump (STEP 2), lo stato interno del filtro è corrotto: si resetta e si
+    // rifiltra il punto raw da zero, usandolo come nuovo anchor.
+    if (_lastAcceptedFilteredPos != null && _lastFilteredTs != null) {
+      final dtMsK = now.difference(_lastFilteredTs!).inMilliseconds;
+      if (dtMsK > 0) {
+        final kalmanImpliedSpeed = _computeGeometricSpeedKmh(
+            _lastAcceptedFilteredPos!, filteredPos,
+            Duration(milliseconds: dtMsK));
+        if (kalmanImpliedSpeed > kMaxSpeedFilterKmh * 1.2) {
+          _kalmanFilter.reset();
+          filteredPos = _kalmanFilter.filter(
+              pos.latitude, pos.longitude, pos.accuracy, now);
+          debugPrint('KALMAN RESET: stima impossibile '
+              '${kalmanImpliedSpeed.toStringAsFixed(0)} km/h');
+        }
+      }
+    }
     _filteredPosition = filteredPos;
 
     // ── STEP 4: filtro spostamento minimo ───────────────────────────────────
@@ -585,12 +622,16 @@ class GpsService extends ChangeNotifier {
     _recoveryTrack.add(filteredPos);
     _recoveryTimestamps.add(now);
 
-    // Detect waypoint passage — sempre sulla posizione filtrata Kalman
-    final wp = WaypointDetector.detectPassage(
-        filteredPos, _waypoints, _passedWaypoints);
-    if (wp != null) {
+    // Detect waypoint passage — sempre sulla posizione filtrata Kalman,
+    // confermato solo dopo 2 rilevazioni consecutive (protezione ghost point);
+    // il timestamp usato è quello della PRIMA rilevazione, non della seconda.
+    final detection = _waypointDetector.detectPassage(
+        filteredPos, now, _waypoints, _passedWaypoints);
+    if (detection != null) {
+      final wp = detection.waypoint;
+      final passageTs = detection.timestamp;
       _passedWaypoints.add(wp.id);
-      final passage = WaypointPassage(waypoint: wp, timestamp: now);
+      final passage = WaypointPassage(waypoint: wp, timestamp: passageTs);
       _passages.add(passage);
 
       // Special entry/exit detection
@@ -602,14 +643,14 @@ class GpsService extends ChangeNotifier {
         _specialEntries.add(SpecialEntry(
           specialeId: specialId,
           specialeNome: special?.nome ?? specialId,
-          entryTime: now,
+          entryTime: passageTs,
         ));
       } else if (_fineToSpecial.containsKey(wp.id) &&
           _currentSpecialId == _fineToSpecial[wp.id]) {
         final idx =
             _specialEntries.lastIndexWhere((e) => e.exitTime == null);
         if (idx >= 0) {
-          _specialEntries[idx] = _specialEntries[idx].withExit(now);
+          _specialEntries[idx] = _specialEntries[idx].withExit(passageTs);
         }
         _currentSpecialId = null;
         _currentSpecialNome = null;
@@ -763,13 +804,13 @@ class GpsService extends ChangeNotifier {
     _kalmanFilter.reset();
     _lastAcceptedRawPos = null;
     _lastAcceptedTs = null;
-    _jumpCount = 0;
     _lastAcceptedFilteredPos = null;
     _lastFilteredTs = null;
     _geometricSpeedKmh = 0.0;
     _recentFilteredPoints.clear();
     _bearingDeg = 0.0;
     _recoveryAttempted.clear();
+    _waypointDetector.reset();
     _trackPoints.clear();
     _recoveryTrack.clear();
     _recoveryTimestamps.clear();

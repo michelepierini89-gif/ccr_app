@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:intl/intl.dart';
 import '../../../core/models/classifica_model.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/csv_export.dart';
@@ -495,19 +496,64 @@ class _SpecialTimingRow extends StatelessWidget {
   final SpecialTempo special;
   const _SpecialTimingRow({required this.special});
 
+  void _showRawTimestamps(BuildContext context) {
+    final fmt = DateFormat('dd/MM/yyyy HH:mm:ss', 'it');
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: Text(special.specialeNome,
+            style: const TextStyle(color: AppColors.textPrimary)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('⚠ Rilevamento non valido',
+                style: TextStyle(
+                    color: AppColors.warning, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            Text(
+              'Inizio rilevato: ${special.rawStartTime != null ? fmt.format(special.rawStartTime!) : '--'}',
+              style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+            ),
+            Text(
+              'Fine rilevata: ${special.rawEndTime != null ? fmt.format(special.rawEndTime!) : '--'}',
+              style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Chiudi',
+                style: TextStyle(color: AppColors.accent)),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Padding(
+    final hasTimingError = special.timingError != null;
+
+    return InkWell(
+      onTap: hasTimingError ? () => _showRawTimestamps(context) : null,
+      child: Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
           Icon(
-            special.controlPointsOk
-                ? Icons.check_circle
-                : Icons.warning_amber_rounded,
-            color: special.controlPointsOk
-                ? AppColors.success
-                : AppColors.warning,
+            hasTimingError
+                ? Icons.error_outline
+                : special.controlPointsOk
+                    ? Icons.check_circle
+                    : Icons.warning_amber_rounded,
+            color: hasTimingError
+                ? AppColors.warning
+                : special.controlPointsOk
+                    ? AppColors.success
+                    : AppColors.warning,
             size: 16,
           ),
           const SizedBox(width: 8),
@@ -518,16 +564,26 @@ class _SpecialTimingRow extends StatelessWidget {
                   color: AppColors.textPrimary, fontSize: 13),
             ),
           ),
-          Text(
-            special.tempoFormatted,
-            style: const TextStyle(
-              color: AppColors.accent,
-              fontSize: 14,
-              fontWeight: FontWeight.bold,
-              fontFamily: 'monospace',
+          if (hasTimingError)
+            const Text(
+              '⚠ Rilevamento non valido',
+              style: TextStyle(
+                color: AppColors.warning,
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+              ),
+            )
+          else
+            Text(
+              special.tempoFormatted,
+              style: const TextStyle(
+                color: AppColors.accent,
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+                fontFamily: 'monospace',
+              ),
             ),
-          ),
-          if (!special.controlPointsOk) ...[
+          if (!hasTimingError && !special.controlPointsOk) ...[
             const SizedBox(width: 8),
             Container(
               padding:
@@ -548,6 +604,7 @@ class _SpecialTimingRow extends StatelessWidget {
             ),
           ],
         ],
+      ),
       ),
     );
   }

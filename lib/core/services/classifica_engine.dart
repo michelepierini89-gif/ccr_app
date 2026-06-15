@@ -153,6 +153,27 @@ class ClassificaEngine {
       if (!end.timestamp.isAfter(start.timestamp)) continue;
 
       final cleanTempo = end.timestamp.difference(start.timestamp);
+
+      // FIX 3 — sanity check sui tempi PS: un tempo superiore a
+      // kMaxSpecialDurationMinutes non è plausibile (es. recovery con
+      // timestamp corrotto) e va segnalato come rilevamento non valido,
+      // applicando la penalità massima prevista per una PS, invece di
+      // mostrare un tempo assurdo (es. 795 minuti).
+      if (cleanTempo.inMinutes > kMaxSpecialDurationMinutes) {
+        result.add(SpecialTempo(
+          specialeId: special.id,
+          specialeNome: special.nome,
+          ordine: special.ordine,
+          tempo: Duration(seconds: penalties.cp3oPiuMancati),
+          controlPointsOk: false,
+          penaltySeconds: penalties.cp3oPiuMancati,
+          timingError: 'rilevamento_non_valido',
+          rawStartTime: start.timestamp,
+          rawEndTime: end.timestamp,
+        ));
+        continue;
+      }
+
       final missed = <int>[];
       for (int i = 0; i < special.controlPoints.length; i++) {
         final cp = special.controlPoints[i];
@@ -178,6 +199,10 @@ class ClassificaEngine {
     }
     return result;
   }
+
+  // FIX 3 — un tempo PS superiore a questa soglia non è plausibile e viene
+  // mostrato come "Rilevamento non valido" invece di un tempo numerico.
+  static const int kMaxSpecialDurationMinutes = 90;
 
   static int _cpPenaltySeconds(int missedCount, PenaltySettingsModel p) {
     if (missedCount == 0) return 0;

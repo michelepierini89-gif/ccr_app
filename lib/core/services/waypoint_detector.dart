@@ -3,11 +3,35 @@ import '../constants/app_constants.dart';
 import '../models/waypoint_model.dart';
 import '../utils/location_utils.dart';
 
-class WaypointDetector {
-  WaypointDetector._();
+/// Risultato di un passaggio waypoint confermato da [WaypointDetector].
+class WaypointPassageResult {
+  final WaypointModel waypoint;
+  final DateTime timestamp;
+  const WaypointPassageResult(
+      {required this.waypoint, required this.timestamp});
+}
 
-  static WaypointModel? detectPassage(
+class WaypointDetector {
+  /// Per ogni waypoint, conta le rilevazioni consecutive entro il raggio e
+  /// memorizza il timestamp della prima. Un waypoint è confermato solo dopo
+  /// [kRequiredConsecutiveDetections] rilevazioni consecutive valide: un
+  /// singolo ghost point non può più triggerare una PS con timestamp errato.
+  final Map<String, int> _consecutiveNearCount = {};
+  final Map<String, DateTime> _firstNearTs = {};
+  static const int kRequiredConsecutiveDetections = 2;
+
+  /// Resetta lo stato di doppia conferma (richiamare a inizio/fine registrazione).
+  void reset() {
+    _consecutiveNearCount.clear();
+    _firstNearTs.clear();
+  }
+
+  /// Restituisce il waypoint confermato come passato — con il timestamp
+  /// della PRIMA delle rilevazioni consecutive — oppure null se nessun
+  /// waypoint ha raggiunto il numero di conferme richiesto in questa chiamata.
+  WaypointPassageResult? detectPassage(
     LatLng position,
+    DateTime ts,
     List<WaypointModel> waypoints,
     Set<String> alreadyPassed,
   ) {
@@ -24,7 +48,21 @@ class WaypointDetector {
       final radius = wp.type == WaypointType.intermedio
           ? AppConstants.waypointCheckpointRadiusMeters
           : AppConstants.waypointRadiusMeters;
-      if (dist <= radius) return wp;
+      if (dist <= radius) {
+        final previousCount = _consecutiveNearCount[wp.id] ?? 0;
+        if (previousCount == 0) {
+          _firstNearTs[wp.id] = ts;
+        }
+        final count = previousCount + 1;
+        if (count >= kRequiredConsecutiveDetections) {
+          _consecutiveNearCount[wp.id] = 0;
+          return WaypointPassageResult(
+              waypoint: wp, timestamp: _firstNearTs[wp.id]!);
+        }
+        _consecutiveNearCount[wp.id] = count;
+      } else {
+        _consecutiveNearCount[wp.id] = 0;
+      }
     }
     return null;
   }
