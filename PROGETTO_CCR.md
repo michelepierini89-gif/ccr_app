@@ -724,6 +724,49 @@ Algoritmo per recuperare automaticamente un inizio speciale non registrato (es. 
 
 ---
 
+---
+
+**20 — Riscrittura core GPS: Kalman 4D cinematico, velocità/bearing geometrici, filtro spostamento minimo, distanceFilter fisso (15 giugno 2026):**
+
+Riscrittura completa del sistema di filtraggio GPS per risolvere il collasso in ambiente urbano (pattern a ventaglio, freccia ferma, bearing congelato) descritto in `GPS_AUDIT.md`. Nessuna patch incrementale: i componenti indicati sono stati sostituiti.
+
+**1 — Kalman Filter 4D cinematico (`kalman_filter.dart`, riscritto):**
+- Sostituito il vecchio filtro 1D indipendente su lat/lng con un filtro 4D a stato `[lat, lng, vLat, vLng]` (modello a velocità costante), che resiste meglio ai salti incoerenti con la velocità corrente
+- `GpsKalmanFilter({sigmaAccel = 1.0})`, costante `kSigmaAccelMotorcycle = 3.0` (usata in `gps_service.dart`) per tollerare le accelerazioni/cambi direzione tipici dell'enduro
+- Matrice di transizione F (moto a velocità costante con `dt`), rumore di processo Q derivato da `sigmaAccel` convertito in gradi/s², matrice di osservazione H = [[1,0,0,0],[0,1,0,0]], rumore di misura R = diag(r,r) con `r = (accuracy/111111)²`
+- Reset automatico se il gap tra punti supera 10s, reset manuale via `reset()`
+
+**2 — Velocità e bearing geometrici (`gps_service.dart`):**
+- **`position.speed` non viene più usato per nessuna decisione logica** (era usato per il freeze del bearing, causa dell'incoerenza segnalata nell'audit)
+- Nuovo metodo `_computeGeometricSpeedKmh()`: velocità calcolata via haversine tra gli ultimi due punti Kalman-filtrati
+- `geometricSpeedKmh` ora alimenta: freeze del bearing (sotto 3 km/h il bearing resta congelato), display VEL in UI, filtro jump, logica intervallo adattivo
+- Bearing aggiornato con smoothing angolare esponenziale (`_angularInterp`, alpha = 0.4) sopra i 3 km/h, invece dello scatto secco precedente
+
+**3 — Pipeline di filtraggio posizioni a 6 step (`_onPosition`, riscritta):**
+1. Filtro accuratezza adattivo: soglia normale 15m, soglia di fallback 40m se non si accetta un punto da >4s (evita il blocco totale in caso di segnale debole prolungato)
+2. Filtro jump geometrico: scarta punti con velocità implicita >200 km/h (max 4 scarti consecutivi, poi reset Kalman e accettazione come "teletrasporto")
+3. Kalman 4D sul punto accettato
+4. **Nuovo filtro spostamento minimo (3m)**: se lo spostamento dal precedente punto filtrato è <3m, il punto non viene aggiunto alla polyline/distanza (elimina il pattern a ventaglio da fermo), ma bearing, waypoint detection e tracking live su Firestore continuano normalmente
+5. Aggiornamento stato: velocità geometrica, bearing con smoothing, buffer ultimi 5 punti filtrati, traccia di recovery (per il recovery PS, separata dalla polyline display)
+6. Aggiornamento polyline display e distanza totale, solo se lo spostamento ha superato il filtro del punto 4
+
+**4 — `distanceFilter` fisso a 2 metri per tutte le modalità:**
+- Rimossa la logica che impostava `distanceFilter = 0` in modalità `nearWaypoint`/`inSpecial` (causa del pattern a ventaglio: accettava ogni rumore GPS come punto valido)
+- Nuova costante `kDistanceFilterMeters = 2`, applicata sempre (Android/Apple/Web); non usato `bestForNavigation` perché in ambiente urbano amplifica il multipath
+- L'intervallo temporale adattivo (250ms/500ms/1000ms in base a modalità/prossimità pericoli) resta gestito da `_startPositionStream` come prima — solo il `distanceFilter` è ora costante
+
+**5 — UI (verifica, nessuna modifica funzionale):**
+- VEL principale e overlay debug (B°/M°/V) già usavano `geometricSpeedKmh`/`bearingDeg` — nessuna modifica necessaria
+- Banner "Segnale GPS debole" continua a basarsi su `isAccuracyPoor` (5 scarti consecutivi), soglia interna ora 15m/40m adattiva
+
+**Deploy:**
+- `flutter analyze`: zero warning
+- `git commit`: "refactor: riscrittura GPS core - Kalman 4D cinematico + geometric speed + min displacement filter + distanceFilter fix"
+- `flutter build web --release` + `firebase deploy --only hosting` ✅
+- `git push origin main` ✅
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**

@@ -48,14 +48,36 @@ class SpecialEntry {
 }
 
 class GpsService extends ChangeNotifier {
-  static const double kMaxAcceptableAccuracyMeters = 25.0;
+  // STEP 1 — Filtro accuracy adattivo.
+  // Soglia normale 15m; soglia di fallback 40m se nessun punto è stato
+  // accettato da più di [kAccuracyFallbackSeconds] secondi, per evitare
+  // un freeze totale quando il segnale resta scadente a lungo.
+  static const double kAccuracyThresholdNormal = 15.0;
+  static const double kAccuracyThresholdFallback = 40.0;
+  static const int kAccuracyFallbackSeconds = 4;
 
-  // Geometric speed filter: second safety net after the Kalman filter.
-  // 250 km/h è il massimo fisicamente credibile per enduro.
-  // Su strada asfaltata il limite reale è ~150 km/h.
-  // Usiamo 250 come soglia conservativa per non scartare
-  // punti legittimi ad alta velocità in discesa.
-  static const double kMaxSpeedFilterKmh = 250.0;
+  // STEP 2 — Filtro jump geometrico: secondo livello dopo il Kalman 4D.
+  // Scarta punti che implicherebbero una velocità superiore a 200 km/h,
+  // a meno che [kMaxConsecutiveJumps] punti consecutivi siano già stati
+  // scartati — in tal caso il GPS ha probabilmente "teletrasportato"
+  // (tunnel, perdita di segnale) e il punto viene accettato resettando
+  // il filtro Kalman.
+  static const double kMaxSpeedFilterKmh = 200.0;
+  static const int kMaxConsecutiveJumps = 4;
+
+  // STEP 4 — Spostamento minimo per aggiornare polyline/distanza, per
+  // evitare il pattern "a ventaglio" generato dal rumore GPS da fermo.
+  static const double kMinDisplacementMeters = 3.0;
+
+  // Bearing: sotto questa velocità geometrica il bearing resta congelato
+  // (evita jitter della freccia da fermo); sopra, smoothing esponenziale.
+  static const double kMinBearingSpeedKmh = 3.0;
+  static const double kBearingSmoothingAlpha = 0.4;
+
+  // Distanza minima (m) tra due fix consecutivi richiesta da Geolocator,
+  // fissa per tutte le modalità — 0 causava l'accettazione di ogni
+  // scatter GPS come punto valido (pattern a ventaglio).
+  static const int kDistanceFilterMeters = 2;
 
   final FirestoreService _firestoreService;
   final OfflineQueueService _offlineQueue;
@@ -94,31 +116,40 @@ class GpsService extends ChangeNotifier {
   final List<SpecialEntry> _specialEntries = [];
   DateTime? _recordingStart;
   StreamSubscription<Position>? _positionSub;
-  final List<LatLng> _localTrack = [];
   double _totalDistanceKm = 0.0;
 
-  // Kalman filter + accuracy filtering state
-  final GpsKalmanFilter _kalmanFilter = GpsKalmanFilter();
+  // Display/distance track: only points that moved >= kMinDisplacementMeters
+  // from the previous one (STEP 4). Used for the pilot polyline and for
+  // the cumulative distance — avoids accumulating GPS jitter as distance.
+  final List<LatLng> _trackPoints = [];
+
+  // Recovery track: every accepted (post-Kalman) point with its timestamp,
+  // used only for the special-start retroactive lookback.
+  final List<LatLng> _recoveryTrack = [];
+  final List<DateTime> _recoveryTimestamps = [];
+
+  // Kalman 4D filter (kinematic: position + velocity) + accuracy filtering
+  final GpsKalmanFilter _kalmanFilter =
+      GpsKalmanFilter(sigmaAccel: GpsKalmanFilter.kSigmaAccelMotorcycle);
   int _consecutiveDiscarded = 0;
   LatLng? _filteredPosition;
 
-  // Geometric speed filter state (raw points, before Kalman)
-  LatLng? _lastAcceptedRawLatLng;
-  DateTime? _lastAcceptedRawTime;
+  // Geometric jump filter state (raw points, before Kalman)
+  LatLng? _lastAcceptedRawPos;
+  DateTime? _lastAcceptedTs;
   int _jumpCount = 0;
-  double _geometricSpeedKmh = 0.0;
 
-  // Bearing computation: circular buffer of last 5 valid filtered points
-  static const double _kMinSpeedKmh = 5.0;
-  final List<LatLng> _recentPoints = [];
-  double _lastHighSpeedBearingDeg = 0.0;
+  // Geometric speed (between consecutive filtered points) + bearing state
+  LatLng? _lastAcceptedFilteredPos;
+  DateTime? _lastFilteredTs;
+  double _geometricSpeedKmh = 0.0;
+  final List<LatLng> _recentFilteredPoints = []; // circular buffer, last 5
   double _bearingDeg = 0.0;
 
   // Special-start recovery
   static const double kSpecialStartRecoveryRadiusMeters = 80.0;
   static const int kSpecialStartRecoveryLookbackSeconds = 30;
   final Set<String> _recoveryAttempted = {};
-  final List<DateTime> _trackTimestamps = [];
   final StreamController<String> _recoveryStreamCtrl =
       StreamController<String>.broadcast();
 
@@ -133,7 +164,7 @@ class GpsService extends ChangeNotifier {
   GpsMode get mode => _mode;
   Position? get lastPosition => _lastPosition;
   List<WaypointPassage> get passages => List.unmodifiable(_passages);
-  List<LatLng> get localTrack => List.unmodifiable(_localTrack);
+  List<LatLng> get localTrack => List.unmodifiable(_trackPoints);
   double get totalDistanceKm => _totalDistanceKm;
   String? get currentSpecialId => _currentSpecialId;
   String? get currentSpecialNome => _currentSpecialNome;
@@ -151,14 +182,16 @@ class GpsService extends ChangeNotifier {
   /// Last Kalman-filtered position; null until the first accepted GPS fix.
   LatLng? get filteredPosition => _filteredPosition;
 
-  /// Geometric bearing in degrees [0, 360), computed from recent GPS movement.
-  /// Freezes at the last value recorded above 5 km/h to avoid jitter at low speed.
-  /// Never uses position.heading (unreliable below ~8 km/h on most chipsets).
+  /// Geometric bearing in degrees [0, 360), computed from consecutive
+  /// Kalman-filtered points with exponential smoothing. Freezes below
+  /// [kMinBearingSpeedKmh] to avoid jitter at low speed. Never uses
+  /// `position.heading` or `position.speed` (unreliable on most chipsets).
   double get bearingDeg => _bearingDeg;
 
   /// Geometric speed in km/h, computed from the distance and time elapsed
-  /// between the last two accepted raw GPS points (same value used by the
-  /// jump filter). More reliable than `position.speed` on many devices.
+  /// between the last two accepted Kalman-filtered positions. Used for the
+  /// UI "VEL" readout, the bearing freeze threshold and the adaptive GPS
+  /// interval — `position.speed` is never used for logic decisions.
   double get geometricSpeedKmh => _geometricSpeedKmh;
 
   /// Emits a localised message string each time a missed special start is
@@ -190,6 +223,21 @@ class GpsService extends ChangeNotifier {
     final y = sin(dLon) * cos(lat2);
     final x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon);
     return (atan2(y, x) * 180.0 / pi + 360.0) % 360.0;
+  }
+
+  /// Velocità geometrica (km/h) tra due punti filtrati, basata sulla distanza
+  /// haversine e sul delta temporale. Non usa mai `position.speed`.
+  double _computeGeometricSpeedKmh(LatLng prev, LatLng curr, Duration dt) {
+    final distM = _haversineKm(prev, curr) * 1000.0;
+    final dtSec = dt.inMilliseconds / 1000.0;
+    if (dtSec < 0.01) return _geometricSpeedKmh;
+    return (distM / dtSec) * 3.6;
+  }
+
+  /// Interpolazione angolare con smoothing esponenziale (gestisce il wrap a 360°).
+  static double _angularInterp(double from, double to, double alpha) {
+    final diff = ((to - from + 540) % 360) - 180;
+    return (from + alpha * diff + 360) % 360;
   }
 
   /// Retroactively detects a missed special-start waypoint.
@@ -233,9 +281,9 @@ class GpsService extends ChangeNotifier {
 
       double bestDistM = double.infinity;
       int bestIdx = -1;
-      for (int i = _localTrack.length - 1; i >= 0; i--) {
-        if (_trackTimestamps[i].isBefore(cutoff)) break;
-        final d = _haversineKm(_localTrack[i], startPt) * 1000.0;
+      for (int i = _recoveryTrack.length - 1; i >= 0; i--) {
+        if (_recoveryTimestamps[i].isBefore(cutoff)) break;
+        final d = _haversineKm(_recoveryTrack[i], startPt) * 1000.0;
         if (d < bestDistM) {
           bestDistM = d;
           bestIdx = i;
@@ -247,7 +295,7 @@ class GpsService extends ChangeNotifier {
       }
 
       // Recovery confirmed
-      final recoveredTime = _trackTimestamps[bestIdx];
+      final recoveredTime = _recoveryTimestamps[bestIdx];
       debugPrint(
           'RECOVERY speciale ${special.id}: '
           'start retroattivo a $recoveredTime '
@@ -346,22 +394,24 @@ class GpsService extends ChangeNotifier {
     _dangerBlinking = false;
     _passages.clear();
     _specialEntries.clear();
-    _localTrack.clear();
+    _trackPoints.clear();
+    _recoveryTrack.clear();
+    _recoveryTimestamps.clear();
     _totalDistanceKm = 0.0;
     _currentSpecialId = null;
     _currentSpecialNome = null;
     _consecutiveDiscarded = 0;
     _filteredPosition = null;
     _kalmanFilter.reset();
-    _lastAcceptedRawLatLng = null;
-    _lastAcceptedRawTime = null;
+    _lastAcceptedRawPos = null;
+    _lastAcceptedTs = null;
     _jumpCount = 0;
+    _lastAcceptedFilteredPos = null;
+    _lastFilteredTs = null;
     _geometricSpeedKmh = 0.0;
-    _recentPoints.clear();
-    _lastHighSpeedBearingDeg = 0.0;
+    _recentFilteredPoints.clear();
     _bearingDeg = 0.0;
     _recoveryAttempted.clear();
-    _trackTimestamps.clear();
     _isRecording = true;
     _mode = GpsMode.transfer;
     _recordingStart = DateTime.now();
@@ -374,20 +424,20 @@ class GpsService extends ChangeNotifier {
 
   void _startPositionStream(int intervalMs) {
     _positionSub?.cancel();
-    // Vicino a un waypoint o in speciale ogni punto conta indipendentemente
-    // dallo spostamento (0m); in trasferimento si filtra lo stazionamento (2m).
-    final distanceFilter =
-        (_mode == GpsMode.nearWaypoint || _mode == GpsMode.inSpecial) ? 0 : 2;
+    // distanceFilter fisso a kDistanceFilterMeters per tutte le modalità:
+    // 0 causava l'accettazione di ogni scatter GPS come punto valido
+    // (pattern "a ventaglio" da fermo). L'adattività resta sull'intervallo
+    // temporale (intervalMs), non sulla distanza minima tra fix.
     final LocationSettings settings;
     if (kIsWeb) {
       settings = LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: distanceFilter,
+        distanceFilter: kDistanceFilterMeters,
       );
     } else if (defaultTargetPlatform == TargetPlatform.android) {
       settings = AndroidSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: distanceFilter,
+        distanceFilter: kDistanceFilterMeters,
         intervalDuration: Duration(milliseconds: intervalMs),
         foregroundNotificationConfig: const ForegroundNotificationConfig(
           notificationText: 'CCR Rally — GPS attivo in background',
@@ -400,7 +450,7 @@ class GpsService extends ChangeNotifier {
     } else {
       settings = AppleSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: distanceFilter,
+        distanceFilter: kDistanceFilterMeters,
         activityType: ActivityType.fitness,
         pauseLocationUpdatesAutomatically: false,
         showBackgroundLocationIndicator: true,
@@ -434,88 +484,110 @@ class GpsService extends ChangeNotifier {
   }
 
   void _onPosition(Position pos) async {
-    // Always store raw position and emit stream — UI uses it for accuracy/speed display.
+    // Always store raw position and emit stream — UI uses it for accuracy display.
     _lastPosition = pos;
     _posStreamCtrl.add(pos);
 
-    // Accuracy filter: discard points with excessive uncertainty.
-    if (pos.accuracy > kMaxAcceptableAccuracyMeters) {
+    final now = DateTime.now();
+    final rawLatLng = LatLng(pos.latitude, pos.longitude);
+
+    // ── STEP 1: filtro accuracy adattivo ──────────────────────────────────
+    // Soglia normale 15m; soglia di fallback 40m se nessun punto è stato
+    // accettato da più di kAccuracyFallbackSeconds secondi (evita un
+    // freeze totale quando il segnale resta scadente a lungo).
+    final accuracyThreshold = (_lastAcceptedTs != null &&
+            now.difference(_lastAcceptedTs!).inSeconds >
+                kAccuracyFallbackSeconds)
+        ? kAccuracyThresholdFallback
+        : kAccuracyThresholdNormal;
+    if (pos.accuracy > accuracyThreshold) {
       _consecutiveDiscarded++;
       notifyListeners();
       return;
     }
     _consecutiveDiscarded = 0;
 
-    final now = DateTime.now();
-    final rawLatLng = LatLng(pos.latitude, pos.longitude);
-
-    // Geometric jump filter: second safety net after the Kalman filter.
-    // Discards points implying a physically impossible speed, unless 3
-    // consecutive jumps have already been discarded — in that case the GPS
-    // likely "teleported" after a long gap (tunnel, signal loss) and the
-    // point is accepted with the Kalman filter reset.
-    if (_lastAcceptedRawLatLng != null && _lastAcceptedRawTime != null) {
-      final deltaT =
-          now.difference(_lastAcceptedRawTime!).inMilliseconds / 1000.0;
-      if (deltaT > 0) {
-        final distanceM =
-            _haversineKm(_lastAcceptedRawLatLng!, rawLatLng) * 1000;
-        final speedKmh = (distanceM / deltaT) * 3.6;
-        if (speedKmh > kMaxSpeedFilterKmh) {
-          if (_jumpCount < 3) {
-            _jumpCount++;
-            debugPrint(
-                'GPS JUMP scartato: ${speedKmh.toStringAsFixed(0)} km/h');
-            notifyListeners();
-            return;
-          }
-          // 4th consecutive jump: accept as a GPS teleport, reset filters.
-          _kalmanFilter.reset();
-          _jumpCount = 0;
-        } else {
-          _jumpCount = 0;
+    // ── STEP 2: filtro jump geometrico ────────────────────────────────────
+    // Scarta punti che implicano una velocità fisicamente impossibile, a
+    // meno che kMaxConsecutiveJumps punti consecutivi siano già stati
+    // scartati — in tal caso il GPS ha "teletrasportato" (tunnel, perdita
+    // di segnale) e il punto viene accettato resettando il Kalman.
+    if (_lastAcceptedRawPos != null && _lastAcceptedTs != null) {
+      final dtMs = now.difference(_lastAcceptedTs!).inMilliseconds;
+      final impliedSpeedKmh = _computeGeometricSpeedKmh(
+          _lastAcceptedRawPos!, rawLatLng, Duration(milliseconds: dtMs));
+      if (impliedSpeedKmh > kMaxSpeedFilterKmh) {
+        _jumpCount++;
+        if (_jumpCount < kMaxConsecutiveJumps) {
+          debugPrint(
+              'GPS JUMP scartato: ${impliedSpeedKmh.toStringAsFixed(0)} km/h');
+          notifyListeners();
+          return;
         }
-        _geometricSpeedKmh = speedKmh;
+        _kalmanFilter.reset();
+        _jumpCount = 0;
+      } else {
+        _jumpCount = 0;
       }
     }
-    _lastAcceptedRawLatLng = rawLatLng;
-    _lastAcceptedRawTime = now;
+    _lastAcceptedRawPos = rawLatLng;
+    _lastAcceptedTs = now;
 
-    // Apply Kalman filter; filtered position is used for all tracking operations.
-    final filtered = _kalmanFilter.filter(
-        pos.latitude, pos.longitude, pos.accuracy, now);
-    _filteredPosition = filtered;
-    final latLng = filtered;
+    // ── STEP 3: Kalman filter 4D cinematico ─────────────────────────────────
+    final filteredPos =
+        _kalmanFilter.filter(pos.latitude, pos.longitude, pos.accuracy, now);
+    _filteredPosition = filteredPos;
 
-    if (_localTrack.isNotEmpty) {
-      _totalDistanceKm += _haversineKm(_localTrack.last, latLng);
+    // ── STEP 4: filtro spostamento minimo ───────────────────────────────────
+    // Fix diretto al pattern "a ventaglio": sotto soglia non si aggiorna la
+    // polyline/distanza, ma si prosegue comunque con bearing, waypoint
+    // detection, recovery e tracking live.
+    var updatePolyline = true;
+    if (_lastAcceptedFilteredPos != null) {
+      final dispM =
+          _haversineKm(_lastAcceptedFilteredPos!, filteredPos) * 1000.0;
+      if (dispM < kMinDisplacementMeters) {
+        updatePolyline = false;
+      }
     }
-    _localTrack.add(latLng);
-    _trackTimestamps.add(now); // kept in sync with _localTrack for lookback
 
-    // Circular buffer of last 5 valid Kalman-filtered points for bearing
-    _recentPoints.add(latLng);
-    if (_recentPoints.length > 5) _recentPoints.removeAt(0);
+    // ── STEP 5: velocità geometrica e bearing ───────────────────────────────
+    if (_lastAcceptedFilteredPos != null && _lastFilteredTs != null) {
+      final dtMs = now.difference(_lastFilteredTs!).inMilliseconds;
+      _geometricSpeedKmh = _computeGeometricSpeedKmh(
+          _lastAcceptedFilteredPos!, filteredPos, Duration(milliseconds: dtMs));
+    }
+    _lastAcceptedFilteredPos = filteredPos;
+    _lastFilteredTs = now;
 
-    // Geometric bearing: update only when moving; freeze at low speed to avoid jitter
-    final speedKmh = pos.speed * 3.6;
-    if (speedKmh > _kMinSpeedKmh && _recentPoints.length >= 2) {
-      _lastHighSpeedBearingDeg = _computeBearingDeg(
-        _recentPoints[_recentPoints.length - 2],
-        _recentPoints[_recentPoints.length - 1],
+    // Circular buffer of last 5 Kalman-filtered points for bearing
+    _recentFilteredPoints.add(filteredPos);
+    if (_recentFilteredPoints.length > 5) _recentFilteredPoints.removeAt(0);
+
+    // Bearing: smoothing esponenziale sopra kMinBearingSpeedKmh; sotto
+    // soglia resta congelato all'ultimo valore (freccia stabile da fermo).
+    if (_geometricSpeedKmh > kMinBearingSpeedKmh &&
+        _recentFilteredPoints.length >= 2) {
+      final rawBearing = _computeBearingDeg(
+        _recentFilteredPoints[_recentFilteredPoints.length - 2],
+        _recentFilteredPoints[_recentFilteredPoints.length - 1],
       );
-      _bearingDeg = _lastHighSpeedBearingDeg;
+      _bearingDeg =
+          _angularInterp(_bearingDeg, rawBearing, kBearingSmoothingAlpha);
     }
-    // Below threshold: _bearingDeg keeps last high-speed value (arrow stable)
 
     debugPrint(
         'Bearing: ${_bearingDeg.toStringAsFixed(1)}°, '
-        'Speed: ${speedKmh.toStringAsFixed(1)} km/h, '
+        'Speed: ${_geometricSpeedKmh.toStringAsFixed(1)} km/h, '
         'Mode: $mode');
 
-    // Detect waypoint passage
+    // Recovery track: ogni punto accettato, per il lookback inizio speciale
+    _recoveryTrack.add(filteredPos);
+    _recoveryTimestamps.add(now);
+
+    // Detect waypoint passage — sempre sulla posizione filtrata Kalman
     final wp = WaypointDetector.detectPassage(
-        latLng, _waypoints, _passedWaypoints);
+        filteredPos, _waypoints, _passedWaypoints);
     if (wp != null) {
       _passedWaypoints.add(wp.id);
       final passage = WaypointPassage(waypoint: wp, timestamp: now);
@@ -565,14 +637,14 @@ class GpsService extends ChangeNotifier {
     }
 
     // Recovery: retroactively detect missed special starts
-    await _trySpecialStartRecovery(latLng, now);
+    await _trySpecialStartRecovery(filteredPos, now);
 
     // Fuel point passage: mark as passed once within radius, notify exactly once.
     // After this, the "approaching" banner stops even if a GPS jump brings the
     // pilot virtually back near the fuel point.
     for (final fp in _fuelPoints) {
       if (_passedFuelPoints.contains(fp.id)) continue;
-      final distM = _haversineKm(latLng, LatLng(fp.lat, fp.lng)) * 1000.0;
+      final distM = _haversineKm(filteredPos, LatLng(fp.lat, fp.lng)) * 1000.0;
       if (distM <= AppConstants.fuelPointRadiusMeters) {
         _passedFuelPoints.add(fp.id);
         _fuelPointStreamCtrl.add('✅ Punto ristoro raggiunto');
@@ -584,7 +656,7 @@ class GpsService extends ChangeNotifier {
     DangerPointModel? warnPoint;
     double? warnDist;
     for (final dp in _dangerPoints) {
-      final distM = WaypointDetector.dangerPointDistance(latLng, dp);
+      final distM = WaypointDetector.dangerPointDistance(filteredPos, dp);
       if (distM <= AppConstants.dangerWarningRadiusMeters) {
         _alertedDangerPoints.add(dp.id);
       } else if (distM > AppConstants.dangerRemoveRadiusMeters) {
@@ -623,7 +695,7 @@ class GpsService extends ChangeNotifier {
     final remainingForMode =
         _waypoints.where((w) => !_passedWaypoints.contains(w.id)).toList();
     final nearest =
-        WaypointDetector.nearestWaypointDistance(latLng, remainingForMode);
+        WaypointDetector.nearestWaypointDistance(filteredPos, remainingForMode);
     final newMode = nearest != null &&
             nearest <= AppConstants.nearWaypointThresholdMeters
         ? GpsMode.nearWaypoint
@@ -640,16 +712,27 @@ class GpsService extends ChangeNotifier {
       _startPositionStream(newInterval);
     }
 
+    // ── STEP 6: aggiorna polyline display + distanza totale ─────────────────
+    // Solo se lo spostamento (STEP 4) è >= kMinDisplacementMeters, per non
+    // accumulare rumore GPS come distanza e non disegnare il pattern "a
+    // ventaglio" da fermo.
+    if (updatePolyline) {
+      if (_trackPoints.isNotEmpty) {
+        _totalDistanceKm += _haversineKm(_trackPoints.last, filteredPos);
+      }
+      _trackPoints.add(filteredPos);
+    }
+
     // Push live tracking to Firestore — queue offline if unavailable.
-    // Use Kalman-filtered coordinates; raw accuracy and speed from the sensor.
+    // Usa coordinate Kalman-filtrate e velocità geometrica (mai position.speed).
     if (_activeEventId != null && _activeUserId != null) {
       final point = GpsPointModel(
         userId: _activeUserId!,
         eventId: _activeEventId!,
-        lat: latLng.latitude,
-        lng: latLng.longitude,
+        lat: filteredPos.latitude,
+        lng: filteredPos.longitude,
         accuracy: pos.accuracy,
-        speed: pos.speed,
+        speed: _geometricSpeedKmh / 3.6,
         timestamp: now,
         specialeId: _currentSpecialId,
         waypointPassati: _passedWaypoints.toList(),
@@ -678,15 +761,18 @@ class GpsService extends ChangeNotifier {
     _consecutiveDiscarded = 0;
     _filteredPosition = null;
     _kalmanFilter.reset();
-    _lastAcceptedRawLatLng = null;
-    _lastAcceptedRawTime = null;
+    _lastAcceptedRawPos = null;
+    _lastAcceptedTs = null;
     _jumpCount = 0;
+    _lastAcceptedFilteredPos = null;
+    _lastFilteredTs = null;
     _geometricSpeedKmh = 0.0;
-    _recentPoints.clear();
-    _lastHighSpeedBearingDeg = 0.0;
+    _recentFilteredPoints.clear();
     _bearingDeg = 0.0;
     _recoveryAttempted.clear();
-    _trackTimestamps.clear();
+    _trackPoints.clear();
+    _recoveryTrack.clear();
+    _recoveryTimestamps.clear();
     _alertedDangerPoints.clear();
     _warningDangerPoint = null;
     _warningDangerDistance = null;
