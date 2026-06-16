@@ -11,6 +11,7 @@ import '../constants/app_constants.dart';
 import '../services/waypoint_detector.dart';
 import '../services/firestore_service.dart';
 import '../services/offline_queue_service.dart';
+import '../services/imu_fusion_service.dart';
 import '../utils/kalman_filter.dart';
 
 enum GpsMode { idle, transfer, inSpecial, nearWaypoint }
@@ -53,7 +54,9 @@ class GpsService extends ChangeNotifier {
   // un punto così impreciso corrompe il Kalman, ma scartarlo del tutto
   // rischia di perdere il passaggio di un waypoint. Soglia display più
   // restrittiva (meglio gaps che scatter), soglia detection più permissiva.
-  static const double kMaxAccuracyDisplayMeters = 10.0;
+  // 8.0 (era 10.0): il chip MediaTek del DOOGEE dichiara accuracy
+  // ottimistica, abbassare la soglia migliora la qualità del Kalman.
+  static const double kMaxAccuracyDisplayMeters = 8.0;
   static const double kMaxAccuracyDetectionMeters = 25.0;
 
   // STEP 2 — Filtro jump geometrico: secondo livello dopo il Kalman 4D.
@@ -76,8 +79,14 @@ class GpsService extends ChangeNotifier {
 
   final FirestoreService _firestoreService;
   final OfflineQueueService _offlineQueue;
+  final ImuFusionService _imu;
 
-  GpsService(this._firestoreService, this._offlineQueue);
+  GpsService(this._firestoreService, this._offlineQueue, this._imu);
+
+  /// Servizio di fusione IMU (giroscopio + accelerometro + bussola) usato
+  /// SOLO per il display a 50Hz (freccia, polyline live, velocità UI).
+  /// MAI per waypoint detection, timing PS o recovery.
+  ImuFusionService get imu => _imu;
 
   final StreamController<Position> _posStreamCtrl =
       StreamController<Position>.broadcast();
@@ -204,10 +213,10 @@ class GpsService extends ChangeNotifier {
   List<WaypointModel> get remainingWaypoints =>
       _waypoints.where((w) => !_passedWaypoints.contains(w.id)).toList();
 
-  /// True when the last 3 consecutive GPS positions were discarded for poor
-  /// accuracy (abbassato da 5: con soglia display 10m gli scarti sono più
+  /// True when the last 2 consecutive GPS positions were discarded for poor
+  /// accuracy (abbassato da 3: con soglia display 8m gli scarti sono più
   /// frequenti).
-  bool get isAccuracyPoor => _consecutiveDiscarded >= 3;
+  bool get isAccuracyPoor => _consecutiveDiscarded >= 2;
 
   /// Last Kalman-filtered position; null until the first accepted GPS fix.
   LatLng? get filteredPosition => _filteredPosition;
@@ -657,6 +666,7 @@ class GpsService extends ChangeNotifier {
     _isGpsFrozen = false;
     _isRestartingGps = false;
     WakelockPlus.enable().ignore();
+    await _imu.start();
     notifyListeners();
 
     _firestoreService.setRaceStatus(eventId, userId, 'racing').catchError((_) {});
@@ -843,6 +853,16 @@ class GpsService extends ChangeNotifier {
     _lastAcceptedFilteredPos = filteredPos;
     _lastFilteredTs = now;
 
+    // Sigma accel dinamico: a velocità più basse il filtro Kalman può
+    // smorzare di più (meno dinamica da inseguire); a velocità da enduro
+    // serve tolleranza alle brusche variazioni di direzione/velocità.
+    final targetSigma = _geometricSpeedKmh < 10.0
+        ? GpsKalmanFilter.kSigmaAccelWalking
+        : _geometricSpeedKmh < 40.0
+            ? GpsKalmanFilter.kSigmaAccelMedium
+            : GpsKalmanFilter.kSigmaAccelMotorcycle;
+    _kalmanFilter.updateSigmaAccel(targetSigma);
+
     // Circular buffer of last 5 Kalman-filtered points for bearing
     _recentFilteredPoints.add(filteredPos);
     if (_recentFilteredPoints.length > 5) _recentFilteredPoints.removeAt(0);
@@ -1003,6 +1023,16 @@ class GpsService extends ChangeNotifier {
       }
     }
 
+    // Aggiorna anchor IMU con il fix GPS Kalman filtrato.
+    // L'IMU usa questo per correggere la deriva del dead reckoning.
+    // NOTA: questa chiamata NON influenza waypoint detection
+    // né timing PS — quelli usano filteredPos direttamente.
+    _imu.updateWithGps(
+      position: filteredPos,
+      speedKmh: _geometricSpeedKmh,
+      timestamp: now,
+    );
+
     notifyListeners();
   }
 
@@ -1095,6 +1125,7 @@ class GpsService extends ChangeNotifier {
     _isGpsFrozen = false;
     _isRestartingGps = false;
     _lastRawPositionTs = null;
+    _imu.stop();
     WakelockPlus.disable().ignore();
     notifyListeners();
   }

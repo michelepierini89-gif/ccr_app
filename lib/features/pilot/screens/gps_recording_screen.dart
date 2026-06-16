@@ -50,6 +50,12 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   LatLng? _fromPos;
   LatLng? _targetPos;
 
+  // Posizione/heading da ImuFusionService, aggiornati a ~50Hz.
+  // Usati SOLO per la freccia/posizione di display e la rotazione mappa
+  // in modalità HEADING — mai per waypoint detection o timing PS.
+  LatLng? _imuPosition;
+  double _imuHeading = 0.0;
+
   late final MapController _mapController;
   late final Stream<Position> _gpsStream;
   bool _followMode = true;
@@ -112,6 +118,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         if (mounted) setState(() => _fuelPointMessage = null);
       });
     });
+    ref.read(imuFusionServiceProvider).addListener(_onImuUpdate);
     _dangerPassedSub =
         ref.read(gpsServiceProvider).dangerPassedStream.listen((msg) {
       if (!mounted) return;
@@ -236,9 +243,19 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     }
   }
 
+  void _onImuUpdate() {
+    final imu = ref.read(imuFusionServiceProvider);
+    if (imu.fusedPosition == null || !mounted) return;
+    setState(() {
+      _imuPosition = imu.fusedPosition;
+      _imuHeading = imu.fusedHeadingDeg;
+    });
+  }
+
   @override
   void dispose() {
     WakelockPlus.disable().ignore();
+    ref.read(imuFusionServiceProvider).removeListener(_onImuUpdate);
     _elapsedTimer?.cancel();
     _recoverySub?.cancel();
     _recoveryTimer?.cancel();
@@ -860,8 +877,14 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           });
         }
 
-        // Use interpolated position for marker and camera; fall back to raw GPS
-        final curPos = _displayPos ?? rawPos;
+        // Use interpolated position for marker and camera; fall back to raw GPS.
+        // _imuPosition (da ImuFusionService, ~50Hz) ha priorità per fluidità
+        // del display — usato SOLO qui, mai per waypoint/timing.
+        final curPos = _imuPosition ?? _displayPos ?? rawPos;
+
+        // Heading di display: IMU a 50Hz se disponibile, altrimenti bearing GPS.
+        final displayHeadingDeg =
+            _imuPosition != null ? _imuHeading : gps.bearingDeg;
 
         // Camera follow and optional map rotation on every stream emission
         if (liveData != null && _followMode) {
@@ -870,20 +893,24 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
             _programmaticMove = true;
             _mapController.move(curPos, _mapZoom);
             if (_headingMode) {
-              // bearingDeg already in degrees [0,360) — no radians conversion needed
-              _mapController.rotate(-gps.bearingDeg);
+              // displayHeadingDeg already in degrees [0,360) — no radians conversion needed
+              _mapController.rotate(-displayHeadingDeg);
             }
           });
         }
 
-        // NORD mode: arrow rotates by bearingDeg (converted to radians for Transform.rotate)
+        // NORD mode: arrow rotates by displayHeadingDeg (converted to radians for Transform.rotate)
         // HEADING mode: map already rotated → arrow fixed pointing up (angle 0)
         // No double-rotation: either the map rotates OR the arrow rotates, never both.
-        final arrowAngle = _headingMode ? 0.0 : gps.bearingDeg * pi / 180;
+        final arrowAngle = _headingMode ? 0.0 : displayHeadingDeg * pi / 180;
         final hasPos = liveData != null || pos != null;
         // Velocità geometrica (distanza/tempo tra punti GPS accettati),
         // coerente col filtro jump — non position.speed, inaffidabile.
-        final speedKmh = gps.geometricSpeedKmh;
+        // L'IMU sovrascrive il display se ha un valore significativo (>0.5km/h),
+        // altrimenti si usa la velocità geometrica GPS.
+        final imu = ref.watch(imuFusionServiceProvider);
+        final speedKmh =
+            imu.fusedSpeedKmh > 0.5 ? imu.fusedSpeedKmh : gps.geometricSpeedKmh;
         final accuracy = liveData?.accuracy ?? pos?.accuracy ?? 0.0;
 
     return Column(
@@ -1299,9 +1326,10 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                     color: Colors.black54,
                     padding: const EdgeInsets.all(4),
                     child: Text(
-                      'B:${gps.bearingDeg.toStringAsFixed(0)}° '
-                      'M:${(_headingMode ? -gps.bearingDeg : 0.0).toStringAsFixed(0)}° '
-                      'V:${speedKmh.toStringAsFixed(0)}km/h',
+                      'GPS B:${gps.bearingDeg.toStringAsFixed(0)}° '
+                      'IMU H:${imu.fusedHeadingDeg.toStringAsFixed(0)}° '
+                      'M:${(_headingMode ? -displayHeadingDeg : 0.0).toStringAsFixed(0)}° '
+                      'V:${imu.fusedSpeedKmh.toStringAsFixed(0)}km/h',
                       style: const TextStyle(color: Colors.white, fontSize: 11),
                     ),
                   ),

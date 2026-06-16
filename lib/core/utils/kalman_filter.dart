@@ -14,13 +14,28 @@ import 'package:latlong2/latlong.dart';
 class GpsKalmanFilter {
   /// Process-noise acceleration in m/s². Higher values let the filter
   /// track faster direction/speed changes at the cost of more smoothing lag.
-  final double sigmaAccel;
+  /// Non-final: aggiornato dinamicamente in base alla velocità geometrica
+  /// tramite [updateSigmaAccel] (vedi GpsService._onPosition).
+  double sigmaAccel;
+
+  /// A passo d'uomo: pochissima dinamica, massimo smoothing.
+  static const double kSigmaAccelWalking = 0.5;
+
+  /// Velocità intermedie (trasferimento su strada).
+  static const double kSigmaAccelMedium = 1.5;
 
   /// Tuned for motorcycle/enduro use: tolerates the rapid accel/decel and
   /// direction changes typical off-road, while still smoothing urban multipath.
   static const double kSigmaAccelMotorcycle = 3.0;
 
   GpsKalmanFilter({this.sigmaAccel = 1.0});
+
+  /// Aggiorna sigmaAccel solo se la variazione è significativa, per evitare
+  /// di invalidare inutilmente la covarianza del filtro ad ogni fix.
+  void updateSigmaAccel(double newVal) {
+    if ((newVal - sigmaAccel).abs() < 0.01) return;
+    sigmaAccel = newVal;
+  }
 
   List<double>? _state; // [lat, lng, vLat, vLng]
   List<List<double>>? _p; // 4x4 covariance
