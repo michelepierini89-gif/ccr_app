@@ -580,7 +580,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           statusData: myStatusData,
           eventId: effectiveEventId);
     } else {
-      body = _buildPreStart(gps, pos, canStart, effectiveEventId);
+      body = _buildPreStart(gps, pos, canStart, effectiveEventId, event);
     }
 
     return Scaffold(
@@ -593,7 +593,32 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
 
   Widget _buildPreStart(
       GpsService gps, dynamic pos, bool canStart,
-      [String? effectiveEventId]) {
+      [String? effectiveEventId, EventModel? event]) {
+    // Calcola se la squadra del pilota è sotto il minimo richiesto dall'evento.
+    // Il calcolo avviene SOLO qui (pre-avvio): quando parte la registrazione
+    // _buildActiveTracking viene chiamato e questo metodo — con i ref.watch —
+    // smette di essere invocato, azzerando automaticamente le subscription.
+    final myReg = effectiveEventId != null
+        ? ref.watch(myRegistrationStreamProvider(effectiveEventId)).valueOrNull
+        : null;
+    final mySquadraId = myReg?.squadraId;
+    int approvedTeamCount = 0;
+    bool isUnderSized = false;
+    if (event != null &&
+        mySquadraId != null &&
+        myReg?.stato == RegistrationStatus.approvato) {
+      final allRegsAsync =
+          ref.watch(registrationsProvider(effectiveEventId!));
+      if (allRegsAsync.hasValue) {
+        approvedTeamCount = allRegsAsync.requireValue
+            .where((r) =>
+                r.squadraId == mySquadraId &&
+                r.stato == RegistrationStatus.approvato)
+            .length;
+        isUnderSized = approvedTeamCount < event.minSquadra;
+      }
+    }
+
     return Column(
       children: [
         _TopBar(
@@ -603,6 +628,11 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         ),
         if (!canStart)
           _WaitingBanner(),
+        if (isUnderSized)
+          _UnderSizedTeamBanner(
+            present: approvedTeamCount,
+            minRequired: event!.minSquadra,
+          ),
         Expanded(
           child: Center(
             child: Column(
@@ -1821,6 +1851,38 @@ class _WaitingBanner extends StatelessWidget {
             child: Text(
               'In attesa del via dell\'organizzatore',
               style: TextStyle(
+                  color: AppColors.warning,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _UnderSizedTeamBanner extends StatelessWidget {
+  final int present;
+  final int minRequired;
+  const _UnderSizedTeamBanner(
+      {required this.present, required this.minRequired});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      color: AppColors.warning.withValues(alpha: 0.12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: Row(
+        children: [
+          const Icon(Icons.group_off, color: AppColors.warning, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Squadra sotto-numerata: $present/$minRequired piloti — '
+              'verrà applicata una penalità in classifica',
+              style: const TextStyle(
                   color: AppColors.warning,
                   fontWeight: FontWeight.w600,
                   fontSize: 13),
