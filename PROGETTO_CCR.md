@@ -865,6 +865,69 @@ Riscrittura completa del sistema di filtraggio GPS per risolvere il collasso in 
 
 ---
 
+### Step 23 — IMU Fusion: GPS + giroscopio + accelerometro + bussola a 50Hz + sigma accel dinamico + soglia accuracy 8m (16 giugno 2026) ✅
+
+**Architettura generale:**
+- Nuovo `ImuFusionService` (ChangeNotifier) in `lib/core/services/imu_fusion_service.dart`: fonde i sensori inerziali con i fix GPS Kalman per produrre posizione, heading e velocità a ~50Hz esclusivamente per il display
+- **REGOLA DI SICUREZZA INVARIANTE**: `ImuFusionService` controlla SOLO il display (freccia, posizione marker, rotazione mappa HEADING, velocità UI). MAI usato per waypoint detection, timing PS, o recovery — quelli usano sempre e solo GPS+Kalman 4D
+- Pacchetti aggiunti: `sensors_plus: ^6.0.0` (gyroscopio + accelerometro; supporta Android/iOS/Web), `flutter_compass: ^0.8.0` (bussola magnetometrica; solo Android/iOS)
+- Guard `kIsWeb` in `ImuFusionService.start()`: su web la fusione IMU resta disattivata (flutter_compass non ha implementazione web), la UI cade su GPS+Kalman per il display
+
+**STEP 0 — pubspec.yaml:**
+- Aggiunti `sensors_plus: ^6.0.0` e `flutter_compass: ^0.8.0`; risolti `flutter_compass 0.8.1`, `sensors_plus 6.1.2`, `sensors_plus_platform_interface 2.0.1`
+
+**STEP 1 — ImuFusionService (`lib/core/services/imu_fusion_service.dart`):**
+- Filtro complementare per heading: 98% giroscopio integrato (event.z × dt → deltaHeadingDeg) + 2% correzione bussola per campione (converge in ~2s a 50Hz); bussola usata per sola correzione deriva, non come base temporale
+- Accelerometro low-pass (alpha=0.10): filtra vibrazioni motore (>20Hz); proietta sull'asse heading per `aForward`; integra velocità con decay 0.98/campione, clamp [-5, 33.3] m/s
+- Dead reckoning: sposta `_fusedPosition` nella direzione heading della distanza `speedMs × dt` via formula haversine; attivato solo se distanza > 1mm
+- GPS anchor correction via `updateWithGps()`: blend 80% GPS / 20% dead-reckoning IMU per evitare salti bruschi; sincronizza velocità IMU da GPS se > 3km/h; notifica listener (=> trigger 50Hz UI)
+- Bussola: prima lettura inizializza heading direttamente; successive aggiornano `_lastCompassDeg` (applicato nel callback giroscopio via filtro complementare)
+- `start()` / `stop()` simmetrici; `dispose()` chiama `stop()` e cancella tutte e 3 le subscription (no memory leak)
+- Campionamento: `SensorInterval.gameInterval` = 20ms ≈ 50Hz
+
+**STEP 2 — GpsService integration (`lib/core/services/gps_service.dart`):**
+- `ImuFusionService _imu` come dipendenza di costruttore; getter pubblico `imu` per accesso dalla UI
+- `startRecording()`: chiama `await _imu.start()` dopo `WakelockPlus.enable()`
+- `stopRecording()`: chiama `_imu.stop()` prima di `WakelockPlus.disable()`
+- `_onPosition()`: dopo tutti i filtri (accuracy, jump, Kalman sanity check), prima di `notifyListeners()`, chiama `_imu.updateWithGps(position: filteredPos, speedKmh: _geometricSpeedKmh, timestamp: now)` — garantisce che l'anchor IMU riceva solo punti di qualità
+
+**STEP 3 — Riverpod (`lib/features/pilot/providers/pilot_provider.dart`):**
+- `imuFusionServiceProvider = ChangeNotifierProvider<ImuFusionService>` registrato separatamente
+- `gpsServiceProvider` aggiornato: inietta `ref.watch(imuFusionServiceProvider)` come terzo argomento del costruttore
+
+**STEP 4 — UI (`lib/features/pilot/screens/gps_recording_screen.dart`):**
+- `_imuPosition: LatLng?` e `_imuHeading: double` come state fields; `addListener(_onImuUpdate)` in `initState()`, `removeListener` in `dispose()`
+- `_onImuUpdate()`: aggiorna `_imuPosition`/`_imuHeading` via `setState()` a ~50Hz quando `fusedPosition != null`
+- `curPos = _imuPosition ?? _displayPos ?? rawPos` (priorità IMU per fluidità display)
+- `displayHeadingDeg = _imuPosition != null ? _imuHeading : gps.bearingDeg` usato per `arrowAngle` e `_mapController.rotate(-displayHeadingDeg)` in HEADING mode
+- Polyline blu: invariato, usa esclusivamente `gps.localTrack` (GPS+Kalman, mai IMU)
+- Velocità UI: `imu.fusedSpeedKmh > 0.5 ? imu.fusedSpeedKmh : gps.geometricSpeedKmh`
+- Debug overlay (kDebugMode): `'GPS B:${gps.bearingDeg}° IMU H:${imu.fusedHeadingDeg}° M:... V:${imu.fusedSpeedKmh}km/h'`
+
+**STEP 5 — Sigma accel dinamico (`lib/core/utils/kalman_filter.dart` + `gps_service.dart`):**
+- `sigmaAccel` reso non-final in `GpsKalmanFilter`; nuove costanti `kSigmaAccelWalking = 0.5` e `kSigmaAccelMedium = 1.5` (mantiene `kSigmaAccelMotorcycle = 3.0`)
+- `updateSigmaAccel(double newVal)`: aggiorna solo se variazione > 0.01, per non invalidare inutilmente la covarianza
+- `GpsService._onPosition()`: dopo calcolo `_geometricSpeedKmh`, imposta `targetSigma` (walking <10km/h, medium <40km/h, motorcycle ≥40km/h) e chiama `_kalmanFilter.updateSigmaAccel(targetSigma)`
+
+**STEP 6 — Soglia accuracy ridotta (`gps_service.dart`):**
+- `kMaxAccuracyDisplayMeters` abbassato da 10.0 a 8.0m: il chip MediaTek del DOOGEE dichiara accuracy ottimistica, soglia più bassa migliora qualità input Kalman
+- `isAccuracyPoor`: soglia abbassata da `>= 3` a `>= 2` scarti consecutivi (coerente con soglia display più stretta che genera scarti più frequenti)
+
+**Verifica invarianti:**
+1. ✅ `fusedPosition` usato SOLO per `_imuPosition` in UI; mai in WaypointDetector, mai per timing PS
+2. ✅ `_trackPoints` / `gps.localTrack` aggiornati solo da fix GPS Kalman; nessun punto IMU
+3. ✅ `updateWithGps()` chiamato solo dopo che il fix ha superato tutti i filtri in `_onPosition()`
+4. ✅ `imu.start()` / `imu.stop()` simmetrici con `startRecording()` / `stopRecording()`
+5. ✅ `dispose()` cancella tutte le subscription (gyro, accel, compass)
+
+**Deploy:**
+- `flutter analyze`: zero warning
+- `git commit 46cbeb5`: "feat: IMU fusion GPS+giroscopio+accelerometro+bussola a 50Hz + sigma accel dinamico + soglia accuracy 8m"
+- `flutter build web --release` + `firebase deploy --only hosting` ✅
+- `git push origin main` ✅
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**
