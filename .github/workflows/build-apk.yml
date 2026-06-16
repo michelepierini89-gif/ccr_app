@@ -1,4 +1,4 @@
-name: Build Debug APK
+name: Build APK (Debug + Release)
 
 on:
   push:
@@ -30,9 +30,28 @@ jobs:
       - name: Build debug APK
         run: flutter build apk --debug
 
-      - name: Upload APK artifact
+      - name: Generate test keystore for release signing
+        run: |
+          keytool -genkey -v \
+            -keystore android/app/test-keystore.jks \
+            -alias testkey \
+            -keyalg RSA -keysize 2048 -validity 365 \
+            -dname "CN=CCR Test, OU=Test, O=CCR, L=IT, ST=IT, C=IT" \
+            -storepass testpass123 -keypass testpass123
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: ccr-app-debug-${{ github.sha }}
           path: build/app/outputs/flutter-apk/app-debug.apk
+          retention-days: 30
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ccr-app-release-${{ github.sha }}
+          path: build/app/outputs/flutter-apk/app-release.apk
           retention-days: 30

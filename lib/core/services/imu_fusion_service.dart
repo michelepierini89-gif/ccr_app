@@ -17,6 +17,13 @@ import 'package:sensors_plus/sensors_plus.dart';
 /// OUTPUT a ~50Hz: fusedPosition, fusedHeadingDeg, fusedSpeedKmh
 /// Usato SOLO per display. Timing PS usa GPS+Kalman.
 class ImuFusionService extends ChangeNotifier {
+  /// Segno del giroscopio Z per la rotazione heading.
+  /// +1.0 = rotazione oraria aumenta heading (default)
+  /// -1.0 = invertire se la mappa ruota al contrario
+  /// DA TESTARE: se durante il test la mappa ruota nella
+  /// direzione opposta al movimento reale, cambiare a -1.0
+  static const double kGyroZSign = 1.0;
+
   // ── Heading fusion (complementary filter) ──
   double _headingDeg = 0.0;
   double _lastCompassDeg = 0.0;
@@ -57,6 +64,10 @@ class ImuFusionService extends ChangeNotifier {
   // Massimo dt accettabile tra un campione IMU e il successivo.
   // Sopra questa soglia resettiamo l'integrazione (gap).
   static const double kMaxDtSeconds = 0.5;
+
+  // ── UI throttle ──
+  DateTime? _lastUiNotifyTs;
+  static const int kUiUpdateIntervalMs = 40; // 25Hz
 
   // ── Timestamps ──
   DateTime? _lastGyroTs;
@@ -128,6 +139,7 @@ class ImuFusionService extends ChangeNotifier {
     _fusedPosition = null;
     _lastGyroTs = null;
     _lastAccelTs = null;
+    _lastUiNotifyTs = null;
   }
 
   // ─────────────────────────────────────────────────────
@@ -205,11 +217,8 @@ class ImuFusionService extends ChangeNotifier {
     // event.z = velocità angolare intorno all'asse verticale
     // (yaw rate) in rad/s. Su Android con telefono orientato
     // normalmente: positivo = rotazione verso destra (orario).
-    // Convertiamo in gradi e integriamo.
-    final deltaHeadingDeg = -event.z * dt * 180.0 / pi;
-    // Nota: il segno dipende dall'orientamento del telefono.
-    // Se la bussola corregge continuamente nella direzione
-    // opposta, invertire il segno: + event.z * dt * ...
+    // Convertiamo in gradi e integriamo. Segno configurabile via kGyroZSign.
+    final deltaHeadingDeg = kGyroZSign * event.z * dt * 180.0 / pi;
 
     // Filtro complementare:
     // kAlpha * (giroscopio integrato) + (1-kAlpha) * bussola
@@ -269,7 +278,13 @@ class ImuFusionService extends ChangeNotifier {
       );
     }
 
-    notifyListeners(); // 50Hz UI update
+    final now2 = DateTime.now();
+    if (_lastUiNotifyTs == null ||
+        now2.difference(_lastUiNotifyTs!).inMilliseconds >=
+            kUiUpdateIntervalMs) {
+      _lastUiNotifyTs = now2;
+      notifyListeners(); // 25Hz alla UI
+    }
   }
 
   // ─────────────────────────────────────────────────────

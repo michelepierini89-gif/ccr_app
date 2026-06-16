@@ -1326,8 +1326,8 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                     color: Colors.black54,
                     padding: const EdgeInsets.all(4),
                     child: Text(
-                      'GPS B:${gps.bearingDeg.toStringAsFixed(0)}° '
-                      'IMU H:${imu.fusedHeadingDeg.toStringAsFixed(0)}° '
+                      'GY:${imu.fusedHeadingDeg.toStringAsFixed(0)}° '
+                      'GPS:${gps.bearingDeg.toStringAsFixed(0)}° '
                       'M:${(_headingMode ? -displayHeadingDeg : 0.0).toStringAsFixed(0)}° '
                       'V:${imu.fusedSpeedKmh.toStringAsFixed(0)}km/h',
                       style: const TextStyle(color: Colors.white, fontSize: 11),
