@@ -95,6 +95,7 @@ class GpsService extends ChangeNotifier {
 
   bool _isRecording = false;
   bool _writesBlocked = false;
+  bool _disposed = false;
   GpsMode _mode = GpsMode.idle;
   Position? _lastPosition;
   String? _activeEventId;
@@ -318,6 +319,7 @@ class GpsService extends ChangeNotifier {
   Future<void> _trySpecialStartRecovery(
       LatLng currentPos, DateTime now) async {
     for (final special in _specials) {
+      if (_disposed) return;
       final inizioId = special.waypointInizio.id;
 
       // Skip if already started, already attempted, or cancelled
@@ -489,6 +491,7 @@ class GpsService extends ChangeNotifier {
   /// quel timestamp.
   Future<void> _trySpecialEndRecovery(LatLng currentPos, DateTime now) async {
     for (final special in _specials) {
+      if (_disposed) return;
       if (special.annullata) continue;
       if (_endRecoveryAttempted.contains(special.id)) continue;
 
@@ -667,7 +670,7 @@ class GpsService extends ChangeNotifier {
     _isRestartingGps = false;
     WakelockPlus.enable().ignore();
     await _imu.start();
-    notifyListeners();
+    _safeNotify();
 
     _firestoreService.setRaceStatus(eventId, userId, 'racing').catchError((_) {});
     _startPositionStream(AppConstants.gpsIntervalTransferMs);
@@ -752,7 +755,7 @@ class GpsService extends ChangeNotifier {
     _lastRawPositionTs = now;
     if (_isGpsFrozen) {
       _isGpsFrozen = false;
-      notifyListeners();
+      _safeNotify();
     }
 
     // ── STEP 1: doppia soglia accuracy DISPLAY vs DETECTION ──────────────
@@ -770,7 +773,8 @@ class GpsService extends ChangeNotifier {
           await _handleWaypointDetection(detection);
         }
       }
-      notifyListeners();
+      if (_disposed) return;
+      _safeNotify();
       return;
     }
     _consecutiveDiscarded = 0;
@@ -792,7 +796,7 @@ class GpsService extends ChangeNotifier {
         if (impliedSpeedKmh > kMaxSpeedFilterKmh) {
           debugPrint(
               'GPS JUMP scartato: ${impliedSpeedKmh.toStringAsFixed(0)} km/h');
-          notifyListeners();
+          _safeNotify();
           return;
         }
       }
@@ -895,11 +899,14 @@ class GpsService extends ChangeNotifier {
         filteredPos, now, _waypoints, _passedWaypoints);
     if (detection != null) {
       await _handleWaypointDetection(detection);
+      if (_disposed) return;
     }
 
     // Recovery: retroactively detect missed special starts/ends
     await _trySpecialStartRecovery(filteredPos, now);
+    if (_disposed) return;
     await _trySpecialEndRecovery(filteredPos, now);
+    if (_disposed) return;
 
     // Fuel point passage: mark as passed once within radius, notify exactly once.
     // After this, the "approaching" banner stops even if a GPS jump brings the
@@ -1033,7 +1040,7 @@ class GpsService extends ChangeNotifier {
       timestamp: now,
     );
 
-    notifyListeners();
+    _safeNotify();
   }
 
   /// Controllo periodico (ogni 3s) del watchdog GPS: se non arriva nessuna
@@ -1049,7 +1056,7 @@ class GpsService extends ChangeNotifier {
 
     if (secSinceLast >= kFreezeDetectionSeconds && !_isGpsFrozen) {
       _isGpsFrozen = true;
-      notifyListeners();
+      _safeNotify();
       debugPrint('GPS FREEZE rilevato: ${secSinceLast}s senza posizioni');
     }
 
@@ -1065,18 +1072,19 @@ class GpsService extends ChangeNotifier {
     if (_isRestartingGps) return;
     debugPrint('GPS RESTART automatico...');
     _isRestartingGps = true;
-    notifyListeners();
+    _safeNotify();
 
     await _positionSub?.cancel();
     _positionSub = null;
 
     await Future.delayed(const Duration(seconds: 1));
+    if (_disposed) return;
 
     _startPositionStream(_currentIntervalMs);
 
     _isRestartingGps = false;
     _lastRawPositionTs = DateTime.now();
-    notifyListeners();
+    _safeNotify();
 
     debugPrint('GPS RESTART completato');
   }
@@ -1127,11 +1135,16 @@ class GpsService extends ChangeNotifier {
     _lastRawPositionTs = null;
     _imu.stop();
     WakelockPlus.disable().ignore();
-    notifyListeners();
+    _safeNotify();
+  }
+
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
   }
 
   @override
   void dispose() {
+    _disposed = true;
     _positionSub?.cancel();
     _freezeDetectionTimer?.cancel();
     _posStreamCtrl.close();

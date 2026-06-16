@@ -78,6 +78,7 @@ class ImuFusionService extends ChangeNotifier {
   StreamSubscription<UserAccelerometerEvent>? _accelSub;
   StreamSubscription<CompassEvent>? _compassSub;
   bool _isRunning = false;
+  bool _disposed = false;
 
   // ── Public getters ──
   LatLng? get fusedPosition => _fusedPosition;
@@ -172,7 +173,7 @@ class ImuFusionService extends ChangeNotifier {
       _speedMs = speedKmh / 3.6;
     }
 
-    notifyListeners();
+    _safeNotify();
   }
 
   // ─────────────────────────────────────────────────────
@@ -283,7 +284,7 @@ class ImuFusionService extends ChangeNotifier {
         now2.difference(_lastUiNotifyTs!).inMilliseconds >=
             kUiUpdateIntervalMs) {
       _lastUiNotifyTs = now2;
-      notifyListeners(); // 25Hz alla UI
+      _safeNotify(); // 25Hz alla UI
     }
   }
 
@@ -312,8 +313,13 @@ class ImuFusionService extends ChangeNotifier {
     return ((to - from + 540) % 360) - 180;
   }
 
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
+  }
+
   @override
   void dispose() {
+    _disposed = true;
     stop();
     super.dispose();
   }
