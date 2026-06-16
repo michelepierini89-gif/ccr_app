@@ -928,6 +928,35 @@ Riscrittura completa del sistema di filtraggio GPS per risolvere il collasso in 
 
 ---
 
+### Step 24 — Pre-test fix: gyro sign configurabile + UI throttle 25Hz + APK release workflow (16 giugno 2026) ✅
+
+**FIX 1 — Segno giroscopio configurabile (`lib/core/services/imu_fusion_service.dart`):**
+- Aggiunta costante `static const double kGyroZSign = 1.0` in cima a `ImuFusionService`
+- `_onGyroscope`: `deltaHeadingDeg = kGyroZSign * event.z * dt * 180.0 / pi` (era hardcoded `-event.z`)
+- Se durante il test la mappa ruota nella direzione opposta al movimento reale: cambiare a `-1.0`
+- Debug overlay aggiornato: label `GY:` (heading fuso IMU) vs `GPS:` (bearing geometrico) per confronto visivo immediato
+
+**FIX 2 — UI throttle 25Hz (`lib/core/services/imu_fusion_service.dart`):**
+- Aggiunti `DateTime? _lastUiNotifyTs` e `static const int kUiUpdateIntervalMs = 40` (25Hz)
+- `_onAccelerometer()`: sostituito `notifyListeners()` diretto con throttle 40ms
+- Calcolo interno (gyro, accel, dead reckoning) resta a 50Hz — solo la notifica UI è limitata
+- `_onGyroscope()` non chiama mai `notifyListeners()` (invariante già rispettata)
+- `_reset()` pulisce anche `_lastUiNotifyTs`
+
+**FIX 3 — APK release firmato via GitHub Actions:**
+- `.github/workflows/build-apk.yml`: workflow rinominato "Build APK (Debug + Release)"; genera sia `app-debug.apk` che `app-release.apk` come artifact separati (retention 30gg)
+- Step `Generate test keystore` genera `test-keystore.jks` in CI (alias=testkey, pass=testpass123, 1 anno)
+- `android/app/build.gradle.kts`: aggiunto `signingConfigs { create("release") { ... } }`; `buildTypes.release` usa `signingConfig release` con `isMinifyEnabled=true` e `isShrinkResources=true`
+- **NOTA**: keystore di test solo per testing su device. Prima del primo evento ufficiale: sostituire con keystore reale nei GitHub Secrets
+
+**Deploy:**
+- `flutter analyze`: zero issues (confermato su dart analyze sui file modificati + flutter analyze completo)
+- `git commit 595330d`: "fix: gyro sign configurabile + UI throttle 25Hz + APK release workflow"
+- `git push origin main` → Actions genera entrambi gli APK
+- `firebase deploy --only hosting` per aggiornare la web app
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**
