@@ -1009,6 +1009,49 @@ indefinitamente dopo START. Tre cause concorrenti nel core GPS (`gps_service.dar
 
 ---
 
+### Step 26 — Zone a velocità controllata + frecce direzionali traccia (17-18 giugno 2026) ✅
+
+**Feature 1 — Zone a velocità controllata:**
+
+- `SpeedZoneModel` (nuovo, in `waypoint_model.dart`): id, nome, specialeId, startLat/startLng, endLat/endLng, maxSpeedKmh; getter `lengthMeters` (haversine inizio-fine), `startLatLng`/`endLatLng`; fromMap/toMap/copyWith
+- `EventModel`: nuovo campo `speedZones: List<SpeedZoneModel>` con fromFirestore/toFirestore/copyWith
+- `PenaltySettingsModel`: nuovo campo `speedZonePenaltySeconds` (default 60s) con fromMap/toMap/copyWith
+- `SpeedZoneViolation` (nuovo, in `classifica_model.dart`): id, userId, zoneId, avgSpeedKmh, limitKmh, timestamp — persistito su `tracking/{eventId}/speedZoneViolations`; `SpeedZoneViolationInfo` per il dettaglio in `SpecialTempo` (zoneNome, avgSpeedKmh, limitKmh)
+- `FirestoreService`: `recordSpeedZoneViolation` (best-effort, nessun fallback offline — una violazione persa non altera il risultato gara, solo la penalità non si applica), `getSpeedZoneViolationsStream`/`Once`
+- `firestore.rules`: nuova regola `tracking/{eventId}/speedZoneViolations` — stessa visibilità di `passages` (tutti gli autenticati), perché la classifica del pilota stesso deve includere la penalità nel tempo finale; il dettaglio (nome zona, velocità) resta nascosto al pilota solo a livello di UI
+
+**Rilevamento lato pilota (`gps_service.dart`):**
+- I punti inizio/fine zona vengono iniettati in `_waypoints` come `WaypointType.intermedio` sintetici (id `{zoneId}_start`/`{zoneId}_end`), riusando la doppia conferma di `WaypointDetector` — nessuna nuova logica di detection da zero
+- `_handleWaypointDetection`: nuovi branch per ingresso/uscita zona; all'uscita calcola velocità media (`lengthMeters / elapsed * 3.6`) e, se supera `maxSpeedKmh`, persiste la violazione (silenziosa, nessun feedback al pilota durante la guida)
+- `startRecording()` accetta `speedZones` come nuovo parametro opzionale
+
+**Penalità in classifica (`classifica_engine.dart`):**
+- `_computeSpeciali` filtra le violazioni per zona/PS/finestra temporale (tra inizio e fine PS, come i CP mancati) e aggiunge `speedZonePenaltySeconds` per ogni violazione al tempo della PS
+- `SpecialTempo`: nuovi campi `speedZoneViolations` (dettaglio) e `speedZonePenaltySeconds`; `penaltySeconds` ora è il totale CP+zone
+- `classifica_provider.dart`: nuovo `speedZoneViolationsStreamProvider`, propagato a `classificaProvider` e `championshipStandingsProvider`
+
+**UI Admin:**
+- `specials_editor_screen.dart`: nuova modalità "Zona velocità" in toolbar (icona tachimetro arancione), abilitata solo quando una speciale esistente è in editing; tap-to-place con snap sulla traccia (stesso meccanismo dei punti pericolo) per inizio/fine zona, poi bottom sheet nome + stepper limite km/h; lista sinottica per speciale (nome | km/h | lunghezza stimata), tappabile per modificare/eliminare; segmento arancione + icona tachimetro sulla mappa (`SpeedZoneLayer`, nuovo widget condiviso)
+- `timing_screen.dart`: badge "🐌 Zona X: Xkm/h / Xkm/h" accanto al badge CP, solo nella vista admin (`_SpecialTimingRow` con `showAdminDetails: true`)
+- `penalty_settings_screen.dart`: nuova riga "Violazione zona velocità" (stepper, default 60s)
+
+**UI Pilota:**
+- `gps_recording_screen.dart`: stesso `SpeedZoneLayer` sulla mappa di navigazione (segmento arancione + icona), nessun avviso di violazione — il pilota scopre l'eventuale superamento solo dal tempo finale in classifica
+
+**Feature 2 — Frecce direzionali sulla traccia rossa:**
+
+- `track_layer.dart`: nuovo `TrackDirectionArrowsLayer` — campiona la polyline ogni `kArrowSpacingMeters` (150m), calcola il bearing verso il punto successivo, posiziona un `Icons.navigation` bianco 14px ruotato (non interattivo, nessun tap/tooltip)
+- `TrackLayer.build()` lo include sempre sopra la traccia base (usato da `track_map_screen.dart`)
+- Aggiunto anche accanto alle polyline rosse dedicate in `gps_recording_screen.dart` (navigazione pilota) e `live_tracking_screen.dart` (live admin)
+
+**Deploy:**
+- `flutter analyze`: zero issues
+- `git commit 9f4496c`: "feat: zone velocità controllata con penalità + frecce direzionali traccia rossa"
+- `flutter build web --release` + `firebase deploy --only hosting,firestore:rules` ✅ (rules incluse: necessarie per la nuova collezione `speedZoneViolations`)
+- `git push origin main` ✅
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**
