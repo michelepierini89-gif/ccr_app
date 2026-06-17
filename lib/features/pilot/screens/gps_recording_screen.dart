@@ -633,6 +633,10 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
             present: approvedTeamCount,
             minRequired: event!.minSquadra,
           ),
+        // Banner informativo non bloccante: il pulsante START sopra resta
+        // sempre attivo a prescindere dal segnale GPS, questo è solo un
+        // avviso che il chip sta ancora acquisendo.
+        if (pos == null) const _GpsAcquiringBanner(),
         Expanded(
           child: Center(
             child: Column(
@@ -647,12 +651,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                   child: _BigButton(isRecording: false, enabled: canStart),
                 ),
                 const SizedBox(height: 48),
-                if (pos != null)
-                  _GpsInfoRow(pos: pos)
-                else
-                  const Text('In attesa del segnale GPS...',
-                      style:
-                          TextStyle(color: AppColors.textSecondary)),
+                if (pos != null) _GpsInfoRow(pos: pos),
               ],
             ),
           ),
@@ -962,6 +961,11 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
 
         // Mode banner
         _ModeBanner(color: modeColor, label: _modeLabel(gps.mode)),
+
+        // Banner non bloccante: nessun fix GPS ancora ricevuto (normale nei
+        // primi secondi dopo START). Mappa e controlli restano comunque
+        // visibili e utilizzabili sotto questo banner.
+        if (!hasPos) const _GpsAcquiringBanner(),
 
         // Banner GPS in ripristino (riavvio automatico stream in corso)
         if (gps.isRestartingGps)
@@ -1830,6 +1834,39 @@ class _TopBar extends ConsumerWidget {
               icon: const Icon(Icons.settings, color: AppColors.textSecondary),
               tooltip: 'Aspetto traccia',
             ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Banner informativo non bloccante: il chip GPS sta ancora acquisendo il
+/// primo fix (normale nei primi 30-60s dall'avvio, specialmente al chiuso).
+/// Non sostituisce mai la schermata — START/navigazione restano sempre
+/// utilizzabili a prescindere da questo stato.
+class _GpsAcquiringBanner extends StatelessWidget {
+  const _GpsAcquiringBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      color: AppColors.textSecondary.withValues(alpha: 0.12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: const Row(
+        children: [
+          Icon(Icons.satellite_alt_outlined,
+              color: AppColors.textSecondary, size: 18),
+          SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Acquisizione GPS in corso...',
+              style: TextStyle(
+                  color: AppColors.textSecondary,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13),
+            ),
+          ),
         ],
       ),
     );

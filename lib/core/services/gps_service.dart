@@ -59,6 +59,17 @@ class GpsService extends ChangeNotifier {
   static const double kMaxAccuracyDisplayMeters = 8.0;
   static const double kMaxAccuracyDetectionMeters = 25.0;
 
+  // Soglia display PROGRESSIVA durante l'acquisizione iniziale: il chip GPS
+  // impiega normalmente 30-60s a convergere dopo l'avvio del tracking, con
+  // accuracy ben oltre 8m nei primi secondi. Una soglia fissa scarterebbe
+  // sistematicamente TUTTI i punti in questa fase (Kalman/display mai
+  // inizializzati). La soglia si restringe a step man mano che passa il
+  // tempo dall'avvio, fino al valore finale kMaxAccuracyDisplayMeters.
+  static const double kAccuracyStartupThreshold1 = 30.0; // 0-20s
+  static const double kAccuracyStartupThreshold2 = 15.0; // 20-45s
+  static const int kAccuracyStartupPhase1Seconds = 20;
+  static const int kAccuracyStartupPhase2Seconds = 45;
+
   // STEP 2 — Filtro jump geometrico: secondo livello dopo il Kalman 4D.
   // Scarta SEMPRE i punti che implicherebbero una velocità superiore a
   // kMaxSpeedFilterKmh — 120 km/h è già il massimo realistico per un
@@ -194,6 +205,16 @@ class GpsService extends ChangeNotifier {
   int _currentIntervalMs = AppConstants.gpsIntervalTransferMs;
   static const int kFreezeDetectionSeconds = 8;
   static const int kFreezeRestartSeconds = 15;
+
+  // Grace period di acquisizione: prima del PRIMO fix raw in assoluto
+  // (_lastRawPositionTs == null), il chip GPS può normalmente impiegare
+  // 30-60s (cold start, indoor, ecc.). Il watchdog freeze/restart resta
+  // inattivo durante questa finestra — altrimenti un restart automatico a
+  // metà acquisizione fa ripartire il chip da zero, impedendo per sempre
+  // la convergenza (loop di restart infinito che non lascia mai arrivare
+  // il primo fix). Oltre la finestra di grazia senza nessun fix, il
+  // freeze è considerato reale.
+  static const int kStartupGracePeriodSeconds = 60;
 
   bool get isRecording => _isRecording;
   String? get activeEventId => _activeEventId;
@@ -665,12 +686,17 @@ class GpsService extends ChangeNotifier {
     _isRecording = true;
     _mode = GpsMode.transfer;
     _recordingStart = DateTime.now();
-    _lastRawPositionTs = DateTime.now();
+    _lastRawPositionTs = null;
     _isGpsFrozen = false;
     _isRestartingGps = false;
+    // Notifica IMMEDIATA: la schermata di navigazione deve apparire subito,
+    // indipendentemente da quanto impiega il GPS a fornire un fix. Tutto
+    // quello che segue (IMU, stream posizione) avviene in background mentre
+    // l'utente vede già la mappa e i controlli attivi.
+    _safeNotify();
+
     WakelockPlus.enable().ignore();
     await _imu.start();
-    _safeNotify();
 
     _firestoreService.setRaceStatus(eventId, userId, 'racing').catchError((_) {});
     _startPositionStream(AppConstants.gpsIntervalTransferMs);
@@ -729,6 +755,22 @@ class GpsService extends ChangeNotifier {
     );
   }
 
+  /// Soglia accuracy display progressiva: più permissiva nei primi secondi
+  /// dall'avvio della registrazione (fase di acquisizione/convergenza del
+  /// chip GPS), si restringe a step fino al valore finale
+  /// [kMaxAccuracyDisplayMeters] una volta che il segnale si è stabilizzato.
+  double _currentDisplayAccuracyThreshold(DateTime now) {
+    if (_recordingStart == null) return kMaxAccuracyDisplayMeters;
+    final secSinceStart = now.difference(_recordingStart!).inSeconds;
+    if (secSinceStart < kAccuracyStartupPhase1Seconds) {
+      return kAccuracyStartupThreshold1;
+    }
+    if (secSinceStart < kAccuracyStartupPhase2Seconds) {
+      return kAccuracyStartupThreshold2;
+    }
+    return kMaxAccuracyDisplayMeters;
+  }
+
   double _haversineKm(LatLng a, LatLng b) {
     const R = 6371.0;
     final lat1 = a.latitude * pi / 180;
@@ -759,12 +801,16 @@ class GpsService extends ChangeNotifier {
     }
 
     // ── STEP 1: doppia soglia accuracy DISPLAY vs DETECTION ──────────────
-    // Oltre kMaxAccuracyDisplayMeters il punto è troppo impreciso per
-    // Kalman/polyline e viene scartato, ma se è ancora entro
+    // Oltre la soglia display il punto è troppo impreciso per Kalman/
+    // polyline e viene scartato, ma se è ancora entro
     // kMaxAccuracyDetectionMeters la detection waypoint viene comunque
     // eseguita sulla posizione raw, per non perdere passaggi con segnale
-    // debole.
-    if (pos.accuracy > kMaxAccuracyDisplayMeters) {
+    // debole. La soglia display è progressiva nei primi secondi dall'avvio
+    // (vedi _currentDisplayAccuracyThreshold): altrimenti la convergenza
+    // normale del chip (30-60s) scarterebbe ogni punto e Kalman/IMU
+    // resterebbero inizializzati a null per tutta quella finestra.
+    final displayThreshold = _currentDisplayAccuracyThreshold(now);
+    if (pos.accuracy > displayThreshold) {
       _consecutiveDiscarded++;
       if (pos.accuracy <= kMaxAccuracyDetectionMeters) {
         final detection = _waypointDetector.detectPassage(
@@ -1050,7 +1096,27 @@ class GpsService extends ChangeNotifier {
   void _checkFreeze() {
     if (!_isRecording) return;
     final now = DateTime.now();
-    if (_lastRawPositionTs == null) return;
+
+    if (_lastRawPositionTs == null) {
+      // Nessun fix raw ancora arrivato dall'avvio: il chip GPS può
+      // normalmente impiegare 30-60s (cold start). Durante la finestra di
+      // grazia il watchdog resta inattivo, per non riavviare lo stream a
+      // metà acquisizione e farla ripartire da zero all'infinito.
+      final secSinceStart = _recordingStart != null
+          ? now.difference(_recordingStart!).inSeconds
+          : 0;
+      if (secSinceStart < kStartupGracePeriodSeconds) return;
+
+      // Oltre la finestra di grazia senza nemmeno un fix: freeze reale.
+      if (!_isGpsFrozen) {
+        _isGpsFrozen = true;
+        _safeNotify();
+        debugPrint(
+            'GPS FREEZE: nessun fix raw da oltre ${kStartupGracePeriodSeconds}s dall\'avvio');
+      }
+      _attemptGpsRestart();
+      return;
+    }
 
     final secSinceLast = now.difference(_lastRawPositionTs!).inSeconds;
 
