@@ -9,6 +9,7 @@ import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/firebase_error_handler.dart';
+import '../../map/widgets/track_layer.dart';
 import '../providers/admin_provider.dart';
 
 // ── Race status constants ────────────────────────────────────────────────────
@@ -302,7 +303,7 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
                                   'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                               userAgentPackageName: 'com.ccr.ccr_app',
                             ),
-                            if (_eventTrackPoints.length >= 2)
+                            if (_eventTrackPoints.length >= 2) ...[
                               PolylineLayer(polylines: [
                                 Polyline(
                                   points: _eventTrackPoints,
@@ -310,6 +311,9 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
                                   strokeWidth: 3.0,
                                 ),
                               ]),
+                              TrackDirectionArrowsLayer(
+                                  trackPoints: _eventTrackPoints),
+                            ],
                             MarkerLayer(markers: markers),
                           ],
                         ),

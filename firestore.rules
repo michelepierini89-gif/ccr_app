@@ -116,6 +116,15 @@ service cloud.firestore {
       allow read, write: if isAuthenticated();
     }
 
+    // Violazioni zona a velocità controllata — stessa visibilità di
+    // 'passages': tutti gli autenticati leggono/scrivono perché la
+    // classifica (anche quella del pilota stesso) deve includere la
+    // penalità nel tempo finale. Il dettaglio (nome zona, velocità) viene
+    // mostrato solo all'admin a livello di UI, non di sicurezza dati.
+    match /tracking/{eventId}/speedZoneViolations/{violationId} {
+      allow read, write: if isAuthenticated();
+    }
+
     // Alias 'gps_tracks' (compatibilità futura, stesso significato di 'tracking')
     match /gps_tracks/{eventId} {
       allow read: if isAuthenticated();

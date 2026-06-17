@@ -18,6 +18,14 @@ final withdrawalsStreamProvider =
     StreamProvider.family<Set<String>, String>((ref, eventId) =>
         ref.watch(firestoreServiceProvider).getWithdrawalsStream(eventId));
 
+/// Violazioni zona a velocità controllata, in tempo reale (visibili solo
+/// all'admin tramite ClassificaEngine/timing_screen).
+final speedZoneViolationsStreamProvider =
+    StreamProvider.family<List<SpeedZoneViolation>, String>((ref, eventId) =>
+        ref
+            .watch(firestoreServiceProvider)
+            .getSpeedZoneViolationsStream(eventId));
+
 /// Impostazioni penalità predefinite (globali) in real-time da Firestore.
 final penaltySettingsProvider = StreamProvider<PenaltySettingsModel>((ref) =>
     ref.watch(firestoreServiceProvider).penaltySettingsStream());
@@ -50,6 +58,13 @@ final classificaProvider =
       ? ref.watch(liveTrackingProvider(eventId))
       : const AsyncValue<List<GpsPointModel>>.data(<GpsPointModel>[]);
 
+  // Le violazioni zona velocità servono al motore di classifica per TUTTI
+  // (anche il pilota deve vedere la penalità nel proprio tempo finale); il
+  // dettaglio (nome zona, velocità) viene mostrato solo all'admin a livello
+  // di UI in timing_screen.dart, non qui.
+  final speedViolationsAv =
+      ref.watch(speedZoneViolationsStreamProvider(eventId));
+
   if (eventAv.isLoading || passAv.isLoading || regsAv.isLoading) {
     return const AsyncValue.loading();
   }
@@ -73,6 +88,7 @@ final classificaProvider =
     penalties: penaltyOverrideAv.valueOrNull ??
         penaltyAv.valueOrNull ??
         const PenaltySettingsModel(),
+    speedZoneViolations: speedViolationsAv.valueOrNull ?? [],
   ));
 });
 
@@ -101,6 +117,7 @@ final championshipStandingsProvider =
     final registrations = await svc.getRegistrationsOnce(eventId);
     final teams = await svc.getTeamsOnce(eventId);
     final withdrawals = await svc.getWithdrawalsOnce(eventId);
+    final speedZoneViolations = await svc.getSpeedZoneViolationsOnce(eventId);
 
     final entries = ClassificaEngine.compute(
       event: event,
@@ -110,6 +127,7 @@ final championshipStandingsProvider =
       withdrawals: withdrawals,
       liveTracking: const <GpsPointModel>[],
       penalties: penalties,
+      speedZoneViolations: speedZoneViolations,
     );
 
     results.add(EventResults(eventId: eventId, entries: entries));

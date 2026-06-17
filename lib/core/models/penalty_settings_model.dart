@@ -4,6 +4,7 @@ class PenaltySettingsModel {
   final int cp3oPiuMancati;  // secondi penalità per 3+ CP mancati
   final int ritiroCompagno;  // secondi penalità se un compagno si ritira
   final int pilotaMancante;  // secondi penalità per ogni pilota sotto il minimo squadra
+  final int speedZonePenaltySeconds; // secondi penalità per ogni violazione zona a velocità controllata
 
   const PenaltySettingsModel({
     this.cp1Mancato = 60,
@@ -11,6 +12,7 @@ class PenaltySettingsModel {
     this.cp3oPiuMancati = 360,
     this.ritiroCompagno = 600,
     this.pilotaMancante = 600,
+    this.speedZonePenaltySeconds = 60,
   });
 
   factory PenaltySettingsModel.fromMap(Map<String, dynamic> d) =>
@@ -20,6 +22,7 @@ class PenaltySettingsModel {
         cp3oPiuMancati: (d['cp3oPiuMancati'] as int?) ?? 360,
         ritiroCompagno: (d['ritiroCompagno'] as int?) ?? 600,
         pilotaMancante: (d['pilotaMancante'] as int?) ?? 600,
+        speedZonePenaltySeconds: (d['speedZonePenaltySeconds'] as int?) ?? 60,
       );
 
   Map<String, dynamic> toMap() => {
@@ -28,6 +31,7 @@ class PenaltySettingsModel {
         'cp3oPiuMancati': cp3oPiuMancati,
         'ritiroCompagno': ritiroCompagno,
         'pilotaMancante': pilotaMancante,
+        'speedZonePenaltySeconds': speedZonePenaltySeconds,
       };
 
   PenaltySettingsModel copyWith({
@@ -36,6 +40,7 @@ class PenaltySettingsModel {
     int? cp3oPiuMancati,
     int? ritiroCompagno,
     int? pilotaMancante,
+    int? speedZonePenaltySeconds,
   }) =>
       PenaltySettingsModel(
         cp1Mancato: cp1Mancato ?? this.cp1Mancato,
@@ -43,6 +48,8 @@ class PenaltySettingsModel {
         cp3oPiuMancati: cp3oPiuMancati ?? this.cp3oPiuMancati,
         ritiroCompagno: ritiroCompagno ?? this.ritiroCompagno,
         pilotaMancante: pilotaMancante ?? this.pilotaMancante,
+        speedZonePenaltySeconds:
+            speedZonePenaltySeconds ?? this.speedZonePenaltySeconds,
       );
 
   static String formatSeconds(int s) {

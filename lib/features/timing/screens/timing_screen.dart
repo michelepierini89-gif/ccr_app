@@ -405,7 +405,8 @@ class _TimingEntryCardState extends State<_TimingEntryCard> {
                   const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
               child: Column(
                 children: e.specialiCompletati
-                    .map((s) => _SpecialTimingRow(special: s))
+                    .map((s) =>
+                        _SpecialTimingRow(special: s, showAdminDetails: true))
                     .toList(),
               ),
             ),
@@ -494,7 +495,8 @@ class _SummaryCard extends StatelessWidget {
 
 class _SpecialTimingRow extends StatelessWidget {
   final SpecialTempo special;
-  const _SpecialTimingRow({required this.special});
+  final bool showAdminDetails;
+  const _SpecialTimingRow({required this.special, this.showAdminDetails = false});
 
   void _showRawTimestamps(BuildContext context) {
     final fmt = DateFormat('dd/MM/yyyy HH:mm:ss', 'it');
@@ -537,11 +539,18 @@ class _SpecialTimingRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final hasTimingError = special.timingError != null;
 
+    final showSpeedZoneBadges = showAdminDetails &&
+        !hasTimingError &&
+        special.speedZoneViolations.isNotEmpty;
+
     return InkWell(
       onTap: hasTimingError ? () => _showRawTimestamps(context) : null,
       child: Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
         children: [
           Icon(
             hasTimingError
@@ -603,6 +612,35 @@ class _SpecialTimingRow extends StatelessWidget {
               ),
             ),
           ],
+        ],
+          ),
+          if (showSpeedZoneBadges)
+            Padding(
+              padding: const EdgeInsets.only(top: 4, left: 24),
+              child: Wrap(
+                spacing: 6,
+                runSpacing: 4,
+                children: special.speedZoneViolations
+                    .map((v) => Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.orange.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                                color: Colors.orange.withValues(alpha: 0.5)),
+                          ),
+                          child: Text(
+                            '🐌 ${v.zoneNome}: ${v.avgSpeedKmh.toStringAsFixed(0)}km/h / ${v.limitKmh.toStringAsFixed(0)}km/h',
+                            style: const TextStyle(
+                                color: Colors.orange,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold),
+                          ),
+                        ))
+                    .toList(),
+              ),
+            ),
         ],
       ),
       ),

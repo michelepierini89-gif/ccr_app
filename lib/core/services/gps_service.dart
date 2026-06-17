@@ -116,6 +116,14 @@ class GpsService extends ChangeNotifier {
   final Map<String, String> _inizioToSpecial = {};
   final Map<String, String> _fineToSpecial = {};
   final Set<String> _passedWaypoints = {};
+
+  // Zone a velocità controllata: i punti di inizio/fine sono iniettati in
+  // _waypoints come WaypointType.intermedio sintetici (riusano la doppia
+  // conferma di WaypointDetector) e mappati qui all'id della zona.
+  List<SpeedZoneModel> _speedZones = [];
+  final Map<String, String> _zoneStartToZone = {};
+  final Map<String, String> _zoneEndToZone = {};
+  final Map<String, DateTime> _zoneEntryTimestamps = {};
   List<WaypointModel> _fuelPoints = [];
   final Set<String> _passedFuelPoints = {};
   List<DangerPointModel> _dangerPoints = [];
@@ -477,6 +485,12 @@ class GpsService extends ChangeNotifier {
       }
       _currentSpecialId = null;
       _currentSpecialNome = null;
+    } else if (_zoneStartToZone.containsKey(wp.id)) {
+      _zoneEntryTimestamps[_zoneStartToZone[wp.id]!] = passageTs;
+    } else if (_zoneEndToZone.containsKey(wp.id)) {
+      final zoneId = _zoneEndToZone[wp.id]!;
+      final entryTs = _zoneEntryTimestamps.remove(zoneId);
+      _checkSpeedZoneViolation(zoneId, entryTs, passageTs);
     }
 
     if (_activeEventId != null && _activeUserId != null) {
@@ -498,6 +512,33 @@ class GpsService extends ChangeNotifier {
         );
       }
     }
+  }
+
+  /// Calcola la velocità media nella zona [zoneId] tra [entryTs] e [exitTs]
+  /// e, se supera il limite, persiste una [SpeedZoneViolation] su Firestore.
+  /// Best-effort e silenzioso: il pilota non viene mai avvisato, lo scopre
+  /// solo dalla classifica (penalità applicata da ClassificaEngine).
+  void _checkSpeedZoneViolation(
+      String zoneId, DateTime? entryTs, DateTime exitTs) {
+    if (entryTs == null || !exitTs.isAfter(entryTs)) return;
+    final zone = _speedZones.where((z) => z.id == zoneId).firstOrNull;
+    if (zone == null) return;
+    if (_activeEventId == null || _activeUserId == null) return;
+
+    final elapsedSeconds = exitTs.difference(entryTs).inMilliseconds / 1000.0;
+    final avgSpeedKmh = (zone.lengthMeters / elapsedSeconds) * 3.6;
+    if (avgSpeedKmh <= zone.maxSpeedKmh) return;
+
+    _firestoreService
+        .recordSpeedZoneViolation(
+          eventId: _activeEventId!,
+          userId: _activeUserId!,
+          zoneId: zone.id,
+          avgSpeedKmh: avgSpeedKmh,
+          limitKmh: zone.maxSpeedKmh,
+          timestamp: exitTs,
+        )
+        .catchError((_) {});
   }
 
   /// Recovery retroattivo della fine PS non rilevata (speculare a
@@ -630,6 +671,7 @@ class GpsService extends ChangeNotifier {
     List<SpecialModel> specials = const [],
     List<WaypointModel> fuelPoints = const [],
     List<DangerPointModel> dangerPoints = const [],
+    List<SpeedZoneModel> speedZones = const [],
   }) async {
     if (_isRecording) return;
     final hasPermission = await requestPermissions();
@@ -642,7 +684,6 @@ class GpsService extends ChangeNotifier {
     _writesBlocked = false;
     _activeEventId = eventId;
     _activeUserId = userId;
-    _waypoints = waypoints;
     _specials = specials;
     _inizioToSpecial.clear();
     _fineToSpecial.clear();
@@ -650,6 +691,36 @@ class GpsService extends ChangeNotifier {
       _inizioToSpecial[s.waypointInizio.id] = s.id;
       _fineToSpecial[s.waypointFine.id] = s.id;
     }
+
+    // Zone a velocità controllata: i punti inizio/fine vengono iniettati
+    // tra i waypoint generici (tipo intermedio, doppia conferma riusata)
+    // e mappati qui all'id della zona per il calcolo della velocità media.
+    _speedZones = speedZones;
+    _zoneStartToZone.clear();
+    _zoneEndToZone.clear();
+    _zoneEntryTimestamps.clear();
+    final zoneWaypoints = <WaypointModel>[];
+    for (final z in speedZones) {
+      final startId = '${z.id}_start';
+      final endId = '${z.id}_end';
+      _zoneStartToZone[startId] = z.id;
+      _zoneEndToZone[endId] = z.id;
+      zoneWaypoints.add(WaypointModel(
+        id: startId,
+        nome: 'Zona ${z.nome} - inizio',
+        lat: z.startLat,
+        lng: z.startLng,
+        type: WaypointType.intermedio,
+      ));
+      zoneWaypoints.add(WaypointModel(
+        id: endId,
+        nome: 'Zona ${z.nome} - fine',
+        lat: z.endLat,
+        lng: z.endLng,
+        type: WaypointType.intermedio,
+      ));
+    }
+    _waypoints = [...waypoints, ...zoneWaypoints];
     _passedWaypoints.clear();
     _fuelPoints = fuelPoints;
     _passedFuelPoints.clear();
@@ -1170,6 +1241,7 @@ class GpsService extends ChangeNotifier {
     _activeUserId = null;
     _currentSpecialId = null;
     _currentSpecialNome = null;
+    _zoneEntryTimestamps.clear();
     _recordingStart = null;
     _consecutiveDiscarded = 0;
     _filteredPosition = null;

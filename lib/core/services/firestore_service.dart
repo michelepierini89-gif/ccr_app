@@ -489,6 +489,54 @@ class FirestoreService {
         if (recoveredEnd) 'recoveredEnd': true,
       });
 
+  /// Salva una violazione di zona a velocità controllata. Best-effort: a
+  /// differenza dei passaggi waypoint (che determinano il tempo PS), una
+  /// violazione persa non altera il risultato della gara in modo critico —
+  /// solo la penalità non viene applicata — quindi non serve un fallback
+  /// su coda offline.
+  Future<void> recordSpeedZoneViolation({
+    required String eventId,
+    required String userId,
+    required String zoneId,
+    required double avgSpeedKmh,
+    required double limitKmh,
+    required DateTime timestamp,
+  }) =>
+      _db
+          .collection(FirebaseConstants.tracking)
+          .doc(eventId)
+          .collection(FirebaseConstants.speedZoneViolations)
+          .add({
+        'userId': userId,
+        'zoneId': zoneId,
+        'avgSpeedKmh': avgSpeedKmh,
+        'limitKmh': limitKmh,
+        'timestamp': Timestamp.fromDate(timestamp),
+      });
+
+  Stream<List<SpeedZoneViolation>> getSpeedZoneViolationsStream(
+          String eventId) =>
+      _db
+          .collection(FirebaseConstants.tracking)
+          .doc(eventId)
+          .collection(FirebaseConstants.speedZoneViolations)
+          .snapshots()
+          .map((s) => s.docs
+              .map((d) => SpeedZoneViolation.fromFirestore(d))
+              .toList());
+
+  Future<List<SpeedZoneViolation>> getSpeedZoneViolationsOnce(
+      String eventId) async {
+    final snap = await _db
+        .collection(FirebaseConstants.tracking)
+        .doc(eventId)
+        .collection(FirebaseConstants.speedZoneViolations)
+        .get();
+    return snap.docs
+        .map((d) => SpeedZoneViolation.fromFirestore(d))
+        .toList();
+  }
+
   // Penalty settings (documento unico 'default' nella collezione penalty_settings)
 
   static const _penaltyDocId = 'default';

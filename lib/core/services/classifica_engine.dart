@@ -15,6 +15,7 @@ class ClassificaEngine {
     required Set<String> withdrawals,
     required List<GpsPointModel> liveTracking,
     PenaltySettingsModel penalties = const PenaltySettingsModel(),
+    List<SpeedZoneViolation> speedZoneViolations = const [],
   }) {
     final approvedRegs =
         registrations.where((r) => r.stato == RegistrationStatus.approvato).toList();
@@ -52,6 +53,9 @@ class ClassificaEngine {
       final memberIds = teamRegs.map((r) => r.userId).toSet();
       final teamPassages =
           passages.where((p) => memberIds.contains(p.userId)).toList();
+      final teamViolations = speedZoneViolations
+          .where((v) => memberIds.contains(v.userId))
+          .toList();
       final isLive = memberIds.any(liveUserIds.contains);
       final membriNomi = teamRegs.map((r) => r.nomeCompleto).toList();
 
@@ -74,6 +78,7 @@ class ClassificaEngine {
         teamNome: teamModel?.nome ?? teamRegs.firstOrNull?.teamName ?? teamId,
         membriNomi: membriNomi,
         passages: teamPassages,
+        speedZoneViolations: teamViolations,
         ritirato: ritirato,
         ritiroCompagno: ritiroCompagno,
         pilotiMancanti: pilotiMancanti,
@@ -86,11 +91,15 @@ class ClassificaEngine {
     for (final reg in soloRegs) {
       final userPassages =
           passages.where((p) => p.userId == reg.userId).toList();
+      final userViolations = speedZoneViolations
+          .where((v) => v.userId == reg.userId)
+          .toList();
       rawEntries.add(_RawEntry(
         entryId: reg.userId,
         teamNome: reg.nomeCompleto,
         membriNomi: [reg.nomeCompleto],
         passages: userPassages,
+        speedZoneViolations: userViolations,
         ritirato: withdrawals.contains(reg.userId),
         ritiroCompagno: false,
         pilotiMancanti: 0,
@@ -101,7 +110,8 @@ class ClassificaEngine {
 
     // Compute special times for each entry (CP penalties included in tempo)
     final computed = rawEntries.map((e) {
-      final speciali = _computeSpeciali(event, e.passages, penalties);
+      final speciali =
+          _computeSpeciali(event, e.passages, e.speedZoneViolations, penalties);
       final cpTotale = speciali.fold(Duration.zero, (acc, s) => acc + s.tempo);
       final ritiroPenaltySeconds =
           e.ritiroCompagno ? penalties.ritiroCompagno : 0;
@@ -131,7 +141,9 @@ class ClassificaEngine {
   static List<SpecialTempo> _computeSpeciali(
       EventModel event,
       List<WaypointPassageRecord> passages,
+      List<SpeedZoneViolation> speedZoneViolations,
       PenaltySettingsModel penalties) {
+    final zoneById = {for (final z in event.speedZones) z.id: z};
     final result = <SpecialTempo>[];
     for (final special
         in event.speciali..sort((a, b) => a.ordine.compareTo(b.ordine))) {
@@ -184,7 +196,28 @@ class ClassificaEngine {
         if (!passed) missed.add(i + 1);
       }
 
-      final penaltySeconds = _cpPenaltySeconds(missed.length, penalties);
+      // Zone a velocità controllata: ogni violazione della zona appartenente
+      // a questa PS (timestamp compreso tra inizio e fine) aggiunge
+      // speedZonePenaltySeconds al tempo, come i CP mancati.
+      final speedViolationsInSpecial = speedZoneViolations.where((v) {
+        final zone = zoneById[v.zoneId];
+        return zone != null &&
+            zone.specialeId == special.id &&
+            v.timestamp.isAfter(start.timestamp) &&
+            v.timestamp.isBefore(end.timestamp);
+      }).toList();
+      final speedZonePenaltySeconds =
+          speedViolationsInSpecial.length * penalties.speedZonePenaltySeconds;
+      final speedZoneViolationInfos = speedViolationsInSpecial
+          .map((v) => SpeedZoneViolationInfo(
+                zoneNome: zoneById[v.zoneId]?.nome ?? v.zoneId,
+                avgSpeedKmh: v.avgSpeedKmh,
+                limitKmh: v.limitKmh,
+              ))
+          .toList();
+
+      final cpPenaltySeconds = _cpPenaltySeconds(missed.length, penalties);
+      final penaltySeconds = cpPenaltySeconds + speedZonePenaltySeconds;
       final tempo = cleanTempo + Duration(seconds: penaltySeconds);
 
       result.add(SpecialTempo(
@@ -195,6 +228,8 @@ class ClassificaEngine {
         controlPointsOk: missed.isEmpty,
         missedCpPositions: missed,
         penaltySeconds: penaltySeconds,
+        speedZoneViolations: speedZoneViolationInfos,
+        speedZonePenaltySeconds: speedZonePenaltySeconds,
       ));
     }
     return result;
@@ -456,6 +491,7 @@ class _RawEntry {
   final String teamNome;
   final List<String> membriNomi;
   final List<WaypointPassageRecord> passages;
+  final List<SpeedZoneViolation> speedZoneViolations;
   final bool ritirato;
   final bool ritiroCompagno;
   final int pilotiMancanti;
@@ -467,6 +503,7 @@ class _RawEntry {
     required this.teamNome,
     required this.membriNomi,
     required this.passages,
+    this.speedZoneViolations = const [],
     required this.ritirato,
     required this.ritiroCompagno,
     required this.pilotiMancanti,

@@ -22,6 +22,8 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/firebase_error_handler.dart';
 import '../../../core/utils/location_utils.dart';
 import '../../map/danger_marker_icon.dart';
+import '../../map/widgets/speed_zone_layer.dart';
+import '../../map/widgets/track_layer.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../admin/providers/admin_provider.dart';
 import '../../classifica/providers/classifica_provider.dart';
@@ -399,6 +401,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         specials: event?.speciali ?? [],
         fuelPoints: event?.fuelPoint != null ? [event!.fuelPoint!] : [],
         dangerPoints: event?.dangerPoints ?? [],
+        speedZones: event?.speedZones ?? [],
       );
       setState(() => _followMode = true);
     } catch (e) {
@@ -1134,6 +1137,16 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                         borderColor: Colors.red.shade900,
                       ),
                     ]),
+                  // Frecce direzionali sulla traccia rossa (verso di percorrenza)
+                  if (_eventTrackPoints.length >= 2)
+                    TrackDirectionArrowsLayer(trackPoints: _eventTrackPoints),
+                  // Zone a velocità controllata: stesso stile della mappa admin —
+                  // nessun avviso di violazione qui, il pilota vede solo dove
+                  // rallentare, non se l'ha superato (lo scopre in classifica).
+                  if (event != null && event.speedZones.isNotEmpty)
+                    SpeedZoneLayer(
+                        zones: event.speedZones,
+                        trackPoints: _eventTrackPoints),
                   // Pilot's recorded track — colore/larghezza personalizzabili
                   if (gps.localTrack.length >= 2)
                     PolylineLayer(polylines: [

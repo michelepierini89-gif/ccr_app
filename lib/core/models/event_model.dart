@@ -61,6 +61,7 @@ class EventModel {
   final List<StartingSlot> startingOrder;
   final int maxRaceTimeMinutes;
   final List<DangerPointModel> dangerPoints;
+  final List<SpeedZoneModel> speedZones;
 
   const EventModel({
     required this.id,
@@ -81,6 +82,7 @@ class EventModel {
     this.startingOrder = const [],
     this.maxRaceTimeMinutes = 270,
     this.dangerPoints = const [],
+    this.speedZones = const [],
   });
 
   factory EventModel.fromFirestore(DocumentSnapshot doc) {
@@ -118,6 +120,9 @@ class EventModel {
       dangerPoints: (d['dangerPoints'] as List<dynamic>? ?? [])
           .map((e) => DangerPointModel.fromMap(e as Map<String, dynamic>))
           .toList(),
+      speedZones: (d['speedZones'] as List<dynamic>? ?? [])
+          .map((e) => SpeedZoneModel.fromMap(e as Map<String, dynamic>))
+          .toList(),
     );
   }
 
@@ -139,6 +144,7 @@ class EventModel {
         'startingOrder': startingOrder.map((s) => s.toMap()).toList(),
         'maxRaceTimeMinutes': maxRaceTimeMinutes,
         'dangerPoints': dangerPoints.map((d) => d.toMap()).toList(),
+        'speedZones': speedZones.map((z) => z.toMap()).toList(),
       };
 
   EventModel copyWith({
@@ -158,6 +164,7 @@ class EventModel {
     List<StartingSlot>? startingOrder,
     int? maxRaceTimeMinutes,
     List<DangerPointModel>? dangerPoints,
+    List<SpeedZoneModel>? speedZones,
   }) =>
       EventModel(
         id: id,
@@ -178,5 +185,6 @@ class EventModel {
         startingOrder: startingOrder ?? this.startingOrder,
         maxRaceTimeMinutes: maxRaceTimeMinutes ?? this.maxRaceTimeMinutes,
         dangerPoints: dangerPoints ?? this.dangerPoints,
+        speedZones: speedZones ?? this.speedZones,
       );
 }

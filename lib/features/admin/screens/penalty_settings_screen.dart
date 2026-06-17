@@ -127,6 +127,9 @@ class _PenaltySettingsScreenState
         'mancante' => _settings!.copyWith(
             pilotaMancante:
                 (_settings!.pilotaMancante + delta).clamp(0, 7200)),
+        'speedzone' => _settings!.copyWith(
+            speedZonePenaltySeconds:
+                (_settings!.speedZonePenaltySeconds + delta).clamp(0, 3600)),
         _ => _settings,
       };
     });
@@ -244,6 +247,21 @@ class _PenaltySettingsScreenState
                         value: _settings!.cp3oPiuMancati,
                         onDecrease: () => _adjust('cp3', -30),
                         onIncrease: () => _adjust('cp3', 30),
+                      ),
+                      const SizedBox(height: 24),
+
+                      const _SectionTitle('Zone a velocità controllata'),
+                      const SizedBox(height: 12),
+
+                      _PenaltyRow(
+                        label: 'Violazione zona velocità',
+                        icon: Icons.speed,
+                        value: _settings!.speedZonePenaltySeconds,
+                        onDecrease: () => _adjust('speedzone', -30),
+                        onIncrease: () => _adjust('speedzone', 30),
+                        accentColor: Colors.orange,
+                        subtitle:
+                            'Aggiunta al tempo della PS per ogni zona attraversata sopra il limite di velocità',
                       ),
                       const SizedBox(height: 24),
 

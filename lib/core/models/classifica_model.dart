@@ -38,6 +38,53 @@ class WaypointPassageRecord {
   }
 }
 
+/// Violazione di una zona a velocità controllata registrata su Firestore
+/// (`tracking/{eventId}/speedZoneViolations`). Visibile solo all'admin —
+/// il pilota non viene avvisato durante la guida.
+class SpeedZoneViolation {
+  final String id;
+  final String userId;
+  final String zoneId;
+  final double avgSpeedKmh;
+  final double limitKmh;
+  final DateTime timestamp;
+
+  const SpeedZoneViolation({
+    required this.id,
+    required this.userId,
+    required this.zoneId,
+    required this.avgSpeedKmh,
+    required this.limitKmh,
+    required this.timestamp,
+  });
+
+  factory SpeedZoneViolation.fromFirestore(DocumentSnapshot doc) {
+    final d = doc.data() as Map<String, dynamic>;
+    return SpeedZoneViolation(
+      id: doc.id,
+      userId: d['userId'] ?? '',
+      zoneId: d['zoneId'] ?? '',
+      avgSpeedKmh: (d['avgSpeedKmh'] as num?)?.toDouble() ?? 0.0,
+      limitKmh: (d['limitKmh'] as num?)?.toDouble() ?? 0.0,
+      timestamp: (d['timestamp'] as Timestamp?)?.toDate() ?? DateTime.now(),
+    );
+  }
+}
+
+/// Dettaglio di una violazione zona velocità per il badge in classifica
+/// (nome zona + velocità media rilevata vs limite), usato solo lato admin.
+class SpeedZoneViolationInfo {
+  final String zoneNome;
+  final double avgSpeedKmh;
+  final double limitKmh;
+
+  const SpeedZoneViolationInfo({
+    required this.zoneNome,
+    required this.avgSpeedKmh,
+    required this.limitKmh,
+  });
+}
+
 class SpecialTempo {
   final String specialeId;
   final String specialeNome;
@@ -45,10 +92,12 @@ class SpecialTempo {
   final Duration tempo;       // include già la penalità CP
   final bool controlPointsOk;
   final List<int> missedCpPositions; // 1-based positions of missed control points
-  final int penaltySeconds;          // secondi di penalità CP aggiunti
+  final int penaltySeconds;          // secondi di penalità totali aggiunti (CP + zone velocità)
   final String? timingError;  // non-null se il rilevamento PS non è plausibile
   final DateTime? rawStartTime; // timestamp grezzo di inizio (debug admin)
   final DateTime? rawEndTime;   // timestamp grezzo di fine (debug admin)
+  final List<SpeedZoneViolationInfo> speedZoneViolations; // violazioni zona velocità, solo admin
+  final int speedZonePenaltySeconds; // quota di penaltySeconds dovuta alle zone velocità
 
   const SpecialTempo({
     required this.specialeId,
@@ -61,6 +110,8 @@ class SpecialTempo {
     this.timingError,
     this.rawStartTime,
     this.rawEndTime,
+    this.speedZoneViolations = const [],
+    this.speedZonePenaltySeconds = 0,
   });
 
   String get tempoFormatted {
