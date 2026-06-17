@@ -957,6 +957,58 @@ Riscrittura completa del sistema di filtraggio GPS per risolvere il collasso in 
 
 ---
 
+### Step 25 — Bugfix critico: schermata bloccata su "In attesa del segnale GPS..." dopo START (17 giugno 2026) ✅
+
+**Causa individuata:** durante un test reale la navigazione restava bloccata
+indefinitamente dopo START. Tre cause concorrenti nel core GPS (`gps_service.dart`):
+1. `startRecording()` chiamava `_safeNotify()` solo DOPO `await _imu.start()`
+   (che include un'attesa fissa di 2s per la bussola) — la UI non passava
+   alla schermata di navigazione finché quel delay non finiva.
+2. La soglia accuracy display era fissa a `kMaxAccuracyDisplayMeters = 8.0`m:
+   nei primi 30-60s dall'avvio (convergenza normale del chip GPS) l'accuracy
+   è quasi sempre oltre 8m, quindi OGNI punto veniva scartato e Kalman/IMU
+   restavano a `null` per tutta quella finestra.
+3. Il watchdog freeze impostava `_lastRawPositionTs = DateTime.now()` già
+   all'avvio, prima che arrivasse il primo fix raw: se il chip impiegava più
+   di 15s per il primo fix (normale in cold start/indoor), il watchdog
+   cancellava e ricreava lo stream GPS, facendo ripartire l'acquisizione da
+   zero — un loop di riavvio infinito che impediva per sempre la convergenza.
+
+**Fix 1 — Navigazione immediata (`gps_service.dart`):**
+- `_safeNotify()` spostato subito dopo `_isRecording = true` (prima di
+  `await _imu.start()`): la schermata di navigazione appare istantaneamente
+  dopo START, indipendentemente da IMU/GPS; il resto del setup procede in
+  background
+- `lib/features/pilot/screens/gps_recording_screen.dart`: rimosso il testo
+  bloccante "In attesa del segnale GPS..." dal centro della schermata
+  pre-start; nuovo widget `_GpsAcquiringBanner` (banner non bloccante, stile
+  coerente con `_WaitingBanner`), mostrato sia in pre-start (`pos == null`)
+  sia in navigazione attiva (`!hasPos`) — mappa e controlli restano sempre
+  visibili e utilizzabili sotto il banner
+
+**Fix 2 — Soglia accuracy progressiva (`gps_service.dart`):**
+- Nuovo `_currentDisplayAccuracyThreshold()`: soglia display a step in base
+  al tempo trascorso da `_recordingStart` — `kAccuracyStartupThreshold1 = 30.0`m
+  nei primi 20s, `kAccuracyStartupThreshold2 = 15.0`m fino a 45s, poi il
+  valore finale `kMaxAccuracyDisplayMeters = 8.0`m
+- STEP 1 di `_onPosition()` usa questa soglia invece del valore fisso
+
+**Fix 3 — Grace period watchdog (`gps_service.dart`):**
+- `_lastRawPositionTs` inizializzato a `null` in `startRecording()` (non più
+  a `DateTime.now()`)
+- `_checkFreeze()`: se nessun fix raw è ancora arrivato, il watchdog resta
+  inattivo per `kStartupGracePeriodSeconds = 60`s dall'avvio (tempo
+  necessario al chip per il cold start); solo oltre questa finestra senza
+  nemmeno un fix scatta il freeze reale (banner + riavvio automatico stream)
+
+**Deploy:**
+- `flutter analyze`: zero issues
+- `git commit ceaee3e`: "fix: navigazione parte subito + acquisizione GPS progressiva + watchdog delay avvio"
+- `flutter build web --release` + `firebase deploy --only hosting` ✅
+- `git push origin main` ✅
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**
