@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 20 giugno 2026 (Step 27 completato)  
+**Data aggiornamento:** 20 giugno 2026 (Step 28 completato)  
 **Branch:** main  
 **Versione:** 1.0.0+1
 
@@ -1085,6 +1085,57 @@ riavviare il GPS tramite un pulsante manuale.
 **Deploy:**
 - `flutter analyze`: zero issues (194s)
 - `git commit 1dc9754`: "fix: rimozione watchdog automatico GPS + navigazione sempre aperta + restart manuale 30s"
+- `flutter build web --release` + `firebase deploy --only hosting` ✅ su https://ccr-enduro.web.app
+- `git push origin main` ✅
+
+---
+
+### Step 28 — Bugfix critico definitivo: navigazione che torna alla pre-avvio dopo il primo fix GPS (20 giugno 2026) ✅
+
+**Sintomo:** dopo START la schermata di navigazione si apriva correttamente,
+ma tornava alla schermata pre-avvio non appena arrivava il primo fix GPS
+valido — un bug diverso e indipendente da quello risolto allo Step 27
+(quello riguardava il *ritardo* nell'apertura della navigazione; questo
+riguardava un *ritorno indietro automatico* dopo che la navigazione era già
+aperta).
+
+**Causa reale (Riverpod, non GPS):** in `lib/features/pilot/providers/pilot_provider.dart`,
+`gpsServiceProvider` costruiva `GpsService` con `ref.watch(offlineQueueProvider)`
+e `ref.watch(imuFusionServiceProvider)` — entrambi `ChangeNotifierProvider`.
+In Riverpod, quando un provider (non un widget) fa `ref.watch` su un
+`ChangeNotifierProvider`, OGNI `notifyListeners()` di quel notifier invalida
+e fa RICOSTRUIRE DA ZERO il provider osservante, distruggendo la vecchia
+istanza e creandone una nuova.
+
+`ImuFusionService.updateWithGps()` (chiamato da `GpsService._onPosition()`
+ad ogni fix GPS accettato) chiama `notifyListeners()` — ed è proprio questa
+la prima notifica utile del servizio IMU, perché `_onAccelerometer` resta
+in early-return finché `_fusedPosition` non viene inizializzato da
+`updateWithGps()` stesso. Risultato: al primo fix GPS valido,
+`gpsServiceProvider` veniva ricreato da capo con un **nuovo** `GpsService`
+la cui `_isRecording` parte sempre `false` di default → `build()` in
+`gps_recording_screen.dart` (gate `if (isRecording) ... else _buildPreStart()`)
+ricadeva sulla schermata pre-avvio, anche se l'utente non aveva premuto
+né FINE GARA né RITIRO. Nessuno degli step precedenti (25/26/27) toccava
+questo livello: agivano tutti dentro `GpsService`, mai sul cablaggio dei
+provider Riverpod che lo istanzia.
+
+**Fix (`pilot_provider.dart`):**
+- `gpsServiceProvider`: `ref.watch` → `ref.read` per `firestoreServiceProvider`,
+  `offlineQueueProvider`, `imuFusionServiceProvider`. `GpsService` li usa
+  come dipendenze fisse iniettate una sola volta nel costruttore — non deve
+  reagire né essere ricreato quando questi notificano i propri listener
+  (quella reattività resta corretta per i widget che li osservano
+  direttamente, es. banner offline in `pilot_home_screen.dart`).
+- Nessuna modifica a `gps_service.dart`/`gps_recording_screen.dart`: il
+  comportamento "navigazione sempre aperta dopo START, nessuna uscita
+  automatica" era già corretto a livello di logica GPS/UI (Step 25/27); il
+  bug era esclusivamente nel layer Riverpod che ricreava il servizio sotto
+  i piedi della UI.
+
+**Deploy:**
+- `flutter analyze`: zero issues (215s)
+- `git commit b27717b`: "fix: navigazione bloccata dopo START nessun ritorno automatico alla pre-avvio"
 - `flutter build web --release` + `firebase deploy --only hosting` ✅ su https://ccr-enduro.web.app
 - `git push origin main` ✅
 
