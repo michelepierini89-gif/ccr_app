@@ -537,10 +537,12 @@ class _SpecialTimingRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final hasTimingError = special.timingError != null;
+    final isInvalid = special.isInvalidTiming;
+    final hasWarning = special.hasTimingWarning;
+    final hasTimingError = isInvalid || hasWarning;
 
     final showSpeedZoneBadges = showAdminDetails &&
-        !hasTimingError &&
+        !isInvalid &&
         special.speedZoneViolations.isNotEmpty;
 
     return InkWell(
@@ -573,7 +575,7 @@ class _SpecialTimingRow extends StatelessWidget {
                   color: AppColors.textPrimary, fontSize: 13),
             ),
           ),
-          if (hasTimingError)
+          if (isInvalid)
             const Text(
               '⚠ Rilevamento non valido',
               style: TextStyle(
@@ -592,7 +594,27 @@ class _SpecialTimingRow extends StatelessWidget {
                 fontFamily: 'monospace',
               ),
             ),
-          if (!hasTimingError && !special.controlPointsOk) ...[
+          if (hasWarning) ...[
+            const SizedBox(width: 8),
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: AppColors.warning.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                    color: AppColors.warning.withValues(alpha: 0.5)),
+              ),
+              child: const Text(
+                'VERIFICA',
+                style: TextStyle(
+                    color: AppColors.warning,
+                    fontSize: 9,
+                    fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+          if (!isInvalid && !special.controlPointsOk) ...[
             const SizedBox(width: 8),
             Container(
               padding:

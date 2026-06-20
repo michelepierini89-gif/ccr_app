@@ -620,7 +620,7 @@ class _SpecialRow extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
             ),
           ),
-          if (special.timingError == null && !special.controlPointsOk)
+          if (!special.isInvalidTiming && !special.controlPointsOk)
             GestureDetector(
               onTap: () => _showMissedCpsDialog(context),
               child: const Padding(
@@ -633,7 +633,7 @@ class _SpecialRow extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.end,
             mainAxisSize: MainAxisSize.min,
             children: [
-              if (special.timingError != null)
+              if (special.isInvalidTiming)
                 const Text(
                   '⚠ non valido',
                   style: TextStyle(

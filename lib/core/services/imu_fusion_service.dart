@@ -30,9 +30,29 @@ class ImuFusionService extends ChangeNotifier {
   bool _headingInitialized = false;
 
   // Alpha per correzione deriva giroscopio con bussola.
-  // 0.98 = 98% giroscopio (fast), 2% correzione bussola
-  // per campione. A 50Hz la bussola converge in ~2 secondi.
-  static const double kComplementaryAlpha = 0.98;
+  // 0.96 = 96% giroscopio (fast), 4% correzione bussola
+  // per campione. A 50Hz la bussola converge in ~1.2 secondi
+  // (più reattiva rispetto al precedente 0.98, meno lag percepito
+  // e meno deriva accumulata tra due fix GPS).
+  static const double kComplementaryAlpha = 0.96;
+
+  // Scarta letture bussola implausibili (salto angolare istantaneo enorme
+  // rispetto all'ultima lettura accettata): la bussola fisica non può
+  // cambiare di centinaia di gradi in un campione, un salto così è quasi
+  // sempre interferenza magnetica (vicino al motore/telaio metallico della
+  // moto). Senza questo scarto, un singolo campione corrotto può "tirare"
+  // la fusione heading verso un valore senza relazione con la direzione
+  // reale di marcia.
+  static const double kMaxCompassJumpDeg = 60.0;
+
+  // ── Giroscopio (low-pass filtrato) ──
+  // Senza filtro, le vibrazioni del motore (>20Hz, mai isolate dal
+  // mount del telefono su moto) si accumulano nell'integrazione e
+  // producono un heading instabile/imprevedibile. Alpha più alto
+  // dell'accelerometro perché lo yaw reale (curve enduro) deve restare
+  // pronto da seguire, a differenza della sola stima di velocità.
+  double _filtGyroZ = 0.0;
+  static const double kGyroLowPassAlpha = 0.35;
 
   // ── Accelerometro (low-pass filtrato) ──
   double _filtAccelX = 0.0;
@@ -66,8 +86,10 @@ class ImuFusionService extends ChangeNotifier {
   static const double kMaxDtSeconds = 0.5;
 
   // ── UI throttle ──
+  // 20ms = 50Hz: il DOOGEE ha retto bene nel test reale, alziamo la
+  // fluidità visiva al massimo supportato dai sensori (gameInterval ~50Hz).
   DateTime? _lastUiNotifyTs;
-  static const int kUiUpdateIntervalMs = 40; // 25Hz
+  static const int kUiUpdateIntervalMs = 20; // 50Hz
 
   // ── Timestamps ──
   DateTime? _lastGyroTs;
@@ -134,6 +156,7 @@ class ImuFusionService extends ChangeNotifier {
   void _reset() {
     _headingDeg = 0.0;
     _headingInitialized = false;
+    _filtGyroZ = 0.0;
     _filtAccelX = 0.0;
     _filtAccelY = 0.0;
     _speedMs = 0.0;
@@ -148,24 +171,48 @@ class ImuFusionService extends ChangeNotifier {
   // Chiamato da GpsService ad ogni fix Kalman accettato.
   // ─────────────────────────────────────────────────────
 
+  // Correzione heading verso il bearing geometrico GPS (calcolato da
+  // GpsService su posizioni Kalman-filtrate). A differenza della bussola
+  // (corretta ogni campione IMU a 50Hz con peso 2%), questa corregge solo
+  // ad ogni fix GPS (~1-4Hz) con peso maggiore: senza un'ancora di questo
+  // tipo, la deriva di giroscopio+bussola non aveva alcun limite superiore
+  // nel corso di una sessione intera (prima il problema era mascherato da
+  // un bug Riverpod che ricreava GpsService e fermava l'IMU poco dopo il
+  // primo fix — risolto allo Step 28 — esponendo la deriva non corretta).
+  static const double kHeadingGpsAnchorWeight = 0.15;
+
+  // Sotto questa velocità il bearing GPS è inaffidabile (rumore/jitter da
+  // fermo), coerente con GpsService.kMinBearingSpeedKmh.
+  static const double kHeadingGpsAnchorMinSpeedKmh = 3.0;
+
   void updateWithGps({
     required LatLng position,
     required double speedKmh,
     required DateTime timestamp,
+    double? gpsBearingDeg,
   }) {
     if (_fusedPosition == null) {
       // Prima posizione disponibile: inizializza direttamente
       _fusedPosition = position;
     } else {
-      // Correzione graduale: 80% GPS, 20% dead reckoning IMU.
-      // Evita salti bruschi se il GPS era leggermente sfasato.
-      const kGpsWeight = 0.80;
+      // Correzione graduale: 90% GPS, 10% dead reckoning IMU.
+      // Più reattiva del precedente 80/20 per ridurre il lag percepito
+      // tra la posizione mostrata e quella reale.
+      const kGpsWeight = 0.90;
       _fusedPosition = LatLng(
         kGpsWeight * position.latitude +
             (1 - kGpsWeight) * _fusedPosition!.latitude,
         kGpsWeight * position.longitude +
             (1 - kGpsWeight) * _fusedPosition!.longitude,
       );
+    }
+
+    if (_headingInitialized &&
+        gpsBearingDeg != null &&
+        speedKmh > kHeadingGpsAnchorMinSpeedKmh) {
+      final diff = _angularDiff(_headingDeg, gpsBearingDeg);
+      _headingDeg =
+          (_headingDeg + kHeadingGpsAnchorWeight * diff + 360) % 360;
     }
 
     // Sincronizza velocità IMU con GPS quando affidabile
@@ -194,6 +241,12 @@ class ImuFusionService extends ChangeNotifier {
       return;
     }
 
+    // Scarta letture implausibili (interferenza magnetica): un salto
+    // angolare istantaneo enorme rispetto all'ultima lettura accettata non
+    // può essere un vero movimento della bussola fisica.
+    final jump = _angularDiff(_lastCompassDeg, compassDeg).abs();
+    if (jump > kMaxCompassJumpDeg) return;
+
     _lastCompassDeg = compassDeg;
     // Il filtro complementare viene applicato in _onGyroscope
     // usando _lastCompassDeg, non qui, per mantenere
@@ -215,11 +268,18 @@ class ImuFusionService extends ChangeNotifier {
 
     if (dt > kMaxDtSeconds) return; // gap troppo grande, skip
 
+    // Low-pass sul giroscopio: senza filtro le vibrazioni del motore
+    // (sempre presenti su un mezzo a motore, mount rigido sul manubrio/
+    // serbatoio) si integrano direttamente nello heading producendo un
+    // rumore ad alta frequenza che, accumulato, sembra una rotazione
+    // casuale. Stesso principio già applicato all'accelerometro.
+    _filtGyroZ = kGyroLowPassAlpha * event.z + (1 - kGyroLowPassAlpha) * _filtGyroZ;
+
     // event.z = velocità angolare intorno all'asse verticale
     // (yaw rate) in rad/s. Su Android con telefono orientato
     // normalmente: positivo = rotazione verso destra (orario).
     // Convertiamo in gradi e integriamo. Segno configurabile via kGyroZSign.
-    final deltaHeadingDeg = kGyroZSign * event.z * dt * 180.0 / pi;
+    final deltaHeadingDeg = kGyroZSign * _filtGyroZ * dt * 180.0 / pi;
 
     // Filtro complementare:
     // kAlpha * (giroscopio integrato) + (1-kAlpha) * bussola

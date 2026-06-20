@@ -345,6 +345,11 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     if (gps.isRecording) {
       final finEventId = gps.activeEventId;
       final finUserId = ref.read(authStateProvider).valueOrNull?.uid;
+      // FIX 6: chiude eventuali PS ancora aperte (fine non rilevata) prima
+      // di bloccare le scritture — nessun effetto se tutte erano già chiuse
+      // regolarmente.
+      await gps.closeAllOpenSpecialsForFineGara();
+      if (!mounted) return;
       final finTrack = List.of(gps.localTrack); // capture before stop clears it
       gps.blockFurtherWrites();
       if (finEventId != null && finUserId != null) {
@@ -945,6 +950,11 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
             imu.fusedSpeedKmh > 0.5 ? imu.fusedSpeedKmh : gps.geometricSpeedKmh;
         final accuracy = liveData?.accuracy ?? pos?.accuracy ?? 0.0;
 
+        // FIX 6: seconda via di sblocco FINE GARA, vedi _canFinishNearStart.
+        final allSpecialsDone = _allSpecialsCompleted(gps, event);
+        final canFinish =
+            allSpecialsDone || _canFinishNearStart(gps, curPos, event);
+
     return Column(
       children: [
         // Top bar
@@ -1109,15 +1119,16 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                         'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                     userAgentPackageName: 'com.ccr.ccr_app',
                   ),
-                  // Event GPX track in red
+                  // Event GPX track — colore/larghezza personalizzabili
                   if (_eventTrackPoints.length >= 2)
                     PolylineLayer(polylines: [
                       Polyline(
                         points: _eventTrackPoints,
-                        color: Colors.red,
-                        strokeWidth: 6.0,
-                        borderStrokeWidth: 1.5,
-                        borderColor: Colors.red.shade900,
+                        color: trackAppearance.refTrackColor,
+                        strokeWidth: trackAppearance.refTrackWidth,
+                        borderStrokeWidth: trackAppearance.refTrackWidth * 0.25,
+                        borderColor: Color.lerp(
+                            trackAppearance.refTrackColor, Colors.black, 0.4)!,
                       ),
                     ]),
                   // Frecce direzionali sulla traccia rossa (verso di percorrenza)
@@ -1264,15 +1275,15 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                     MarkerLayer(markers: [
                       Marker(
                         point: curPos,
-                        width: 36,
-                        height: 36,
+                        width: trackAppearance.arrowSize,
+                        height: trackAppearance.arrowSize,
                         rotate: _headingMode,
                         child: Transform.rotate(
                           angle: arrowAngle,
                           child: Icon(
                             Icons.navigation,
-                            color: AppColors.accent,
-                            size: 32,
+                            color: trackAppearance.arrowColor,
+                            size: trackAppearance.arrowSize * 8 / 9,
                           ),
                         ),
                       ),
@@ -1505,7 +1516,9 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           color: AppColors.cardBackground,
           child: Row(
             children: [
-              // FINE GARA button — abilitato quando tutte le speciali sono completate
+              // FINE GARA button — abilitato quando tutte le speciali sono
+              // completate, OPPURE tutte avviate e il pilota è tornato
+              // vicino al punto di partenza (FIX 6, vedi _canFinishNearStart)
               Expanded(
                 flex: 3,
                 child: SizedBox(
@@ -1513,20 +1526,23 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                   child: Tooltip(
                     message: _isTimeExpired
                         ? 'Tempo scaduto — ritiro automatico in corso'
-                        : _allSpecialsCompleted(gps, event)
-                            ? ''
+                        : canFinish
+                            ? (allSpecialsDone
+                                ? ''
+                                : 'PS non chiuse correttamente: '
+                                    'verranno segnalate all\'admin')
                             : 'Completa tutte le speciali prima di terminare',
                     child: ElevatedButton.icon(
-                      onPressed: !_isTimeExpired && _allSpecialsCompleted(gps, event)
+                      onPressed: !_isTimeExpired && canFinish
                           ? _toggleRecording
                           : null,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.cardBackground,
-                        foregroundColor: _allSpecialsCompleted(gps, event)
+                        foregroundColor: canFinish
                             ? AppColors.textPrimary
                             : AppColors.textSecondary,
                         side: BorderSide(
-                          color: _allSpecialsCompleted(gps, event)
+                          color: canFinish
                               ? AppColors.border
                               : AppColors.border.withValues(alpha: 0.3),
                         ),
@@ -1616,21 +1632,68 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     Colors.red,
   ];
 
+  static const _arrowColorOptions = [
+    AppColors.accent, // rosso (default)
+    Colors.white,
+    Colors.yellow,
+    Colors.green,
+    Colors.cyan,
+  ];
+
+  static const _refTrackColorOptions = [
+    Colors.red, // default
+    Colors.orange,
+    Color(0xFFFF00FF), // magenta
+    Colors.white,
+  ];
+
+  Widget _colorSwatchRow(
+      List<Color> options, Color selected, ValueChanged<Color> onSelect) {
+    return Wrap(
+      spacing: 12,
+      runSpacing: 12,
+      children: options.map((c) {
+        final isSelected = c.toARGB32() == selected.toARGB32();
+        return GestureDetector(
+          onTap: () => onSelect(c),
+          child: Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: c,
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: isSelected ? AppColors.accent : AppColors.border,
+                width: isSelected ? 3 : 1,
+              ),
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
   Future<void> _showTrackAppearanceSheet() async {
     final current = ref.read(trackAppearanceProvider);
     double width = current.trackWidth;
     Color color = current.trackColor;
+    Color arrowColor = current.arrowColor;
+    double arrowSize = current.arrowSize;
+    Color refTrackColor = current.refTrackColor;
+    double refTrackWidth = current.refTrackWidth;
 
     await showModalBottomSheet(
       context: context,
       backgroundColor: AppColors.cardBackground,
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       builder: (sheetCtx) {
         return StatefulBuilder(builder: (sheetCtx, setSheetState) {
           return Padding(
             padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
-            child: Column(
+            child: SingleChildScrollView(
+              child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1669,30 +1732,85 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                 const Text('Colore',
                     style: TextStyle(color: AppColors.textSecondary)),
                 const SizedBox(height: 8),
-                Wrap(
-                  spacing: 12,
-                  runSpacing: 12,
-                  children: _trackColorOptions.map((c) {
-                    final selected = c.toARGB32() == color.toARGB32();
-                    return GestureDetector(
-                      onTap: () => setSheetState(() => color = c),
-                      child: Container(
-                        width: 36,
-                        height: 36,
-                        decoration: BoxDecoration(
-                          color: c,
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: selected
-                                ? AppColors.accent
-                                : AppColors.border,
-                            width: selected ? 3 : 1,
-                          ),
-                        ),
-                      ),
-                    );
-                  }).toList(),
+                _colorSwatchRow(_trackColorOptions, color,
+                    (c) => setSheetState(() => color = c)),
+
+                const SizedBox(height: 24),
+                const Divider(color: AppColors.border),
+                const SizedBox(height: 8),
+                const Text('Freccia pilota',
+                    style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold)),
+                const SizedBox(height: 12),
+                Text('Dimensione: ${arrowSize.toStringAsFixed(0)}px',
+                    style: const TextStyle(color: AppColors.textSecondary)),
+                Container(
+                  height: 48,
+                  alignment: Alignment.center,
+                  child: Icon(Icons.navigation,
+                      color: arrowColor, size: arrowSize),
                 ),
+                Slider(
+                  value: arrowSize,
+                  min: TrackAppearanceService.minArrowSize,
+                  max: TrackAppearanceService.maxArrowSize,
+                  divisions: (TrackAppearanceService.maxArrowSize -
+                          TrackAppearanceService.minArrowSize)
+                      .round(),
+                  activeColor: AppColors.accent,
+                  label: arrowSize.toStringAsFixed(0),
+                  onChanged: (v) => setSheetState(() => arrowSize = v),
+                ),
+                const SizedBox(height: 8),
+                const Text('Colore freccia',
+                    style: TextStyle(color: AppColors.textSecondary)),
+                const SizedBox(height: 8),
+                _colorSwatchRow(_arrowColorOptions, arrowColor,
+                    (c) => setSheetState(() => arrowColor = c)),
+
+                const SizedBox(height: 24),
+                const Divider(color: AppColors.border),
+                const SizedBox(height: 8),
+                const Text('Traccia da seguire',
+                    style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold)),
+                const SizedBox(height: 12),
+                Text('Larghezza: ${refTrackWidth.toStringAsFixed(1)}',
+                    style: const TextStyle(color: AppColors.textSecondary)),
+                Container(
+                  height: 28,
+                  alignment: Alignment.center,
+                  child: Container(
+                    height: refTrackWidth,
+                    decoration: BoxDecoration(
+                      color: refTrackColor,
+                      borderRadius: BorderRadius.circular(refTrackWidth / 2),
+                    ),
+                  ),
+                ),
+                Slider(
+                  value: refTrackWidth,
+                  min: TrackAppearanceService.minRefTrackWidth,
+                  max: TrackAppearanceService.maxRefTrackWidth,
+                  divisions: ((TrackAppearanceService.maxRefTrackWidth -
+                              TrackAppearanceService.minRefTrackWidth) /
+                          0.5)
+                      .round(),
+                  activeColor: AppColors.accent,
+                  label: refTrackWidth.toStringAsFixed(1),
+                  onChanged: (v) => setSheetState(() => refTrackWidth = v),
+                ),
+                const SizedBox(height: 8),
+                const Text('Colore traccia di riferimento',
+                    style: TextStyle(color: AppColors.textSecondary)),
+                const SizedBox(height: 8),
+                _colorSwatchRow(_refTrackColorOptions, refTrackColor,
+                    (c) => setSheetState(() => refTrackColor = c)),
+
                 const SizedBox(height: 20),
                 SizedBox(
                   width: double.infinity,
@@ -1702,6 +1820,10 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                       final notifier = ref.read(trackAppearanceProvider.notifier);
                       await notifier.setWidth(width);
                       await notifier.setColor(color);
+                      await notifier.setArrowColor(arrowColor);
+                      await notifier.setArrowSize(arrowSize);
+                      await notifier.setRefTrackColor(refTrackColor);
+                      await notifier.setRefTrackWidth(refTrackWidth);
                       if (sheetCtx.mounted) Navigator.pop(sheetCtx);
                     },
                     style: ElevatedButton.styleFrom(
@@ -1715,6 +1837,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                   ),
                 ),
               ],
+              ),
             ),
           );
         });
@@ -1729,6 +1852,47 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     return gps.specialEntries.where((e) => e.exitTime != null).length >=
         event.speciali.length;
   }
+
+  static const double _kFineGaraNearStartMeters = 100.0;
+
+  /// Tutte le speciali sono state almeno AVVIATE (non necessariamente
+  /// chiuse correttamente) — condizione meno stringente di
+  /// [_allSpecialsCompleted], usata per la seconda via di sblocco di FINE
+  /// GARA quando il pilota è tornato al punto di partenza.
+  bool _allSpecialsStarted(GpsService gps, EventModel? event) {
+    final activeSpecials =
+        event?.speciali.where((s) => !s.annullata) ?? const Iterable.empty();
+    if (activeSpecials.isEmpty) return false;
+    final startedIds = gps.specialEntries.map((e) => e.specialeId).toSet();
+    return activeSpecials.every((s) => startedIds.contains(s.id));
+  }
+
+  bool _isNearStartPoint(LatLng curPos, EventModel? event) {
+    if (_eventTrackPoints.isNotEmpty) {
+      final d = LocationUtils.haversineDistance(
+          curPos.latitude,
+          curPos.longitude,
+          _eventTrackPoints.first.latitude,
+          _eventTrackPoints.first.longitude);
+      if (d <= _kFineGaraNearStartMeters) return true;
+    }
+    if (event != null && event.speciali.isNotEmpty) {
+      final ps1Start = event.speciali.first.waypointInizio;
+      final d = LocationUtils.haversineDistance(
+          curPos.latitude, curPos.longitude, ps1Start.lat, ps1Start.lng);
+      if (d <= _kFineGaraNearStartMeters) return true;
+    }
+    return false;
+  }
+
+  /// Seconda via di sblocco FINE GARA (FIX 6): tutte le PS avviate (anche
+  /// se non tutte chiuse per problemi GPS) E il pilota è tornato entro
+  /// [_kFineGaraNearStartMeters] dal punto di partenza dell'evento o
+  /// dall'inizio della PS1. Le PS ancora aperte vengono chiuse al momento
+  /// della pressione (vedi [_toggleRecording]) con lo stesso algoritmo di
+  /// recovery del FIX 5, segnalate all'admin per la verifica.
+  bool _canFinishNearStart(GpsService gps, LatLng curPos, EventModel? event) =>
+      _allSpecialsStarted(gps, event) && _isNearStartPoint(curPos, event);
 
   Widget _vDivider() => Container(
       width: 1, height: 32, color: AppColors.border.withValues(alpha: 0.5));

@@ -328,10 +328,10 @@ class GpsService extends ChangeNotifier {
   /// geometrica corrente: più si va piano, più serve spostamento reale per
   /// muovere la polyline (evita il pattern "a ventaglio" da fermo).
   double _anchorThresholdMeters() {
-    if (_geometricSpeedKmh > 60) return 2.0;
-    if (_geometricSpeedKmh > 20) return 3.5;
-    if (_geometricSpeedKmh > 5) return 6.0;
-    return 10.0;
+    if (_geometricSpeedKmh > 60) return 1.5;
+    if (_geometricSpeedKmh > 20) return 2.5;
+    if (_geometricSpeedKmh > 5) return 4.0;
+    return 6.0;
   }
 
   /// Retroactively detects a missed special-start waypoint.
@@ -468,16 +468,33 @@ class GpsService extends ChangeNotifier {
     _passages.add(passage);
 
     // Special entry/exit detection
-    if (_inizioToSpecial.containsKey(wp.id) && _currentSpecialId == null) {
+    if (_inizioToSpecial.containsKey(wp.id)) {
       final specialId = _inizioToSpecial[wp.id]!;
-      final special = _specials.where((s) => s.id == specialId).firstOrNull;
-      _currentSpecialId = specialId;
-      _currentSpecialNome = special?.nome;
-      _specialEntries.add(SpecialEntry(
-        specialeId: specialId,
-        specialeNome: special?.nome ?? specialId,
-        entryTime: passageTs,
-      ));
+      if (_currentSpecialId != null && _currentSpecialId != specialId) {
+        // La speciale precedente non è mai stata chiusa (fine non rilevata
+        // e nessun recovery opportunistico è scattato): senza questo, resta
+        // aperta per sempre e blocca FINE GARA. Chiudila ora con recovery a
+        // finestra ampia prima di aprire la nuova.
+        final staleIdx = _specialEntries.lastIndexWhere((e) =>
+            e.specialeId == _currentSpecialId && e.exitTime == null);
+        if (staleIdx >= 0) {
+          await _closeOpenSpecial(
+              staleIdx, passageTs, passageTs, 'recovery_impreciso');
+          if (_disposed) return;
+        }
+        _currentSpecialId = null;
+        _currentSpecialNome = null;
+      }
+      if (_currentSpecialId == null) {
+        final special = _specials.where((s) => s.id == specialId).firstOrNull;
+        _currentSpecialId = specialId;
+        _currentSpecialNome = special?.nome;
+        _specialEntries.add(SpecialEntry(
+          specialeId: specialId,
+          specialeNome: special?.nome ?? specialId,
+          entryTime: passageTs,
+        ));
+      }
     } else if (_fineToSpecial.containsKey(wp.id) &&
         _currentSpecialId == _fineToSpecial[wp.id]) {
       final idx = _specialEntries.lastIndexWhere((e) => e.exitTime == null);
@@ -512,6 +529,105 @@ class GpsService extends ChangeNotifier {
           timestamp: passage.timestamp,
         );
       }
+    }
+  }
+
+  /// Chiude una speciale ancora aperta (entry senza exitTime) all'indice
+  /// [entryIdx] di [_specialEntries]. Cerca nel buffer [_recoveryTrack] il
+  /// punto più vicino al waypoint di fine della speciale, in una finestra
+  /// AMPIA che parte dall'orario di inizio della speciale stessa fino a
+  /// [now] (non solo gli ultimi secondi, a differenza di
+  /// [_trySpecialEndRecovery] che copre solo il caso "siamo ancora vicini
+  /// alla fine"). Se trovato entro [kSpecialEndRecoveryRadiusMeters] usa
+  /// quel timestamp come fine reale (recovery preciso); altrimenti chiude
+  /// con [fallbackTime] e marca [fallbackTimingError] per la verifica
+  /// admin, così la speciale successiva può sempre procedere e FINE GARA
+  /// resta sbloccabile.
+  Future<void> _closeOpenSpecial(
+    int entryIdx,
+    DateTime now,
+    DateTime fallbackTime,
+    String fallbackTimingError,
+  ) async {
+    final entry = _specialEntries[entryIdx];
+    final special =
+        _specials.where((s) => s.id == entry.specialeId).firstOrNull;
+    if (special == null) return;
+    final endWp = special.waypointFine;
+    final endPt = LatLng(endWp.lat, endWp.lng);
+
+    double bestDistM = double.infinity;
+    int bestIdx = -1;
+    for (int i = _recoveryTrack.length - 1; i >= 0; i--) {
+      if (_recoveryTimestamps[i].isBefore(entry.entryTime)) break;
+      final d = _haversineKm(_recoveryTrack[i], endPt) * 1000.0;
+      if (d < bestDistM) {
+        bestDistM = d;
+        bestIdx = i;
+      }
+    }
+
+    DateTime exitTime;
+    String? timingError;
+    if (bestIdx >= 0 && bestDistM < kSpecialEndRecoveryRadiusMeters) {
+      exitTime = _recoveryTimestamps[bestIdx];
+      debugPrint('RECOVERY END (finestra ampia) speciale ${special.id}: '
+          'fine retroattiva a $exitTime (dist: ${bestDistM.toStringAsFixed(1)}m)');
+      _recoveryStreamCtrl.add('⚡ Fine ${special.nome} recuperata');
+    } else {
+      exitTime = fallbackTime;
+      timingError = fallbackTimingError;
+      debugPrint('RECOVERY END (finestra ampia) speciale ${special.id}: '
+          'nessun punto entro ${kSpecialEndRecoveryRadiusMeters}m, '
+          'chiusa con stima ($fallbackTimingError)');
+      _recoveryStreamCtrl
+          .add('⚠ Fine ${special.nome} stimata — verifica admin');
+    }
+
+    _specialEntries[entryIdx] = entry.withExit(exitTime);
+    if (_currentSpecialId == special.id) {
+      _currentSpecialId = null;
+      _currentSpecialNome = null;
+    }
+    _endRecoveryAttempted.add(special.id);
+    _passedWaypoints.add(endWp.id);
+    _passages.add(WaypointPassage(waypoint: endWp, timestamp: exitTime));
+
+    if (_activeEventId != null && _activeUserId != null) {
+      try {
+        await _firestoreService.recordWaypointPassage(
+          eventId: _activeEventId!,
+          userId: _activeUserId!,
+          waypointId: endWp.id,
+          waypointNome: endWp.nome,
+          timestamp: exitTime,
+          recoveredEnd: true,
+          timingError: timingError,
+        );
+      } catch (_) {
+        await _offlineQueue.queuePassage(
+          eventId: _activeEventId!,
+          userId: _activeUserId!,
+          waypointId: endWp.id,
+          waypointNome: endWp.nome,
+          timestamp: exitTime,
+        );
+      }
+    }
+  }
+
+  /// Chiude tutte le speciali ancora aperte (FIX 6): chiamato da FINE GARA
+  /// quando il pilota è tornato vicino al punto di partenza senza aver
+  /// chiuso regolarmente tutte le PS. Nessun effetto sulle speciali già
+  /// concluse normalmente. Va chiamato PRIMA di [blockFurtherWrites]/
+  /// [stopRecording], perché usa [_recoveryTrack] e l'accesso a Firestore
+  /// ancora attivi.
+  Future<void> closeAllOpenSpecialsForFineGara() async {
+    final now = DateTime.now();
+    for (int i = 0; i < _specialEntries.length; i++) {
+      if (_disposed) return;
+      if (_specialEntries[i].exitTime != null) continue;
+      await _closeOpenSpecial(i, now, now, 'chiusa_da_FINE_GARA');
     }
   }
 
@@ -1148,6 +1264,7 @@ class GpsService extends ChangeNotifier {
       position: filteredPos,
       speedKmh: _geometricSpeedKmh,
       timestamp: now,
+      gpsBearingDeg: _bearingDeg,
     );
 
     _safeNotify();

@@ -17,6 +17,12 @@ class WaypointPassageRecord {
   final String waypointId;
   final String waypointNome;
   final DateTime timestamp;
+  // Non-null se GpsService ha chiuso retroattivamente questo passaggio con
+  // un'affidabilità ridotta (es. nessun punto trovato nel buffer di
+  // recovery entro il raggio atteso): 'recovery_impreciso' o
+  // 'chiusa_da_FINE_GARA'. Letto da ClassificaEngine per segnalarlo
+  // all'admin nella stessa UI usata per 'rilevamento_non_valido'.
+  final String? timingError;
 
   const WaypointPassageRecord({
     required this.id,
@@ -24,6 +30,7 @@ class WaypointPassageRecord {
     required this.waypointId,
     required this.waypointNome,
     required this.timestamp,
+    this.timingError,
   });
 
   factory WaypointPassageRecord.fromFirestore(DocumentSnapshot doc) {
@@ -34,6 +41,7 @@ class WaypointPassageRecord {
       waypointId: d['waypointId'] ?? '',
       waypointNome: d['waypointNome'] ?? '',
       timestamp: (d['timestamp'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      timingError: d['timingError'] as String?,
     );
   }
 }
@@ -120,6 +128,16 @@ class SpecialTempo {
     final cs = (tempo.inMilliseconds % 1000) ~/ 10;
     return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}.${cs.toString().padLeft(2, '0')}';
   }
+
+  /// Tempo PS calcolato da timestamp implausibili (es. recovery corrotto):
+  /// non viene mostrato, sostituito dalla penalità massima.
+  bool get isInvalidTiming => timingError == 'rilevamento_non_valido';
+
+  /// Tempo PS calcolato ma con affidabilità ridotta (fine speciale non
+  /// rilevata, chiusa con stima di recovery o forzata da FINE GARA): il
+  /// tempo resta visibile, ma va segnalato all'admin per un'eventuale
+  /// penalità manuale.
+  bool get hasTimingWarning => timingError != null && !isInvalidTiming;
 }
 
 class ClassificaEntry {

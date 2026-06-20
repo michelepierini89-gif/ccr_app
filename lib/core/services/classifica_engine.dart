@@ -230,6 +230,13 @@ class ClassificaEngine {
         penaltySeconds: penaltySeconds,
         speedZoneViolations: speedZoneViolationInfos,
         speedZonePenaltySeconds: speedZonePenaltySeconds,
+        // GpsService può aver chiuso la PS in modo poco affidabile
+        // (fine non rilevata, recovery con stima imprecisa o chiusura
+        // forzata da FINE GARA): segnalato all'admin come per
+        // 'rilevamento_non_valido', ma senza scartare il tempo.
+        timingError: end.timingError,
+        rawStartTime: end.timingError != null ? start.timestamp : null,
+        rawEndTime: end.timingError != null ? end.timestamp : null,
       ));
     }
     return result;

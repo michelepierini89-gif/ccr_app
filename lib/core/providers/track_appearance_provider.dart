@@ -14,13 +14,33 @@ class TrackAppearanceNotifier extends Notifier<TrackAppearanceSettings> {
   }
 
   Future<void> setWidth(double width) async {
-    state = TrackAppearanceSettings(trackWidth: width, trackColor: state.trackColor);
+    state = state.copyWith(trackWidth: width);
     await ref.read(trackAppearanceServiceProvider).saveWidth(width);
   }
 
   Future<void> setColor(Color color) async {
-    state = TrackAppearanceSettings(trackWidth: state.trackWidth, trackColor: color);
+    state = state.copyWith(trackColor: color);
     await ref.read(trackAppearanceServiceProvider).saveColor(color);
+  }
+
+  Future<void> setArrowColor(Color color) async {
+    state = state.copyWith(arrowColor: color);
+    await ref.read(trackAppearanceServiceProvider).saveArrowColor(color);
+  }
+
+  Future<void> setArrowSize(double size) async {
+    state = state.copyWith(arrowSize: size);
+    await ref.read(trackAppearanceServiceProvider).saveArrowSize(size);
+  }
+
+  Future<void> setRefTrackColor(Color color) async {
+    state = state.copyWith(refTrackColor: color);
+    await ref.read(trackAppearanceServiceProvider).saveRefTrackColor(color);
+  }
+
+  Future<void> setRefTrackWidth(double width) async {
+    state = state.copyWith(refTrackWidth: width);
+    await ref.read(trackAppearanceServiceProvider).saveRefTrackWidth(width);
   }
 }
 

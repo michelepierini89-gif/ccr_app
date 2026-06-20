@@ -475,6 +475,7 @@ class FirestoreService {
     required DateTime timestamp,
     bool recoveredStart = false,
     bool recoveredEnd = false,
+    String? timingError,
   }) =>
       _db
           .collection(FirebaseConstants.tracking)
@@ -487,6 +488,7 @@ class FirestoreService {
         'timestamp': Timestamp.fromDate(timestamp),
         if (recoveredStart) 'recoveredStart': true,
         if (recoveredEnd) 'recoveredEnd': true,
+        'timingError': ?timingError,
       });
 
   /// Salva una violazione di zona a velocità controllata. Best-effort: a

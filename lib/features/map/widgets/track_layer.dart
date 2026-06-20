@@ -1,7 +1,7 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
+import 'package:latlong2/latlong.dart' hide Path;
 import '../../../core/models/special_model.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/location_utils.dart';
@@ -93,7 +93,8 @@ class TrackLayer extends StatelessWidget {
 /// tooltip — solo indicazione visiva.
 class TrackDirectionArrowsLayer extends StatelessWidget {
   final List<LatLng> trackPoints;
-  static const double kArrowSpacingMeters = 150.0;
+  static const double kArrowSpacingMeters = 60.0;
+  static const double kArrowSize = 10.0;
 
   const TrackDirectionArrowsLayer({super.key, required this.trackPoints});
 
@@ -122,17 +123,12 @@ class TrackDirectionArrowsLayer extends StatelessWidget {
         final bearing = _bearingDeg(trackPoints[i - 1], trackPoints[i]);
         markers.add(Marker(
           point: trackPoints[i],
-          width: 16,
-          height: 16,
+          width: kArrowSize,
+          height: kArrowSize,
           child: IgnorePointer(
             child: Transform.rotate(
               angle: bearing * pi / 180,
-              child: const Icon(
-                Icons.navigation,
-                size: 14,
-                color: Colors.white,
-                shadows: [Shadow(color: Colors.black87, blurRadius: 2)],
-              ),
+              child: const _ArrowTriangle(size: kArrowSize),
             ),
           ),
         ));
@@ -146,4 +142,40 @@ class TrackDirectionArrowsLayer extends StatelessWidget {
   Widget build(BuildContext context) {
     return MarkerLayer(markers: _buildMarkers());
   }
+}
+
+/// Triangolino bianco pieno, senza bordi né ombre, che punta verso l'alto
+/// (la rotazione verso la direzione di percorrenza è applicata dal chiamante
+/// tramite [Transform.rotate]). Integrato visivamente nella traccia, niente
+/// di simile a un'icona con contorno/ombreggiatura.
+class _ArrowTriangle extends StatelessWidget {
+  final double size;
+
+  const _ArrowTriangle({required this.size});
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      size: Size(size, size),
+      painter: _ArrowTrianglePainter(),
+    );
+  }
+}
+
+class _ArrowTrianglePainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.fill;
+    final path = Path()
+      ..moveTo(size.width / 2, 0)
+      ..lineTo(size.width, size.height)
+      ..lineTo(0, size.height)
+      ..close();
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
