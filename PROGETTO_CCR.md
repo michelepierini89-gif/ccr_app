@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 20 giugno 2026 (Step 28 completato)  
+**Data aggiornamento:** 21 giugno 2026 (Step 29 completato)  
 **Branch:** main  
 **Versione:** 1.0.0+1
 
@@ -1141,13 +1141,54 @@ provider Riverpod che lo istanzia.
 
 ---
 
+### Step 29 — 6 fix/feature dal test reale: heading, aspetto traccia, lag, recovery PS, FINE GARA (21 giugno 2026) ✅
+
+**FIX 1 — Heading modalità HEADING (`imu_fusion_service.dart`, `gps_service.dart`):**
+- Verificata la logica di rotazione mappa/freccia (`gps_recording_screen.dart`): `rotate:_headingMode` + `arrowAngle=0` in HEADING e `MapController.rotate()` in gradi (non radianti) erano già corretti — nessuna doppia rotazione residua.
+- **Causa reale individuata**: lo Step 28 ha smesso di far ricreare `GpsService` ad ogni notifica IMU — prima questo bug "mascherava" il problema fermando l'IMU pochi istanti dopo il primo fix GPS (via `GpsService.dispose()`); ora che l'IMU resta attivo per tutta la sessione, la deriva non corretta del filtro complementare giroscopio+bussola è risultata evidente ("freccia che punta a caso").
+- `_filtGyroZ` + `kGyroLowPassAlpha=0.35`: low-pass sul giroscopio (le vibrazioni motore, mai isolate su un mezzo a motore, si integravano dirette nello heading) — stesso principio già applicato all'accelerometro.
+- `kMaxCompassJumpDeg=60.0`: scarta letture bussola con salto angolare implausibile (interferenza magnetica vicino al motore/telaio).
+- Nuovo parametro `gpsBearingDeg` in `ImuFusionService.updateWithGps()`: ancora lo heading al bearing geometrico GPS (`kHeadingGpsAnchorWeight=0.15`, sotto `kHeadingGpsAnchorMinSpeedKmh=3.0` non corregge) — senza questa ancora, gyro+bussola non avevano alcun limite superiore alla deriva nel corso di un'intera sessione.
+- `kGyroZSign` resta a `1.0`, costante singola facilmente invertibile se il test su strada mostra rotazione invertita.
+
+**FIX 2 — Impostazioni aspetto estese (`track_appearance_service.dart`, `track_appearance_provider.dart`, `gps_recording_screen.dart`):**
+- `TrackAppearanceSettings`: nuovi campi `arrowColor`/`arrowSize`/`refTrackColor`/`refTrackWidth` + `copyWith`; persistiti in SharedPreferences con chiavi dedicate.
+- BottomSheet impostazioni: nuove sezioni "Freccia pilota" (colore tra 5 predefiniti, dimensione slider 24-48px default 36) e "Traccia da seguire" (colore tra 4 predefiniti, larghezza slider 4-10px default 6); helper `_colorSwatchRow` condiviso tra le 3 sezioni colore.
+- Marker posizione e polyline GPX di riferimento ora leggono `trackAppearanceProvider` invece di valori hardcoded.
+
+**FIX 3 — Frecce direzionali traccia (`track_layer.dart`):**
+- `kArrowSpacingMeters` 150m→60m; nuovo `_ArrowTriangle`/`_ArrowTrianglePainter` (CustomPainter, triangolo bianco pieno 10px, nessun bordo/ombra) al posto dell'icona `Icons.navigation` con `Shadow`.
+- Import `latlong2` con `hide Path` (conflitto col `Path<T>` di latlong2 che shadowava `dart:ui.Path` usato dal CustomPainter).
+
+**FIX 4 — Riduzione lag GPS/IMU (`imu_fusion_service.dart`, `gps_service.dart`):**
+- GPS anchor blend posizione 80/20→90/10; `kComplementaryAlpha` 0.98→0.96 (bussola corregge il giroscopio più rapidamente); `kUiUpdateIntervalMs` 40ms→20ms (50Hz, il DOOGEE ha retto bene nel test).
+- `_anchorThresholdMeters()`: fermo 10→6m, lento 6→4m, medio 3.5→2.5m, veloce 2→1.5m.
+
+**FIX 5 — Recovery fine speciale da PS successiva (`gps_service.dart`, `classifica_model.dart`, `firestore_service.dart`, `classifica_engine.dart`, `timing_screen.dart`, `classifica_screen.dart`):**
+- Bug reale: fine PS non rilevata → `_currentSpecialId` mai liberato → l'inizio della PS successiva veniva ignorato (condizione `_currentSpecialId == null` mai vera) → nessuna nuova `SpecialEntry`, FINE GARA bloccato per sempre.
+- Nuovo `GpsService._closeOpenSpecial()`: quando si rileva l'inizio di una speciale diversa da quella ancora aperta, cerca nel buffer `_recoveryTrack` il punto più vicino al waypoint di fine della PS aperta in una finestra AMPIA (dall'`entryTime` della PS fino ad ora, non solo gli ultimi 30s come `_trySpecialEndRecovery`); se trovato entro 80m chiude con quel timestamp (`recoveredEnd:true`), altrimenti chiude con l'istante di ingresso della PS successiva e `timingError:'recovery_impreciso'`.
+- `WaypointPassageRecord`/`recordWaypointPassage`: nuovo campo opzionale `timingError` persistito sul passaggio di fine.
+- `ClassificaEngine`: propaga `end.timingError` in `SpecialTempo.timingError`; nuovi getter `isInvalidTiming` (solo per `'rilevamento_non_valido'`, tempo nascosto come da Step 21) e `hasTimingWarning` (tempo mostrato normalmente + badge "VERIFICA" lato admin in `timing_screen.dart`; lato pilota in `classifica_screen.dart` il tempo è semplicemente visibile, nessun allarme).
+
+**FIX 6 — FINE GARA vicino al punto di partenza (`gps_recording_screen.dart`, `gps_service.dart`):**
+- Nuova condizione di sblocco `_canFinishNearStart`: tutte le PS avviate (`_allSpecialsStarted`, non necessariamente chiuse) E il pilota entro 100m dal primo punto della traccia GPX o dal waypoint inizio PS1 (`_isNearStartPoint`).
+- `GpsService.closeAllOpenSpecialsForFineGara()`: alla pressione di FINE GARA, chiude tutte le PS ancora aperte con lo stesso algoritmo del FIX 5, marcando `timingError:'chiusa_da_FINE_GARA'` per quelle senza recovery preciso — chiamato sempre (no-op se già tutte chiuse), prima di `blockFurtherWrites()`/`stopRecording()`.
+
+**Deploy:**
+- `flutter analyze`: zero issues (2 problemi intermedi corretti: conflitto `Path` latlong2/dart:ui in `track_layer.dart`, lint `use_null_aware_elements` in `firestore_service.dart`)
+- `git commit fcde1d6`: "fix: heading modalità HEADING + impostazioni freccia e traccia + frecce direzionali stile + lag GPS ridotto + recovery PS da speciale successiva + FINE GARA vicino partenza"
+- `flutter build web --release` + `firebase deploy --only hosting` ✅ su https://ccr-enduro.web.app
+- `git push origin main` ✅
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**
 - Ripristinare regole Firestore/Storage granulari per produzione (da git history commit `25ad689`)
 
 **Test su device reale:**
-- Test GPS su Android con movimento reale (verificare interpolazione marker, modalità HEADING, tempo speciale)
+- Verificare in un nuovo test su strada se i fix dello Step 29 (low-pass gyro, scarto picchi bussola, ancora heading su GPS) hanno stabilizzato la modalità HEADING; se la mappa ruota ancora nella direzione sbagliata, provare `kGyroZSign = -1.0` in `imu_fusion_service.dart`
 - Test end-to-end classifica campionato con più eventi
 - Test flusso iscrizione 2-step su web e Android
 
