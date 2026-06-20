@@ -66,10 +66,17 @@ final imuFusionServiceProvider = ChangeNotifierProvider<ImuFusionService>((ref) 
 });
 
 final gpsServiceProvider = ChangeNotifierProvider<GpsService>((ref) {
+  // `ref.read`, non `ref.watch`: GpsService usa questi servizi come
+  // dipendenze fisse, non deve essere ricreato ogni volta che
+  // OfflineQueueService o ImuFusionService chiamano notifyListeners()
+  // (es. ImuFusionService.updateWithGps() al primo fix GPS). Un
+  // `ref.watch` qui distruggeva e ricreava l'istanza di GpsService,
+  // azzerando `_isRecording` e facendo tornare la UI alla schermata
+  // pre-avvio non appena arrivava il primo fix GPS.
   return GpsService(
-    ref.watch(firestoreServiceProvider),
-    ref.watch(offlineQueueProvider),
-    ref.watch(imuFusionServiceProvider),
+    ref.read(firestoreServiceProvider),
+    ref.read(offlineQueueProvider),
+    ref.read(imuFusionServiceProvider),
   );
 });
 
