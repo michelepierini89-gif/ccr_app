@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 05 giugno 2026 (Step 14 completato)  
+**Data aggiornamento:** 20 giugno 2026 (Step 27 completato)  
 **Branch:** main  
 **Versione:** 1.0.0+1
 
@@ -1048,6 +1048,44 @@ indefinitamente dopo START. Tre cause concorrenti nel core GPS (`gps_service.dar
 - `flutter analyze`: zero issues
 - `git commit 9f4496c`: "feat: zone velocità controllata con penalità + frecce direzionali traccia rossa"
 - `flutter build web --release` + `firebase deploy --only hosting,firestore:rules` ✅ (rules incluse: necessarie per la nuova collezione `speedZoneViolations`)
+- `git push origin main` ✅
+
+---
+
+---
+
+### Step 27 — Rimozione watchdog automatico GPS, navigazione sempre aperta, restart manuale (20 giugno 2026) ✅
+
+**Contesto:** nonostante i fix progressivi dello Step 25, l'app risultava
+ancora bloccata su "In attesa del segnale GPS..." in test reali. Su
+richiesta esplicita, l'intero meccanismo di watchdog/restart automatico è
+stato rimosso (non patchato ulteriormente): nessun Timer periodico, nessun
+controllo di freeze, nessun riavvio automatico dello stream GPS. La
+navigazione si apre sempre e subito dopo START, e solo il pilota decide se
+riavviare il GPS tramite un pulsante manuale.
+
+**1 — Rimozione completa watchdog (`gps_service.dart`):**
+- Eliminati: `_freezeDetectionTimer` (Timer.periodic ogni 3s), `_checkFreeze()`,
+  `_attemptGpsRestart()` automatico, `_isGpsFrozen`, `isGpsFrozen` getter,
+  `kFreezeDetectionSeconds`, `kFreezeRestartSeconds`, `kStartupGracePeriodSeconds`
+- `startRecording()`/`stopRecording()`/`dispose()`: rimossa ogni creazione/cancellazione del timer di freeze
+- Nessun controllo periodico residuo: il servizio non prende più nessuna decisione autonoma sullo stato del GPS
+
+**2 — Navigazione sempre aperta (verifica, nessuna modifica necessaria):**
+- Confermato che `startRecording()` chiama già `_safeNotify()` immediatamente dopo `_isRecording = true`, prima di `_imu.start()` e dello stream GPS (introdotto allo Step 25)
+- `build()` in `gps_recording_screen.dart`: `if (isRecording) → _buildActiveTracking()` è già il primo ramo controllato, indipendente da `pos == null`
+- Banner "Acquisizione GPS in corso..." (`_GpsAcquiringBanner`) resta non bloccante: mappa e controlli sempre visibili e utilizzabili sotto
+
+**3 — Pulsante manuale "Ripristina GPS" (`gps_service.dart` + `gps_recording_screen.dart`):**
+- Nuovo getter `GpsService.isGpsStale`: true solo se `_isRecording` e sono passati ≥30s (`kGpsStaleSeconds`) dall'ultima posizione raw ricevuta (`_lastRawPositionTs`, o da `_recordingStart` se non è mai arrivato nessun fix) — usato ESCLUSIVAMENTE per decidere la visibilità del pulsante, nessuna azione automatica
+- `_attemptGpsRestart()`/`attemptGpsRestart()` rinominati in `restartGps()` (pubblico), invocato solo dal tap del pilota; cancella e ricrea la subscription dello stream GPS, stesso comportamento di basso livello di prima ma trigger esclusivamente manuale
+- UI: nuovo widget `_GpsRestoreBanner` (banner rosso con testo "Nessuna posizione GPS da oltre 30s" + pulsante "Ripristina GPS"), mostrato in `_buildActiveTracking` quando `gps.isGpsStale == true`; durante il riavvio (`gps.isRestartingGps`) banner arancione con spinner come prima
+- Il ticker già esistente `_elapsedTimer` (1s, già usato per il cronometro gara) guida la rivalutazione di `isGpsStale` ad ogni tick — nessun nuovo timer introdotto in UI
+
+**Deploy:**
+- `flutter analyze`: zero issues (194s)
+- `git commit 1dc9754`: "fix: rimozione watchdog automatico GPS + navigazione sempre aperta + restart manuale 30s"
+- `flutter build web --release` + `firebase deploy --only hosting` ✅ su https://ccr-enduro.web.app
 - `git push origin main` ✅
 
 ---
