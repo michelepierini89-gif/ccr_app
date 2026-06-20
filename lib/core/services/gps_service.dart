@@ -203,26 +203,19 @@ class GpsService extends ChangeNotifier {
   final StreamController<String> _fuelPointStreamCtrl =
       StreamController<String>.broadcast();
 
-  // GPS freeze watchdog: _lastRawPositionTs è aggiornato ad OGNI posizione
-  // ricevuta (valida o scartata dai filtri), per distinguere "GPS che non
-  // manda più nulla" da "GPS che manda solo punti scartati".
+  // _lastRawPositionTs è aggiornato ad OGNI posizione ricevuta (valida o
+  // scartata dai filtri), per distinguere "GPS che non manda più nulla" da
+  // "GPS che manda solo punti scartati". Usato solo per decidere quando
+  // mostrare il pulsante manuale "Ripristina GPS" — nessun controllo
+  // periodico, nessun riavvio automatico: solo il pilota decide se e
+  // quando riavviare lo stream.
   DateTime? _lastRawPositionTs;
-  bool _isGpsFrozen = false;
   bool _isRestartingGps = false;
-  Timer? _freezeDetectionTimer;
   int _currentIntervalMs = AppConstants.gpsIntervalTransferMs;
-  static const int kFreezeDetectionSeconds = 8;
-  static const int kFreezeRestartSeconds = 15;
 
-  // Grace period di acquisizione: prima del PRIMO fix raw in assoluto
-  // (_lastRawPositionTs == null), il chip GPS può normalmente impiegare
-  // 30-60s (cold start, indoor, ecc.). Il watchdog freeze/restart resta
-  // inattivo durante questa finestra — altrimenti un restart automatico a
-  // metà acquisizione fa ripartire il chip da zero, impedendo per sempre
-  // la convergenza (loop di restart infinito che non lascia mai arrivare
-  // il primo fix). Oltre la finestra di grazia senza nessun fix, il
-  // freeze è considerato reale.
-  static const int kStartupGracePeriodSeconds = 60;
+  /// Soglia di inattività GPS oltre la quale il pulsante manuale
+  /// "Ripristina GPS" diventa visibile in UI.
+  static const int kGpsStaleSeconds = 30;
 
   bool get isRecording => _isRecording;
   String? get activeEventId => _activeEventId;
@@ -292,10 +285,18 @@ class GpsService extends ChangeNotifier {
   Stream<String> get dangerPassedStream => _dangerPassedStreamCtrl.stream;
 
   /// True se non arriva nessuna posizione GPS (valida o no) da almeno
-  /// [kFreezeDetectionSeconds] secondi.
-  bool get isGpsFrozen => _isGpsFrozen;
+  /// [kGpsStaleSeconds] secondi durante una registrazione attiva. Usato
+  /// solo per mostrare/nascondere il pulsante manuale "Ripristina GPS":
+  /// nessuna azione automatica viene presa in base a questo valore.
+  bool get isGpsStale {
+    if (!_isRecording) return false;
+    final reference = _lastRawPositionTs ?? _recordingStart;
+    if (reference == null) return false;
+    return DateTime.now().difference(reference).inSeconds >=
+        kGpsStaleSeconds;
+  }
 
-  /// True durante il riavvio automatico/manuale dello stream GPS.
+  /// True durante il riavvio manuale dello stream GPS (richiesto dal pilota).
   bool get isRestartingGps => _isRestartingGps;
 
   /// Computes the forward azimuth from [from] to [to] in degrees [0, 360).
@@ -758,7 +759,6 @@ class GpsService extends ChangeNotifier {
     _mode = GpsMode.transfer;
     _recordingStart = DateTime.now();
     _lastRawPositionTs = null;
-    _isGpsFrozen = false;
     _isRestartingGps = false;
     // Notifica IMMEDIATA: la schermata di navigazione deve apparire subito,
     // indipendentemente da quanto impiega il GPS a fornire un fix. Tutto
@@ -771,10 +771,6 @@ class GpsService extends ChangeNotifier {
 
     _firestoreService.setRaceStatus(eventId, userId, 'racing').catchError((_) {});
     _startPositionStream(AppConstants.gpsIntervalTransferMs);
-
-    _freezeDetectionTimer?.cancel();
-    _freezeDetectionTimer =
-        Timer.periodic(const Duration(seconds: 3), (_) => _checkFreeze());
   }
 
   void _startPositionStream(int intervalMs) {
@@ -863,13 +859,10 @@ class GpsService extends ChangeNotifier {
     final now = DateTime.now();
     final rawLatLng = LatLng(pos.latitude, pos.longitude);
 
-    // Watchdog: aggiornato ad OGNI posizione ricevuta, valida o no, PRIMA di
-    // qualsiasi filtro — distingue "GPS muto" da "GPS che manda solo scarti".
+    // Aggiornato ad OGNI posizione ricevuta, valida o no, PRIMA di
+    // qualsiasi filtro — usato solo da [isGpsStale] per il pulsante
+    // manuale "Ripristina GPS".
     _lastRawPositionTs = now;
-    if (_isGpsFrozen) {
-      _isGpsFrozen = false;
-      _safeNotify();
-    }
 
     // ── STEP 1: doppia soglia accuracy DISPLAY vs DETECTION ──────────────
     // Oltre la soglia display il punto è troppo impreciso per Kalman/
@@ -1160,54 +1153,13 @@ class GpsService extends ChangeNotifier {
     _safeNotify();
   }
 
-  /// Controllo periodico (ogni 3s) del watchdog GPS: se non arriva nessuna
-  /// posizione raw da [kFreezeDetectionSeconds] secondi mostra il banner
-  /// "GPS bloccato"; da [kFreezeRestartSeconds] secondi tenta un riavvio
-  /// automatico dello stream.
-  void _checkFreeze() {
-    if (!_isRecording) return;
-    final now = DateTime.now();
-
-    if (_lastRawPositionTs == null) {
-      // Nessun fix raw ancora arrivato dall'avvio: il chip GPS può
-      // normalmente impiegare 30-60s (cold start). Durante la finestra di
-      // grazia il watchdog resta inattivo, per non riavviare lo stream a
-      // metà acquisizione e farla ripartire da zero all'infinito.
-      final secSinceStart = _recordingStart != null
-          ? now.difference(_recordingStart!).inSeconds
-          : 0;
-      if (secSinceStart < kStartupGracePeriodSeconds) return;
-
-      // Oltre la finestra di grazia senza nemmeno un fix: freeze reale.
-      if (!_isGpsFrozen) {
-        _isGpsFrozen = true;
-        _safeNotify();
-        debugPrint(
-            'GPS FREEZE: nessun fix raw da oltre ${kStartupGracePeriodSeconds}s dall\'avvio');
-      }
-      _attemptGpsRestart();
-      return;
-    }
-
-    final secSinceLast = now.difference(_lastRawPositionTs!).inSeconds;
-
-    if (secSinceLast >= kFreezeDetectionSeconds && !_isGpsFrozen) {
-      _isGpsFrozen = true;
-      _safeNotify();
-      debugPrint('GPS FREEZE rilevato: ${secSinceLast}s senza posizioni');
-    }
-
-    if (secSinceLast >= kFreezeRestartSeconds) {
-      _attemptGpsRestart();
-    }
-  }
-
   /// Riavvia lo stream GPS cancellando e ricreando la subscription.
-  /// Chiamato automaticamente dal watchdog, o manualmente tramite
-  /// [attemptGpsRestart] dal banner "GPS bloccato".
-  Future<void> _attemptGpsRestart() async {
+  /// Richiamato SOLO dalla UI (pulsante "Ripristina GPS"): nessun
+  /// controllo periodico, nessun riavvio automatico — il pilota decide
+  /// se e quando riavviare.
+  Future<void> restartGps() async {
     if (_isRestartingGps) return;
-    debugPrint('GPS RESTART automatico...');
+    debugPrint('GPS RESTART manuale...');
     _isRestartingGps = true;
     _safeNotify();
 
@@ -1225,11 +1177,6 @@ class GpsService extends ChangeNotifier {
 
     debugPrint('GPS RESTART completato');
   }
-
-  /// Riavvio manuale dello stream GPS, richiamabile dalla UI (tap sul
-  /// banner "GPS bloccato") come ultima risorsa se il riavvio automatico
-  /// del watchdog non ha funzionato.
-  Future<void> attemptGpsRestart() => _attemptGpsRestart();
 
   Future<void> stopRecording() async {
     _positionSub?.cancel();
@@ -1266,9 +1213,6 @@ class GpsService extends ChangeNotifier {
     _alertDangerPoint = null;
     _alertDangerDistance = null;
     _dangerBlinking = false;
-    _freezeDetectionTimer?.cancel();
-    _freezeDetectionTimer = null;
-    _isGpsFrozen = false;
     _isRestartingGps = false;
     _lastRawPositionTs = null;
     _imu.stop();
@@ -1284,7 +1228,6 @@ class GpsService extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _positionSub?.cancel();
-    _freezeDetectionTimer?.cancel();
     _posStreamCtrl.close();
     _recoveryStreamCtrl.close();
     _fuelPointStreamCtrl.close();

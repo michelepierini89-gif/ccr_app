@@ -970,7 +970,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         // visibili e utilizzabili sotto questo banner.
         if (!hasPos) const _GpsAcquiringBanner(),
 
-        // Banner GPS in ripristino (riavvio automatico stream in corso)
+        // Banner GPS in ripristino (riavvio manuale in corso, richiesto dal pilota)
         if (gps.isRestartingGps)
           Container(
             color: Colors.orange.shade800,
@@ -991,27 +991,10 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
               ],
             ),
           )
-        // Banner GPS bloccato: tap per riavvio manuale come ultima risorsa
-        else if (gps.isGpsFrozen)
-          GestureDetector(
-            onTap: () => gps.attemptGpsRestart(),
-            child: Container(
-              color: Colors.red.shade800,
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: const Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.gps_off, color: Colors.white, size: 18),
-                  SizedBox(width: 8),
-                  Text('GPS BLOCCATO — Tocca per ripristinare',
-                      style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 13)),
-                ],
-              ),
-            ),
-          ),
+        // Nessuna posizione da oltre 30s: il pilota decide se riavviare lo
+        // stream GPS, nessuna azione automatica viene presa dall'app.
+        else if (gps.isGpsStale)
+          _GpsRestoreBanner(onRestart: () => gps.restartGps()),
 
         // Banner punto ristoro: appare quando il pilota è entro 200m e non
         // l'ha ancora superato (gps.passedFuelPoints persiste anche in background)
@@ -1879,6 +1862,52 @@ class _GpsAcquiringBanner extends StatelessWidget {
                   fontWeight: FontWeight.w600,
                   fontSize: 13),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Banner con pulsante manuale "Ripristina GPS": visibile solo quando non
+/// arriva nessuna posizione (valida o no) da oltre 30s. Nessun riavvio
+/// automatico — il pilota decide se e quando toccare il pulsante.
+class _GpsRestoreBanner extends StatelessWidget {
+  const _GpsRestoreBanner({required this.onRestart});
+
+  final VoidCallback onRestart;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      color: Colors.red.shade800,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: Row(
+        children: [
+          const Icon(Icons.gps_off, color: Colors.white, size: 18),
+          const SizedBox(width: 8),
+          const Expanded(
+            child: Text(
+              'Nessuna posizione GPS da oltre 30s',
+              style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13),
+            ),
+          ),
+          TextButton(
+            onPressed: onRestart,
+            style: TextButton.styleFrom(
+              backgroundColor: Colors.white,
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            ),
+            child: const Text('Ripristina GPS',
+                style: TextStyle(
+                    color: Colors.red,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12)),
           ),
         ],
       ),
