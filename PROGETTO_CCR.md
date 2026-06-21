@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 21 giugno 2026 (Step 29 completato)  
+**Data aggiornamento:** 21 giugno 2026 (Step 30 completato)  
 **Branch:** main  
 **Versione:** 1.0.0+1
 
@@ -93,13 +93,15 @@ ccr_app/
 │   │   │
 │   │   ├── pilot/
 │   │   │   ├── providers/pilot_provider.dart      # + eventProvider FutureProvider
+│   │   │   ├── providers/pilot_stats_provider.dart # pilotStatsProvider (FutureProvider, ricalcola classifiche)
 │   │   │   ├── screens/
-│   │   │   │   ├── pilot_home_screen.dart          # 4 tab: Gare|GPS|Campionati|Profilo; PopScope
-│   │   │   │   ├── event_detail_screen.dart        # skeleton, errore+retry, dialog iscrizione 2-step
+│   │   │   │   ├── pilot_home_screen.dart          # 4 tab: Gare|GPS|Campionati|Profilo; PopScope; bottone "Le mie statistiche"
+│   │   │   │   ├── pilot_stats_screen.dart         # statistiche pilota: gare/speciali vinte/podio
+│   │   │   │   ├── event_detail_screen.dart        # skeleton, errore+retry, dialog iscrizione 2-step + suggerimento squadra preferita
 │   │   │   │   ├── event_list_screen.dart          # skeleton, errore+retry, empty state CTA
 │   │   │   │   ├── championship_standings_screen.dart # podio + tabella classifica campionato
 │   │   │   │   ├── gps_recording_screen.dart       # START/FINE GARA, mappa live GPX+PS+ristoro, freccia bearing
-│   │   │   │   └── team_screen.dart                # nomi membri da registrazioni
+│   │   │   │   └── team_screen.dart                # nomi membri da registrazioni; bottone "Imposta come squadra preferita"
 │   │   │   └── widgets/ (event_card_pilot, gps_status_widget)
 │   │   │
 │   │   └── map/
@@ -1177,6 +1179,34 @@ provider Riverpod che lo istanzia.
 **Deploy:**
 - `flutter analyze`: zero issues (2 problemi intermedi corretti: conflitto `Path` latlong2/dart:ui in `track_layer.dart`, lint `use_null_aware_elements` in `firestore_service.dart`)
 - `git commit fcde1d6`: "fix: heading modalità HEADING + impostazioni freccia e traccia + frecce direzionali stile + lag GPS ridotto + recovery PS da speciale successiva + FINE GARA vicino partenza"
+- `flutter build web --release` + `firebase deploy --only hosting` ✅ su https://ccr-enduro.web.app
+- `git push origin main` ✅
+
+---
+
+### Step 30 — Nero colori navigazione + statistiche pilota + squadra preferita (21 giugno 2026) ✅
+
+**1 — Nero tra i colori delle impostazioni traccia (`gps_recording_screen.dart`):**
+- `Colors.black` aggiunto come ultima opzione in `_trackColorOptions`, `_arrowColorOptions`, `_refTrackColorOptions` (BottomSheet "Aspetto traccia")
+- `_colorSwatchRow`: bordo bianco sottile (1.5px) sempre visibile sul campione nero, anche da non selezionato, per renderlo distinguibile sul `cardBackground` scuro dell'app
+
+**2 — Pagina statistiche pilota (`pilot_stats_screen.dart`, `pilot_stats_provider.dart`, `pilot_stats_model.dart`):**
+- `PilotStatsModel`: gareDisputate, gareVinte, garePodio, specialiVinte, specialiPodio
+- `pilotStatsProvider` (FutureProvider): stesso pattern N+1 di `championshipStandingsProvider` — itera tutti gli eventi (`getEvents()`), per ogni iscrizione approvata del pilota ricalcola `ClassificaEngine.compute()` (passages/registrations/teams/withdrawals/penalties/speedZoneViolations) e determina l'entry di squadra del pilota (`reg.squadraId ?? reg.userId`)
+- Gare vinte/podio: dalla `posizione` finale dell'entry di squadra (1 = vinta, 1-3 = podio) — **le statistiche sono di squadra**: una vittoria di squadra conta per tutti i membri
+- Speciali vinte/podio: per ogni `SpecialTempo` completato (escludendo `isInvalidTiming`), il rank è calcolato confrontando il tempo con quello di tutte le altre entry per la stessa speciale (pari merito = stesso rank)
+- UI: card con icona per voce statistica, skeleton loading (`SkeletonBox`), placeholder "Nessuna gara disputata ancora" se `gareDisputate == 0`, banner informativo "vince la squadra non l'individuo"
+- Route `/pilot/stats`; bottone "Le mie statistiche" nel tab Profilo (`pilot_home_screen.dart`, `_ProfilePage`)
+
+**3 — Squadra preferita del pilota (`user_model.dart`, `firestore_service.dart`, `team_screen.dart`, `event_detail_screen.dart`):**
+- `UserModel.preferredTeamName` (String?, nullable) con `fromFirestore`/`toFirestore`/`copyWith`
+- `FirestoreService.savePreferredTeamName()`: scrittura merge su `users/{uid}` (stesso pattern di `saveUserFcmToken`)
+- `team_screen.dart`: bottone "Imposta come squadra preferita" accanto al nome squadra del pilota; badge "★ Squadra preferita" se già impostata; `ref.invalidate(currentUserModelProvider)` dopo il salvataggio
+- `event_detail_screen.dart` (`_RegistrationDialog`): `ref.listenManual(teamsProvider(eventId), ...)` in `initState` applica il suggerimento una sola volta (`_suggestionApplied`) non appena arrivano le squadre dell'evento — se la squadra preferita esiste già tra quelle iscritte (e non è piena) la pre-seleziona e mostra il badge "⭐ Preferita" con bordo evidenziato nella lista; se non esiste, precompila il campo "Crea nuova squadra" con il nome preferito e mostra il sotto-testo "Nome dalla tua squadra preferita"; il pilota resta libero di scegliere qualsiasi altra squadra
+
+**Deploy:**
+- `flutter analyze`: zero issues (186.7s)
+- `git commit ff6d01d`: "feat: nero colori navigazione + statistiche pilota + squadra preferita con suggerimento iscrizione"
 - `flutter build web --release` + `firebase deploy --only hosting` ✅ su https://ccr-enduro.web.app
 - `git push origin main` ✅
 
