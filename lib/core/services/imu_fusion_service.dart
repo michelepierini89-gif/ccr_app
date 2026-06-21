@@ -29,12 +29,30 @@ class ImuFusionService extends ChangeNotifier {
   double _lastCompassDeg = 0.0;
   bool _headingInitialized = false;
 
-  // Alpha per correzione deriva giroscopio con bussola.
-  // 0.96 = 96% giroscopio (fast), 4% correzione bussola
-  // per campione. A 50Hz la bussola converge in ~1.2 secondi
-  // (più reattiva rispetto al precedente 0.98, meno lag percepito
-  // e meno deriva accumulata tra due fix GPS).
-  static const double kComplementaryAlpha = 0.96;
+  // Alpha per correzione deriva giroscopio con bussola, velocità-dipendente
+  // (vedi _currentAlpha): da fermo la bussola deve governare quasi
+  // completamente l'heading (il giroscopio non ha nulla da integrare e
+  // deriva), mentre ad alta velocità il giroscopio resta dominante per non
+  // introdurre jitter dalla bussola (interferenze magnetiche del motore).
+  // kComplementaryAlpha è il valore di riferimento per la fascia media
+  // (3-8 m/s): 0.85 = 85% giroscopio, 15% correzione bussola per campione —
+  // molto più reattivo del precedente 0.96 (4% di correzione), che rendeva
+  // la freccia visibilmente in ritardo sulle curve.
+  static const double kComplementaryAlphaStationary = 0.50;
+  static const double kComplementaryAlphaSlow = 0.70;
+  static const double kComplementaryAlpha = 0.85;
+  static const double kComplementaryAlphaFast = 0.92;
+
+  /// Alpha del filtro complementare corrente, funzione della velocità IMU
+  /// stimata (_speedMs, m/s): più si va piano più la bussola deve correggere
+  /// rapidamente (il giroscopio integra rumore senza un vero movimento da
+  /// inseguire), più si va veloce più il giroscopio resta dominante.
+  double _currentAlpha() {
+    if (_speedMs < 1.0) return kComplementaryAlphaStationary;
+    if (_speedMs < 3.0) return kComplementaryAlphaSlow;
+    if (_speedMs < 8.0) return kComplementaryAlpha;
+    return kComplementaryAlphaFast;
+  }
 
   // Scarta letture bussola implausibili (salto angolare istantaneo enorme
   // rispetto all'ultima lettura accettata): la bussola fisica non può
@@ -86,10 +104,11 @@ class ImuFusionService extends ChangeNotifier {
   static const double kMaxDtSeconds = 0.5;
 
   // ── UI throttle ──
-  // 20ms = 50Hz: il DOOGEE ha retto bene nel test reale, alziamo la
-  // fluidità visiva al massimo supportato dai sensori (gameInterval ~50Hz).
+  // 16ms = 60Hz: il DOOGEE ha retto bene nel test reale a 50Hz, saliamo al
+  // massimo che garantisce ancora un frame pieno a schermo (60fps) per la
+  // freccia più fluida possibile.
   DateTime? _lastUiNotifyTs;
-  static const int kUiUpdateIntervalMs = 20; // 50Hz
+  static const int kUiUpdateIntervalMs = 16; // 60Hz
 
   // ── Timestamps ──
   DateTime? _lastGyroTs;
@@ -195,10 +214,11 @@ class ImuFusionService extends ChangeNotifier {
       // Prima posizione disponibile: inizializza direttamente
       _fusedPosition = position;
     } else {
-      // Correzione graduale: 90% GPS, 10% dead reckoning IMU.
-      // Più reattiva del precedente 80/20 per ridurre il lag percepito
-      // tra la posizione mostrata e quella reale.
-      const kGpsWeight = 0.90;
+      // Correzione graduale: 95% GPS, 5% dead reckoning IMU.
+      // Più reattiva del precedente 90/10 per ridurre ulteriormente il lag
+      // percepito tra la posizione mostrata e quella reale — la posizione
+      // deve aggiornarsi quasi completamente ad ogni fix GPS.
+      const kGpsWeight = 0.95;
       _fusedPosition = LatLng(
         kGpsWeight * position.latitude +
             (1 - kGpsWeight) * _fusedPosition!.latitude,
@@ -285,8 +305,8 @@ class ImuFusionService extends ChangeNotifier {
     // kAlpha * (giroscopio integrato) + (1-kAlpha) * bussola
     final gyroPrediction = (_headingDeg + deltaHeadingDeg + 360) % 360;
     final diff = _angularDiff(gyroPrediction, _lastCompassDeg);
-    _headingDeg =
-        (gyroPrediction + (1.0 - kComplementaryAlpha) * diff + 360) % 360;
+    final alpha = _currentAlpha();
+    _headingDeg = (gyroPrediction + (1.0 - alpha) * diff + 360) % 360;
   }
 
   // ─────────────────────────────────────────────────────

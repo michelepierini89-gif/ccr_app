@@ -187,7 +187,10 @@ class GpsService extends ChangeNotifier {
   double _bearingDeg = 0.0;
 
   // Special-start recovery
-  static const double kSpecialStartRecoveryRadiusMeters = 80.0;
+  // 120m (era 80m): raggio aumentato dopo il test in cui una PS saltata
+  // interamente (segnale debole sul suo waypoint START) non veniva mai
+  // recuperata, bloccando FINE GARA — vedi anche _tryRecoverSkippedSpecials.
+  static const double kSpecialStartRecoveryRadiusMeters = 120.0;
   static const int kSpecialStartRecoveryLookbackSeconds = 30;
   final Set<String> _recoveryAttempted = {};
   final StreamController<String> _recoveryStreamCtrl =
@@ -195,7 +198,8 @@ class GpsService extends ChangeNotifier {
 
   // Special-end recovery (recovery retroattivo della fine PS, speculare
   // al recovery dell'inizio sopra)
-  static const double kSpecialEndRecoveryRadiusMeters = 80.0;
+  // 120m (era 80m), stesso motivo del raggio start sopra.
+  static const double kSpecialEndRecoveryRadiusMeters = 120.0;
   static const int kSpecialEndRecoveryLookbackSeconds = 30;
   final Set<String> _endRecoveryAttempted = {};
 
@@ -235,6 +239,12 @@ class GpsService extends ChangeNotifier {
       : Duration.zero;
   List<WaypointModel> get remainingWaypoints =>
       _waypoints.where((w) => !_passedWaypoints.contains(w.id)).toList();
+
+  /// Etichetta specifica del waypoint più vicino in modalità nearWaypoint
+  /// (es. "Inizio PS1", "Fine PS3", "Checkpoint PS2"), o null se non
+  /// disponibile — usata per sostituire il generico "WAYPOINT VICINO".
+  String? get nearestWaypointLabel => _nearestWaypointLabel;
+  String? _nearestWaypointLabel;
 
   /// True when the last 2 consecutive GPS positions were discarded for poor
   /// accuracy (abbassato da 3: con soglia display 8m gli scarti sono più
@@ -276,6 +286,17 @@ class GpsService extends ChangeNotifier {
   DangerPointModel? get alertDangerPoint => _alertDangerPoint;
   double? get alertDangerDistance => _alertDangerDistance;
   bool get isDangerBlinking => _dangerBlinking;
+
+  /// Zona a velocità controllata in cui il pilota si trova attualmente
+  /// (tra l'ingresso e l'uscita), o null se non è in nessuna zona. Usata
+  /// per il banner live di velocità — a differenza della violazione (solo
+  /// admin, calcolata all'uscita zona), questo è solo un indicatore
+  /// informativo per il pilota durante la guida.
+  SpeedZoneModel? get activeSpeedZone {
+    if (_zoneEntryTimestamps.isEmpty) return null;
+    final zoneId = _zoneEntryTimestamps.keys.first;
+    return _speedZones.where((z) => z.id == zoneId).firstOrNull;
+  }
 
   /// IDs dei punti pericolo già superati (entro 15m) in questa sessione.
   Set<String> get passedDangerPoints => Set.unmodifiable(_passedDangerPoints);
@@ -331,7 +352,7 @@ class GpsService extends ChangeNotifier {
     if (_geometricSpeedKmh > 60) return 1.5;
     if (_geometricSpeedKmh > 20) return 2.5;
     if (_geometricSpeedKmh > 5) return 4.0;
-    return 6.0;
+    return 3.0;
   }
 
   /// Retroactively detects a missed special-start waypoint.
@@ -455,6 +476,144 @@ class GpsService extends ChangeNotifier {
     }
   }
 
+  /// Recupera retroattivamente speciali precedenti a [nextSpecial] (per
+  /// `ordine`) che non hanno NESSUN passaggio registrato — non solo "fine non
+  /// rilevata" (vedi lo stale-close in [_handleWaypointDetection]), ma
+  /// "mai avviata", tipicamente perché il segnale GPS era troppo debole
+  /// vicino al suo waypoint START e [_trySpecialStartRecovery] non è mai
+  /// scattato (richiede di passare entro 3× il raggio di recovery).
+  ///
+  /// Chiamato PRIMA di aprire l'ingresso di [nextSpecial], così le speciali
+  /// restano sempre in ordine corretto. Esamina ogni speciale precedente (in
+  /// ordine decrescente): quelle con già un passaggio registrato vengono
+  /// saltate (possono non essere adiacenti — es. PS2 mai avviata e PS3
+  /// avviata normalmente ma non chiusa, prima di PS4), le altre vengono
+  /// recuperate. Per ciascuna speciale saltata: cerca nell'INTERA traccia di
+  /// recovery della sessione (non un'ultima finestra di secondi)
+  /// il punto più vicino al waypoint START, poi — usando quel timestamp come
+  /// nuovo inizio — il punto più vicino al waypoint FINE nella finestra da
+  /// quell'inizio a [nextStartTs]. Se uno dei due non viene trovato entro
+  /// [kSpecialStartRecoveryRadiusMeters]/[kSpecialEndRecoveryRadiusMeters],
+  /// usa un fallback a tempo stimato e marca `timingError:
+  /// 'speciale_non_rilevata'` per la verifica admin — mai bloccare FINE GARA.
+  Future<void> _tryRecoverSkippedSpecials(
+      SpecialModel nextSpecial, DateTime nextStartTs) async {
+    final ordered = _specials.where((s) => !s.annullata).toList()
+      ..sort((a, b) => a.ordine.compareTo(b.ordine));
+    final nextIdx = ordered.indexWhere((s) => s.id == nextSpecial.id);
+    if (nextIdx <= 0) return;
+
+    for (int i = nextIdx - 1; i >= 0; i--) {
+      if (_disposed) return;
+      final prev = ordered[i];
+      // Non break: due speciali non adiacenti possono essere entrambe
+      // saltate (es. PS2 mai avviata, PS3 avviata normalmente ma con fine
+      // non rilevata, PS4 in arrivo) — ognuna va valutata indipendentemente.
+      if (_specialEntries.any((e) => e.specialeId == prev.id)) continue;
+
+      final startWp = prev.waypointInizio;
+      final startPt = LatLng(startWp.lat, startWp.lng);
+      double bestStartDistM = double.infinity;
+      int bestStartIdx = -1;
+      for (int j = 0; j < _recoveryTrack.length; j++) {
+        final d = _haversineKm(_recoveryTrack[j], startPt) * 1000.0;
+        if (d < bestStartDistM) {
+          bestStartDistM = d;
+          bestStartIdx = j;
+        }
+      }
+
+      final bool recoveredStart =
+          bestStartIdx >= 0 && bestStartDistM < kSpecialStartRecoveryRadiusMeters;
+      final DateTime entryTime = recoveredStart
+          ? _recoveryTimestamps[bestStartIdx]
+          : nextStartTs.subtract(const Duration(minutes: 2));
+
+      debugPrint('RECOVERY SKIPPED speciale ${prev.id}: '
+          'inizio ${recoveredStart ? "recuperato" : "stimato"} a $entryTime');
+
+      _passedWaypoints.add(startWp.id);
+      _passages.add(WaypointPassage(waypoint: startWp, timestamp: entryTime));
+      _specialEntries.add(SpecialEntry(
+        specialeId: prev.id,
+        specialeNome: prev.nome,
+        entryTime: entryTime,
+        recoveredStart: recoveredStart,
+      ));
+      _recoveryAttempted.add(prev.id);
+
+      // Recovery immediato anche della fine, nella finestra da entryTime a
+      // nextStartTs (l'intera durata della speciale saltata).
+      final endWp = prev.waypointFine;
+      final endPt = LatLng(endWp.lat, endWp.lng);
+      double bestEndDistM = double.infinity;
+      int bestEndIdx = -1;
+      for (int j = _recoveryTrack.length - 1; j >= 0; j--) {
+        if (_recoveryTimestamps[j].isBefore(entryTime)) break;
+        final d = _haversineKm(_recoveryTrack[j], endPt) * 1000.0;
+        if (d < bestEndDistM) {
+          bestEndDistM = d;
+          bestEndIdx = j;
+        }
+      }
+
+      final bool recoveredEnd =
+          bestEndIdx >= 0 && bestEndDistM < kSpecialEndRecoveryRadiusMeters;
+      final DateTime exitTime = recoveredEnd
+          ? _recoveryTimestamps[bestEndIdx]
+          : nextStartTs.subtract(const Duration(seconds: 1));
+      final String? timingError =
+          (recoveredStart && recoveredEnd) ? null : 'speciale_non_rilevata';
+
+      final entryIdx = _specialEntries.length - 1;
+      _specialEntries[entryIdx] = _specialEntries[entryIdx].withExit(exitTime);
+      _endRecoveryAttempted.add(prev.id);
+      _passedWaypoints.add(endWp.id);
+      _passages.add(WaypointPassage(waypoint: endWp, timestamp: exitTime));
+
+      _recoveryStreamCtrl.add(timingError == null
+          ? '⚡ ${prev.nome} recuperata (non rilevata in tempo reale)'
+          : '⚠ ${prev.nome} non rilevata — penalità automatica');
+
+      if (_activeEventId != null && _activeUserId != null) {
+        try {
+          await _firestoreService.recordWaypointPassage(
+            eventId: _activeEventId!,
+            userId: _activeUserId!,
+            waypointId: startWp.id,
+            waypointNome: startWp.nome,
+            timestamp: entryTime,
+            recoveredStart: recoveredStart,
+          );
+          await _firestoreService.recordWaypointPassage(
+            eventId: _activeEventId!,
+            userId: _activeUserId!,
+            waypointId: endWp.id,
+            waypointNome: endWp.nome,
+            timestamp: exitTime,
+            recoveredEnd: true,
+            timingError: timingError,
+          );
+        } catch (_) {
+          await _offlineQueue.queuePassage(
+            eventId: _activeEventId!,
+            userId: _activeUserId!,
+            waypointId: startWp.id,
+            waypointNome: startWp.nome,
+            timestamp: entryTime,
+          );
+          await _offlineQueue.queuePassage(
+            eventId: _activeEventId!,
+            userId: _activeUserId!,
+            waypointId: endWp.id,
+            waypointNome: endWp.nome,
+            timestamp: exitTime,
+          );
+        }
+      }
+    }
+  }
+
   /// Registra un passaggio waypoint confermato da [WaypointDetector]:
   /// aggiorna i passaggi, l'apertura/chiusura delle speciali e persiste su
   /// Firestore (con fallback su coda offline). Usata sia per i punti che
@@ -487,6 +646,12 @@ class GpsService extends ChangeNotifier {
       }
       if (_currentSpecialId == null) {
         final special = _specials.where((s) => s.id == specialId).firstOrNull;
+        // Recupera eventuali speciali precedenti saltate per intero (mai
+        // avviate) PRIMA di aprire questa, così l'ordine resta corretto.
+        if (special != null) {
+          await _tryRecoverSkippedSpecials(special, passageTs);
+          if (_disposed) return;
+        }
         _currentSpecialId = specialId;
         _currentSpecialNome = special?.nome;
         _specialEntries.add(SpecialEntry(
@@ -871,6 +1036,7 @@ class GpsService extends ChangeNotifier {
     _recoveryAttempted.clear();
     _endRecoveryAttempted.clear();
     _waypointDetector.reset();
+    _nearestWaypointLabel = null;
     _isRecording = true;
     _mode = GpsMode.transfer;
     _recordingStart = DateTime.now();
@@ -952,6 +1118,38 @@ class GpsService extends ChangeNotifier {
       return kAccuracyStartupThreshold2;
     }
     return kMaxAccuracyDisplayMeters;
+  }
+
+  /// Etichetta descrittiva per [wp] (es. "Inizio PS1", "Fine PS3",
+  /// "Checkpoint PS2"), risolta tramite le mappe inizio/fine speciale e la
+  /// lista dei control points. Le zone a velocità controllata (waypoint
+  /// sintetici) non hanno un'etichetta utile per il pilota: null in quel caso.
+  String? _labelFor(WaypointModel wp) {
+    switch (wp.type) {
+      case WaypointType.inizio:
+        final sid = _inizioToSpecial[wp.id];
+        final s = sid != null
+            ? _specials.where((sp) => sp.id == sid).firstOrNull
+            : null;
+        return 'Inizio ${s?.nome ?? wp.nome}';
+      case WaypointType.fine:
+        final sid = _fineToSpecial[wp.id];
+        final s = sid != null
+            ? _specials.where((sp) => sp.id == sid).firstOrNull
+            : null;
+        return 'Fine ${s?.nome ?? wp.nome}';
+      case WaypointType.intermedio:
+        if (_zoneStartToZone.containsKey(wp.id) ||
+            _zoneEndToZone.containsKey(wp.id)) {
+          return null;
+        }
+        for (final s in _specials) {
+          if (s.controlPoints.any((cp) => cp.id == wp.id)) {
+            return 'Checkpoint ${s.nome}';
+          }
+        }
+        return 'Checkpoint';
+    }
   }
 
   double _haversineKm(LatLng a, LatLng b) {
@@ -1118,21 +1316,33 @@ class GpsService extends ChangeNotifier {
     _recoveryTrack.add(filteredPos);
     _recoveryTimestamps.add(now);
 
-    // Detect waypoint passage — sempre sulla posizione filtrata Kalman,
-    // confermato solo dopo 2 rilevazioni consecutive (protezione ghost point);
-    // il timestamp usato è quello della PRIMA rilevazione, non della seconda.
-    final detection = _waypointDetector.detectPassage(
-        filteredPos, now, _waypoints, _passedWaypoints);
-    if (detection != null) {
-      await _handleWaypointDetection(detection);
+    // Nessuna waypoint detection né recovery nei primi 10s dall'avvio: il
+    // buffer GPS si sta ancora inizializzando (fix qualità scarsa,
+    // posizione non ancora stabile) e un punto corrotto in questa fase può
+    // generare falsi positivi (es. "IN SPECIALE" subito dopo START con la
+    // speciale a centinaia di metri di distanza). Il punto viene comunque
+    // accumulato sopra in _recoveryTrack per non perdere dati validi.
+    final secondsSinceStart = _recordingStart != null
+        ? now.difference(_recordingStart!).inSeconds
+        : 999;
+    if (secondsSinceStart >= 10) {
+      // Detect waypoint passage — sempre sulla posizione filtrata Kalman,
+      // confermato solo dopo 2 rilevazioni consecutive (protezione ghost
+      // point); il timestamp usato è quello della PRIMA rilevazione, non
+      // della seconda.
+      final detection = _waypointDetector.detectPassage(
+          filteredPos, now, _waypoints, _passedWaypoints);
+      if (detection != null) {
+        await _handleWaypointDetection(detection);
+        if (_disposed) return;
+      }
+
+      // Recovery: retroactively detect missed special starts/ends
+      await _trySpecialStartRecovery(filteredPos, now);
+      if (_disposed) return;
+      await _trySpecialEndRecovery(filteredPos, now);
       if (_disposed) return;
     }
-
-    // Recovery: retroactively detect missed special starts/ends
-    await _trySpecialStartRecovery(filteredPos, now);
-    if (_disposed) return;
-    await _trySpecialEndRecovery(filteredPos, now);
-    if (_disposed) return;
 
     // Fuel point passage: mark as passed once within radius, notify exactly once.
     // After this, the "approaching" banner stops even if a GPS jump brings the
@@ -1208,6 +1418,8 @@ class GpsService extends ChangeNotifier {
         _waypoints.where((w) => !_passedWaypoints.contains(w.id)).toList();
     final nearest =
         WaypointDetector.nearestWaypointDistance(filteredPos, remainingForMode);
+    final nearestWp = WaypointDetector.nearestWaypoint(filteredPos, remainingForMode);
+    _nearestWaypointLabel = nearestWp != null ? _labelFor(nearestWp) : null;
     final newMode = nearest != null &&
             nearest <= AppConstants.nearWaypointThresholdMeters
         ? GpsMode.nearWaypoint
@@ -1320,6 +1532,7 @@ class GpsService extends ChangeNotifier {
     _recoveryAttempted.clear();
     _endRecoveryAttempted.clear();
     _waypointDetector.reset();
+    _nearestWaypointLabel = null;
     _trackPoints.clear();
     _displayAnchor = null;
     _recoveryTrack.clear();

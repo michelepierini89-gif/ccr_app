@@ -14,10 +14,11 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/gpx_utils.dart';
 import '../../map/danger_marker_icon.dart';
 import '../../map/widgets/speed_zone_layer.dart';
+import '../../map/widgets/speed_zone_marker.dart';
 import '../providers/admin_provider.dart';
 import '../widgets/special_tile.dart';
 
-enum _SelectionMode { none, inizio, fine, controlPoint }
+enum _SelectionMode { none, inizio, fine, controlPoint, zoneStart, zoneEnd }
 
 class _SliderStepBtn extends StatelessWidget {
   final IconData icon;
@@ -91,8 +92,16 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
   bool _dangerInsertMode = false;
 
   late List<SpeedZoneModel> _speedZones;
-  bool _speedZoneInsertMode = false;
-  LatLng? _pendingZoneStart;
+
+  // Editing inline di una zona velocità (slider, niente più tap-su-mappa):
+  // attivo solo mentre una speciale è in editing, range vincolato al
+  // proprio inizio/fine (come i punti di controllo).
+  bool _zoneEditing = false;
+  String? _zoneEditingId;
+  int _zoneStartIdx = -1;
+  int _zoneEndIdx = -1;
+  double _zoneMaxSpeed = 30.0;
+  final _zoneNameCtrl = TextEditingController();
 
   double? _cachedTotalLength;
 
@@ -108,6 +117,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
   @override
   void dispose() {
     _nomeCtrl.dispose();
+    _zoneNameCtrl.dispose();
     super.dispose();
   }
 
@@ -258,8 +268,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
       _editingControlIdxs = [];
       _selectionMode = _SelectionMode.none;
       _activeControlPointIdx = -1;
-      _speedZoneInsertMode = false;
-      _pendingZoneStart = null;
+      _cancelZoneEditing();
       _nomeCtrl.clear();
     });
   }
@@ -429,29 +438,6 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
   // ── Map interactions ──────────────────────────────────────────────────────
 
   void _onMapTap(LatLng latlng) {
-    if (_speedZoneInsertMode) {
-      final trackPoints = widget.parsedTrack.points;
-      final snapped = GpxUtils.snapToTrack(latlng, trackPoints);
-      final distance = GpxUtils.distanceToTrack(latlng, snapped);
-      if (distance > AppConstants.trackSnapMaxDistanceMeters) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Il punto deve essere vicino al percorso'),
-          backgroundColor: AppColors.error,
-        ));
-        return;
-      }
-      if (_pendingZoneStart == null) {
-        setState(() => _pendingZoneStart = snapped);
-        return;
-      }
-      final start = _pendingZoneStart!;
-      setState(() {
-        _speedZoneInsertMode = false;
-        _pendingZoneStart = null;
-      });
-      _openSpeedZoneSheet(start: start, end: snapped);
-      return;
-    }
     if (_dangerInsertMode) {
       final trackPoints = widget.parsedTrack.points;
       final snapped = GpxUtils.snapToTrack(latlng, trackPoints);
@@ -470,6 +456,10 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
     if (_selectionMode == _SelectionMode.none) return;
     if (widget.parsedTrack.points.isEmpty) return;
     final idx = _nearestTrackIdx(latlng);
+    final zoneLo = _editingInicioIdx >= 0 ? _editingInicioIdx : 0;
+    final zoneHi = _editingFineIdx > _editingInicioIdx
+        ? _editingFineIdx
+        : widget.parsedTrack.points.length - 1;
     setState(() {
       switch (_selectionMode) {
         case _SelectionMode.inizio:
@@ -490,6 +480,18 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
             _editingControlIdxs[_activeControlPointIdx] = clampedIdx;
           } else {
             _editingControlIdxs.add(clampedIdx);
+          }
+          break;
+        case _SelectionMode.zoneStart:
+          _zoneStartIdx = idx.clamp(zoneLo, zoneHi);
+          if (_zoneEndIdx >= 0) {
+            _zoneEndIdx = _zoneEndIdx.clamp(zoneLo, zoneHi);
+          }
+          break;
+        case _SelectionMode.zoneEnd:
+          _zoneEndIdx = idx.clamp(zoneLo, zoneHi);
+          if (_zoneStartIdx >= 0) {
+            _zoneStartIdx = _zoneStartIdx.clamp(zoneLo, zoneHi);
           }
           break;
         case _SelectionMode.none:
@@ -631,150 +633,97 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
   }
 
   // ── Speed zones (zone a velocità controllata) ───────────────────────────────
+  // Editing inline con slider (stesso componente di inizio/fine speciale),
+  // vincolato al range della speciale corrente — niente più tap-su-mappa.
 
-  void _openSpeedZoneSheet({
-    required LatLng start,
-    required LatLng end,
-    SpeedZoneModel? existing,
-  }) {
+  void _startAddZone() {
+    if (_editingIndex < 0 && widget.parsedTrack.points.isEmpty) return;
+    final lo = _editingInicioIdx >= 0 ? _editingInicioIdx : 0;
+    final hi = _editingFineIdx > _editingInicioIdx
+        ? _editingFineIdx
+        : widget.parsedTrack.points.length - 1;
+    setState(() {
+      _zoneEditing = true;
+      _zoneEditingId = null;
+      _zoneNameCtrl.text = 'Zona ${_speedZones.length + 1}';
+      _zoneMaxSpeed = 30.0;
+      _zoneStartIdx = lo;
+      _zoneEndIdx = hi;
+      _selectionMode = _SelectionMode.none;
+    });
+  }
+
+  void _startEditZone(SpeedZoneModel z) {
+    final pts = widget.parsedTrack.points;
+    setState(() {
+      _zoneEditing = true;
+      _zoneEditingId = z.id;
+      _zoneNameCtrl.text = z.nome;
+      _zoneMaxSpeed = z.maxSpeedKmh;
+      _zoneStartIdx = pts.isNotEmpty
+          ? GpxUtils.nearestTrackIndex(z.startLatLng, pts)
+          : -1;
+      _zoneEndIdx = pts.isNotEmpty
+          ? GpxUtils.nearestTrackIndex(z.endLatLng, pts)
+          : -1;
+      _selectionMode = _SelectionMode.none;
+    });
+  }
+
+  void _cancelZoneEditing() {
+    _zoneEditing = false;
+    _zoneEditingId = null;
+    _zoneStartIdx = -1;
+    _zoneEndIdx = -1;
+    if (_selectionMode == _SelectionMode.zoneStart ||
+        _selectionMode == _SelectionMode.zoneEnd) {
+      _selectionMode = _SelectionMode.none;
+    }
+    _zoneNameCtrl.clear();
+  }
+
+  void _confirmZoneEditing() {
     if (_editingIndex < 0) return;
+    final nome = _zoneNameCtrl.text.trim();
+    if (nome.isEmpty) return;
+    if (_zoneStartIdx < 0 || _zoneEndIdx <= _zoneStartIdx) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('La fine della zona deve essere successiva all\'inizio'),
+        backgroundColor: AppColors.error,
+      ));
+      return;
+    }
     final specialeId = _specials[_editingIndex].id;
-    final nameCtrl = TextEditingController(
-        text: existing?.nome ?? 'Zona ${_speedZones.length + 1}');
-    double maxSpeed = existing?.maxSpeedKmh ?? 30.0;
-
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: AppColors.cardBackground,
-      isScrollControlled: true,
-      builder: (ctx) {
-        return StatefulBuilder(builder: (ctx, setSheetState) {
-          return Padding(
-            padding: EdgeInsets.only(
-              left: 16,
-              right: 16,
-              top: 16,
-              bottom: MediaQuery.of(ctx).viewInsets.bottom + 16,
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  children: [
-                    const Icon(Icons.speed, color: Colors.orange, size: 26),
-                    const SizedBox(width: 8),
-                    Text(
-                      existing == null
-                          ? 'Nuova zona velocità'
-                          : 'Modifica zona velocità',
-                      style: const TextStyle(
-                          color: AppColors.textPrimary,
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: nameCtrl,
-                  autofocus: existing == null,
-                  style: const TextStyle(color: AppColors.textPrimary),
-                  decoration: const InputDecoration(
-                    labelText: 'Nome zona',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    const Text('Limite velocità:',
-                        style: TextStyle(
-                            color: AppColors.textSecondary, fontSize: 13)),
-                    const Spacer(),
-                    _SliderStepBtn(
-                      icon: Icons.remove,
-                      color: Colors.orange,
-                      enabled: maxSpeed > 5,
-                      onTap: () => setSheetState(() => maxSpeed -= 5),
-                    ),
-                    SizedBox(
-                      width: 70,
-                      child: Text(
-                        '${maxSpeed.toStringAsFixed(0)} km/h',
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                            color: Colors.orange,
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                    _SliderStepBtn(
-                      icon: Icons.add,
-                      color: Colors.orange,
-                      enabled: maxSpeed < 200,
-                      onTap: () => setSheetState(() => maxSpeed += 5),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    if (existing != null)
-                      TextButton.icon(
-                        onPressed: () {
-                          Navigator.of(ctx).pop();
-                          _confirmDeleteSpeedZone(existing);
-                        },
-                        icon: const Icon(Icons.delete, color: AppColors.error),
-                        label: const Text('Elimina',
-                            style: TextStyle(color: AppColors.error)),
-                      ),
-                    const Spacer(),
-                    TextButton(
-                      onPressed: () => Navigator.of(ctx).pop(),
-                      child: const Text('Annulla'),
-                    ),
-                    const SizedBox(width: 8),
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.orange),
-                      onPressed: () {
-                        final nome = nameCtrl.text.trim();
-                        if (nome.isEmpty) return;
-                        setState(() {
-                          if (existing == null) {
-                            _speedZones.add(SpeedZoneModel(
-                              id: const Uuid().v4(),
-                              nome: nome,
-                              specialeId: specialeId,
-                              startLat: start.latitude,
-                              startLng: start.longitude,
-                              endLat: end.latitude,
-                              endLng: end.longitude,
-                              maxSpeedKmh: maxSpeed,
-                            ));
-                          } else {
-                            final idx = _speedZones
-                                .indexWhere((z) => z.id == existing.id);
-                            if (idx != -1) {
-                              _speedZones[idx] = existing.copyWith(
-                                  nome: nome, maxSpeedKmh: maxSpeed);
-                            }
-                          }
-                        });
-                        Navigator.of(ctx).pop();
-                      },
-                      child: const Text('Salva'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
+    final pts = widget.parsedTrack.points;
+    final start = pts[_zoneStartIdx];
+    final end = pts[_zoneEndIdx];
+    setState(() {
+      if (_zoneEditingId == null) {
+        _speedZones.add(SpeedZoneModel(
+          id: const Uuid().v4(),
+          nome: nome,
+          specialeId: specialeId,
+          startLat: start.latitude,
+          startLng: start.longitude,
+          endLat: end.latitude,
+          endLng: end.longitude,
+          maxSpeedKmh: _zoneMaxSpeed,
+        ));
+      } else {
+        final idx = _speedZones.indexWhere((z) => z.id == _zoneEditingId);
+        if (idx != -1) {
+          _speedZones[idx] = _speedZones[idx].copyWith(
+            nome: nome,
+            maxSpeedKmh: _zoneMaxSpeed,
+            startLat: start.latitude,
+            startLng: start.longitude,
+            endLat: end.latitude,
+            endLng: end.longitude,
           );
-        });
-      },
-    );
+        }
+      }
+      _cancelZoneEditing();
+    });
   }
 
   void _confirmDeleteSpeedZone(SpeedZoneModel zone) {
@@ -795,6 +744,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
             onPressed: () {
               setState(() {
                 _speedZones.removeWhere((z) => z.id == zone.id);
+                if (_zoneEditingId == zone.id) _cancelZoneEditing();
               });
               Navigator.of(ctx).pop();
             },
@@ -851,6 +801,19 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
       }
     }
 
+    // Preview della zona velocità in editing: evidenzia la sezione tra
+    // inizio e fine selezionati con gli slider.
+    if (_zoneEditing && _zoneStartIdx >= 0 && _zoneEndIdx > _zoneStartIdx) {
+      final b = _zoneEndIdx;
+      if (b < pts.length) {
+        polylines.add(Polyline(
+          points: pts.sublist(_zoneStartIdx, b + 1),
+          color: Colors.orange,
+          strokeWidth: 7,
+        ));
+      }
+    }
+
     return polylines;
   }
 
@@ -870,13 +833,15 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
     final markers = <Marker>[];
     final pts = widget.parsedTrack.points;
 
-    if (_pendingZoneStart != null) {
-      markers.add(Marker(
-        point: _pendingZoneStart!,
-        width: 26,
-        height: 26,
-        child: const Icon(Icons.speed, color: Colors.orange, size: 26),
-      ));
+    if (_zoneEditing) {
+      if (_zoneStartIdx >= 0 && _zoneStartIdx < pts.length) {
+        markers.add(_markerAt(pts[_zoneStartIdx], Colors.orange, 'Inizio zona',
+            icon: Icons.speed, large: true));
+      }
+      if (_zoneEndIdx >= 0 && _zoneEndIdx < pts.length) {
+        markers.add(_markerAt(pts[_zoneEndIdx], Colors.orange, 'Fine zona',
+            icon: Icons.speed, large: true));
+      }
     }
 
     for (final dp in _dangerPoints) {
@@ -994,10 +959,9 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
   MapOptions get _mapOptions {
     final pts = widget.parsedTrack.points;
     final isSelecting = _selectionMode != _SelectionMode.none;
-    final tapHandler =
-        (isSelecting || _dangerInsertMode || _speedZoneInsertMode)
-            ? (TapPosition _, LatLng ll) => _onMapTap(ll)
-            : null;
+    final tapHandler = (isSelecting || _dangerInsertMode)
+        ? (TapPosition _, LatLng ll) => _onMapTap(ll)
+        : null;
 
     if (pts.isNotEmpty) {
       return MapOptions(
@@ -1037,35 +1001,20 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
             onPressed: () {
               setState(() {
                 _dangerInsertMode = !_dangerInsertMode;
-                if (_dangerInsertMode) {
-                  _selectionMode = _SelectionMode.none;
-                  _speedZoneInsertMode = false;
-                  _pendingZoneStart = null;
-                }
+                if (_dangerInsertMode) _selectionMode = _SelectionMode.none;
               });
             },
           ),
           IconButton(
             icon: Icon(Icons.speed,
-                color: _speedZoneInsertMode
+                color: (_isEditing && _editingIndex >= 0)
                     ? Colors.orange
-                    : (_isEditing && _editingIndex >= 0)
-                        ? AppColors.textSecondary
-                        : AppColors.border),
+                    : AppColors.border),
             tooltip: (_isEditing && _editingIndex >= 0)
-                ? 'Inserisci zona velocità'
+                ? 'Aggiungi zona velocità (slider)'
                 : 'Apri una speciale esistente per inserire una zona velocità',
-            onPressed: (_isEditing && _editingIndex >= 0)
-                ? () {
-                    setState(() {
-                      _speedZoneInsertMode = !_speedZoneInsertMode;
-                      _pendingZoneStart = null;
-                      if (_speedZoneInsertMode) {
-                        _selectionMode = _SelectionMode.none;
-                        _dangerInsertMode = false;
-                      }
-                    });
-                  }
+            onPressed: (_isEditing && _editingIndex >= 0 && !_zoneEditing)
+                ? _startAddZone
                 : null,
           ),
           if (_isSaving)
@@ -1123,22 +1072,30 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
   Widget _buildMap() {
     final isSelecting = _selectionMode != _SelectionMode.none;
     String bannerText = '';
-    if (_speedZoneInsertMode) {
-      bannerText = _pendingZoneStart == null
-          ? 'Clicca sulla traccia per l\'INIZIO della zona velocità'
-          : 'Clicca sulla traccia per la FINE della zona velocità';
-    } else if (_dangerInsertMode) {
+    if (_dangerInsertMode) {
       bannerText = 'Clicca sulla mappa per inserire un punto di pericolo';
     } else if (isSelecting) {
-      if (_selectionMode == _SelectionMode.inizio) {
-        bannerText = 'Clicca sulla traccia per selezionare l\'INIZIO';
-      } else if (_selectionMode == _SelectionMode.fine) {
-        bannerText = 'Clicca sulla traccia per selezionare la FINE';
-      } else {
-        final num = _activeControlPointIdx >= 0
-            ? _activeControlPointIdx + 1
-            : _editingControlIdxs.length + 1;
-        bannerText = 'Clicca sulla traccia per posizionare P$num';
+      switch (_selectionMode) {
+        case _SelectionMode.inizio:
+          bannerText = 'Clicca sulla traccia per selezionare l\'INIZIO';
+          break;
+        case _SelectionMode.fine:
+          bannerText = 'Clicca sulla traccia per selezionare la FINE';
+          break;
+        case _SelectionMode.zoneStart:
+          bannerText = 'Clicca sulla traccia per l\'INIZIO della zona velocità';
+          break;
+        case _SelectionMode.zoneEnd:
+          bannerText = 'Clicca sulla traccia per la FINE della zona velocità';
+          break;
+        case _SelectionMode.controlPoint:
+          final num = _activeControlPointIdx >= 0
+              ? _activeControlPointIdx + 1
+              : _editingControlIdxs.length + 1;
+          bannerText = 'Clicca sulla traccia per posizionare P$num';
+          break;
+        case _SelectionMode.none:
+          break;
       }
     }
 
@@ -1163,7 +1120,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
             ],
           ),
         ),
-        if (isSelecting || _dangerInsertMode || _speedZoneInsertMode)
+        if (isSelecting || _dangerInsertMode)
           Positioned(
             top: 8,
             left: 8,
@@ -1175,7 +1132,8 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
                 color: AppColors.cardBackground.withValues(alpha: 0.92),
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(
-                    color: _speedZoneInsertMode
+                    color: (_selectionMode == _SelectionMode.zoneStart ||
+                            _selectionMode == _SelectionMode.zoneEnd)
                         ? Colors.orange
                         : _dangerInsertMode
                             ? Colors.amber
@@ -1566,7 +1524,11 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
     required bool isMapActive,
     required ValueChanged<int>? onSliderChanged,
     required VoidCallback? onMapClick,
+    int? minIdx,
+    int? maxIdx,
   }) {
+    final lo = minIdx ?? 0;
+    final hi = maxIdx ?? (totalPts - 1);
     final hasValue = currentIdx >= 0 && totalPts > 0;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1640,7 +1602,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
               _SliderStepBtn(
                 icon: Icons.remove,
                 color: color,
-                enabled: onSliderChanged != null && currentIdx > 0,
+                enabled: onSliderChanged != null && currentIdx > lo,
                 onTap: () => onSliderChanged!(currentIdx - 1),
               ),
               Expanded(
@@ -1656,10 +1618,11 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
                     showValueIndicator: ShowValueIndicator.onlyForDiscrete,
                   ),
                   child: Slider(
-                    value:
-                        currentIdx >= 0 ? currentIdx.toDouble() : 0.0,
-                    min: 0,
-                    max: (totalPts - 1).toDouble(),
+                    value: currentIdx >= 0
+                        ? currentIdx.toDouble().clamp(lo.toDouble(), hi.toDouble())
+                        : lo.toDouble(),
+                    min: lo.toDouble(),
+                    max: hi.toDouble(),
                     label: hasValue ? '${currentIdx + 1}/$totalPts' : '–',
                     onChanged: onSliderChanged != null
                         ? (v) => onSliderChanged(v.round())
@@ -1670,7 +1633,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
               _SliderStepBtn(
                 icon: Icons.add,
                 color: color,
-                enabled: onSliderChanged != null && currentIdx < totalPts - 1,
+                enabled: onSliderChanged != null && currentIdx < hi,
                 onTap: () => onSliderChanged!(currentIdx + 1),
               ),
             ],
@@ -1905,6 +1868,8 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
 
   Widget _buildSpeedZonesSection(String specialeId) {
     final zones = _speedZones.where((z) => z.specialeId == specialeId).toList();
+    if (_zoneEditing) return _buildZoneEditor();
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
@@ -1920,6 +1885,18 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
                   fontSize: 13,
                   fontWeight: FontWeight.w600),
             ),
+            const Spacer(),
+            TextButton.icon(
+              onPressed: _startAddZone,
+              style: TextButton.styleFrom(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+              icon: const Icon(Icons.add, size: 14, color: Colors.orange),
+              label: const Text('Aggiungi zona',
+                  style: TextStyle(color: Colors.orange, fontSize: 12)),
+            ),
           ],
         ),
         const SizedBox(height: 4),
@@ -1927,7 +1904,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
           Padding(
             padding: const EdgeInsets.only(bottom: 4),
             child: Text(
-              'Usa l\'icona tachimetro in alto per inserirne una sulla traccia.',
+              'Nessuna zona velocità per questa speciale.',
               style: const TextStyle(
                   color: AppColors.textSecondary, fontSize: 11),
             ),
@@ -1945,14 +1922,10 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
                 border: Border.all(color: Colors.orange.withValues(alpha: 0.4)),
               ),
               child: InkWell(
-                onTap: () => _openSpeedZoneSheet(
-                  start: z.startLatLng,
-                  end: z.endLatLng,
-                  existing: z,
-                ),
+                onTap: () => _startEditZone(z),
                 child: Row(
                   children: [
-                    const Icon(Icons.speed, size: 18, color: Colors.orange),
+                    SpeedZoneMarkerIcon(speedLimit: z.maxSpeedKmh.round(), size: 22),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
@@ -1975,12 +1948,194 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
                       style: const TextStyle(
                           color: AppColors.textSecondary, fontSize: 11),
                     ),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline,
+                          color: AppColors.error, size: 16),
+                      padding: EdgeInsets.zero,
+                      constraints:
+                          const BoxConstraints(minWidth: 24, minHeight: 24),
+                      onPressed: () => _confirmDeleteSpeedZone(z),
+                    ),
                   ],
                 ),
               ),
             );
           }),
       ],
+    );
+  }
+
+  Widget _buildZoneEditor() {
+    final pts = widget.parsedTrack.points;
+    final lo = _editingInicioIdx >= 0 ? _editingInicioIdx : 0;
+    var hi = _editingFineIdx > _editingInicioIdx
+        ? _editingFineIdx
+        : pts.length - 1;
+    if (hi < lo) hi = lo;
+    final hasRange =
+        _zoneStartIdx >= 0 && _zoneEndIdx > _zoneStartIdx && pts.isNotEmpty;
+    final zoneLenKm = hasRange
+        ? _sectionLength(_zoneStartIdx, _zoneEndIdx)
+        : null;
+
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: Colors.orange.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.orange.withValues(alpha: 0.4)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.speed, size: 16, color: Colors.orange),
+              const SizedBox(width: 6),
+              Text(
+                _zoneEditingId == null ? 'Nuova zona velocità' : 'Modifica zona velocità',
+                style: const TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600),
+              ),
+              const Spacer(),
+              IconButton(
+                icon: const Icon(Icons.close,
+                    color: AppColors.textSecondary, size: 18),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+                onPressed: () => setState(_cancelZoneEditing),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _zoneNameCtrl,
+            style: const TextStyle(color: AppColors.textPrimary, fontSize: 13),
+            decoration: InputDecoration(
+              labelText: 'Nome zona',
+              labelStyle: const TextStyle(color: AppColors.textSecondary),
+              isDense: true,
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            onChanged: (_) => setState(() {}),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              const Text('Limite velocità:',
+                  style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+              const Spacer(),
+              _SliderStepBtn(
+                icon: Icons.remove,
+                color: Colors.orange,
+                enabled: _zoneMaxSpeed > 5,
+                onTap: () => setState(() => _zoneMaxSpeed -= 5),
+              ),
+              SizedBox(
+                width: 70,
+                child: Text(
+                  '${_zoneMaxSpeed.toStringAsFixed(0)} km/h',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      color: Colors.orange,
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold),
+                ),
+              ),
+              _SliderStepBtn(
+                icon: Icons.add,
+                color: Colors.orange,
+                enabled: _zoneMaxSpeed < 200,
+                onTap: () => setState(() => _zoneMaxSpeed += 5),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          if (zoneLenKm != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Text(
+                'Lunghezza zona: ${zoneLenKm.toStringAsFixed(2)} km',
+                style: const TextStyle(
+                    color: AppColors.textSecondary, fontSize: 11),
+              ),
+            ),
+          _buildSliderSection(
+            label: 'INIZIO ZONA',
+            color: Colors.orange,
+            currentIdx: _zoneStartIdx,
+            totalPts: pts.length,
+            minIdx: lo,
+            maxIdx: hi,
+            isMapActive: _selectionMode == _SelectionMode.zoneStart,
+            onSliderChanged: pts.isNotEmpty
+                ? (v) => setState(() {
+                      _zoneStartIdx = v;
+                      _selectionMode = _SelectionMode.none;
+                    })
+                : null,
+            onMapClick: pts.isNotEmpty
+                ? () => setState(() {
+                      _selectionMode = _selectionMode == _SelectionMode.zoneStart
+                          ? _SelectionMode.none
+                          : _SelectionMode.zoneStart;
+                    })
+                : null,
+          ),
+          const SizedBox(height: 6),
+          _buildSliderSection(
+            label: 'FINE ZONA',
+            color: Colors.orange,
+            currentIdx: _zoneEndIdx,
+            totalPts: pts.length,
+            minIdx: lo,
+            maxIdx: hi,
+            isMapActive: _selectionMode == _SelectionMode.zoneEnd,
+            onSliderChanged: pts.isNotEmpty
+                ? (v) => setState(() {
+                      _zoneEndIdx = v;
+                      _selectionMode = _SelectionMode.none;
+                    })
+                : null,
+            onMapClick: pts.isNotEmpty
+                ? () => setState(() {
+                      _selectionMode = _selectionMode == _SelectionMode.zoneEnd
+                          ? _SelectionMode.none
+                          : _SelectionMode.zoneEnd;
+                    })
+                : null,
+          ),
+          if (_zoneStartIdx >= 0 && _zoneEndIdx >= 0 && _zoneEndIdx <= _zoneStartIdx) ...[
+            const SizedBox(height: 6),
+            const Row(
+              children: [
+                Icon(Icons.warning_amber_rounded, size: 14, color: AppColors.error),
+                SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'La fine deve essere successiva all\'inizio',
+                    style: TextStyle(color: AppColors.error, fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
+          ],
+          const SizedBox(height: 10),
+          ElevatedButton(
+            onPressed: (_zoneNameCtrl.text.trim().isNotEmpty && hasRange)
+                ? _confirmZoneEditing
+                : null,
+            style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.orange, minimumSize: const Size(0, 40)),
+            child: Text(_zoneEditingId == null ? 'Aggiungi zona' : 'Salva zona'),
+          ),
+        ],
+      ),
     );
   }
 }

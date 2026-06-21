@@ -12,9 +12,11 @@ import '../../../core/models/special_model.dart';
 import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/utils/gpx_utils.dart';
 import '../../admin/providers/admin_provider.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../classifica/providers/classifica_provider.dart';
+import '../../map/widgets/speed_zone_layer.dart';
 import '../providers/pilot_provider.dart';
 
 class RaceResultScreen extends ConsumerStatefulWidget {
@@ -222,6 +224,9 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
       options: const MapOptions(
         initialCenter: LatLng(44.0, 11.0),
         initialZoom: 10,
+        // Mappa interattiva (pan + pinch-zoom + doppio tap): nel test era
+        // risultata non manipolabile nel riepilogo post-gara.
+        interactionOptions: InteractionOptions(flags: InteractiveFlag.all),
       ),
       children: [
         TileLayer(
@@ -236,6 +241,8 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
               strokeWidth: 2.5,
             ),
           ]),
+        if (event != null && event.speedZones.isNotEmpty)
+          SpeedZoneLayer(zones: event.speedZones, trackPoints: _refTrack),
         if (pilotPoints.isNotEmpty)
           PolylineLayer(polylines: [
             Polyline(
@@ -341,6 +348,13 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
               (s) => _SpecialRow(
                 special: s,
                 tempo: _findTempo(myEntry, s.id),
+                dangerCount: _refTrack.isNotEmpty
+                    ? GpxUtils.countDangerPointsInSpecial(
+                        s, event!.dangerPoints, _refTrack)
+                    : 0,
+                speedZoneCount:
+                    event?.speedZones.where((z) => z.specialeId == s.id).length ??
+                        0,
               ),
             ),
             const SizedBox(height: 16),
@@ -445,8 +459,15 @@ class _StatusHeader extends StatelessWidget {
 class _SpecialRow extends StatelessWidget {
   final SpecialModel special;
   final SpecialTempo? tempo;
+  final int dangerCount;
+  final int speedZoneCount;
 
-  const _SpecialRow({required this.special, required this.tempo});
+  const _SpecialRow({
+    required this.special,
+    required this.tempo,
+    this.dangerCount = 0,
+    this.speedZoneCount = 0,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -508,6 +529,28 @@ class _SpecialRow extends StatelessWidget {
                       '⚠ CP mancati: ${tempo!.missedCpPositions.length}',
                       style: const TextStyle(
                         color: AppColors.warning,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ),
+                if (dangerCount > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      '⚠ Pericoli: $dangerCount',
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ),
+                if (speedZoneCount > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      '🐌 Zone velocità: $speedZoneCount',
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
                         fontSize: 11,
                       ),
                     ),

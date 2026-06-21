@@ -83,6 +83,29 @@ class WaypointDetector {
     return nearest;
   }
 
+  /// Waypoint più vicino a [position] tra [waypoints], o null se la lista è
+  /// vuota. Usato per mostrare un'etichetta specifica ("Inizio PS1", ecc.)
+  /// invece del generico "WAYPOINT VICINO".
+  static WaypointModel? nearestWaypoint(
+      LatLng position, List<WaypointModel> waypoints) {
+    if (waypoints.isEmpty) return null;
+    WaypointModel? nearest;
+    double? nearestDist;
+    for (final wp in waypoints) {
+      final dist = LocationUtils.haversineDistance(
+        position.latitude,
+        position.longitude,
+        wp.lat,
+        wp.lng,
+      );
+      if (nearestDist == null || dist < nearestDist) {
+        nearestDist = dist;
+        nearest = wp;
+      }
+    }
+    return nearest;
+  }
+
   static int adaptiveInterval(double? nearestDistance, bool inSpecial) {
     if (nearestDistance != null &&
         nearestDistance <= AppConstants.nearWaypointThresholdMeters) {

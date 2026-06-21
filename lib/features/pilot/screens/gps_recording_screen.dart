@@ -306,6 +306,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         point: point,
         width: 58,
         height: 52,
+        rotate: false,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -512,12 +513,22 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         GpsMode.nearWaypoint => AppColors.warning,
       };
 
-  String _modeLabel(GpsMode mode) => switch (mode) {
-        GpsMode.idle => 'INATTIVO',
-        GpsMode.transfer => 'TRASFERIMENTO',
-        GpsMode.inSpecial => 'IN SPECIALE',
-        GpsMode.nearWaypoint => 'WAYPOINT VICINO',
-      };
+  String _modeLabel(GpsMode mode, GpsService gps) {
+    if (mode == GpsMode.nearWaypoint) {
+      final label = gps.nearestWaypointLabel;
+      if (label != null) {
+        final suffix = label.startsWith('Fine') ? 'vicina' : 'vicino';
+        return '$label $suffix';
+      }
+      return 'WAYPOINT VICINO';
+    }
+    return switch (mode) {
+      GpsMode.idle => 'INATTIVO',
+      GpsMode.transfer => 'TRASFERIMENTO',
+      GpsMode.inSpecial => 'IN SPECIALE',
+      GpsMode.nearWaypoint => 'WAYPOINT VICINO',
+    };
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -652,7 +663,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
               children: [
                 _ModeBadge(
                     color: _modeColor(gps.mode),
-                    label: _modeLabel(gps.mode)),
+                    label: _modeLabel(gps.mode, gps)),
                 const SizedBox(height: 48),
                 GestureDetector(
                   onTap: canStart ? _toggleRecording : null,
@@ -973,7 +984,13 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           ),
 
         // Mode banner
-        _ModeBanner(color: modeColor, label: _modeLabel(gps.mode)),
+        _ModeBanner(color: modeColor, label: _modeLabel(gps.mode, gps)),
+
+        // Banner zona a velocità controllata: visibile per tutta la
+        // permanenza nella zona, colore verde/rosso in base al limite.
+        if (gps.activeSpeedZone != null)
+          _SpeedZoneBanner(
+              zone: gps.activeSpeedZone!, currentSpeedKmh: speedKmh),
 
         // Banner non bloccante: nessun fix GPS ancora ricevuto (normale nei
         // primi secondi dopo START). Mappa e controlli restano comunque
@@ -1180,6 +1197,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                             event.fuelPoint!.lng),
                         width: 40,
                         height: 48,
+                        rotate: false,
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
@@ -1219,6 +1237,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                           point: dp.latLng,
                           width: 36,
                           height: 36,
+                          rotate: false,
                           child: GestureDetector(
                             onTap: () {
                               ScaffoldMessenger.of(context).showSnackBar(
@@ -1257,6 +1276,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                         point: LatLng(wp.lat, wp.lng),
                         width: 32,
                         height: 38,
+                        rotate: false,
                         child: _WaypointPin(
                           color: isNear
                               ? AppColors.warning
@@ -2205,6 +2225,54 @@ class _FuelPointBanner extends StatelessWidget {
   }
 }
 
+/// Banner zona a velocità controllata: mostra il limite e la velocità
+/// attuale del pilota, verde se la rispetta o rosso se la supera. Visibile
+/// per tutta la durata della permanenza nella zona (driven da
+/// [GpsService.activeSpeedZone], non scompare finché non si esce).
+class _SpeedZoneBanner extends StatelessWidget {
+  final SpeedZoneModel zone;
+  final double currentSpeedKmh;
+  const _SpeedZoneBanner({required this.zone, required this.currentSpeedKmh});
+
+  @override
+  Widget build(BuildContext context) {
+    final overLimit = currentSpeedKmh > zone.maxSpeedKmh;
+    final speedColor = overLimit ? AppColors.error : AppColors.success;
+    return Container(
+      width: double.infinity,
+      color: speedColor.withValues(alpha: 0.15),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.speed, color: Colors.orange, size: 16),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              'Zona ${zone.nome} — limite ${zone.maxSpeedKmh.toStringAsFixed(0)} km/h',
+              style: const TextStyle(
+                color: Colors.orange,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            '${currentSpeedKmh.clamp(0, 300).toStringAsFixed(0)} km/h',
+            style: TextStyle(
+              color: speedColor,
+              fontSize: 13,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _DangerWarningBanner extends StatelessWidget {
   final String comment;
   final double distanceMeters;
@@ -2225,7 +2293,7 @@ class _DangerWarningBanner extends StatelessWidget {
           const SizedBox(width: 8),
           Flexible(
             child: Text(
-              '⚠ ATTENZIONE: $comment tra ~${distanceMeters.round()}m',
+              'ATTENZIONE: $comment tra ~${distanceMeters.round()}m',
               style: const TextStyle(
                 color: Colors.amber,
                 fontWeight: FontWeight.bold,
@@ -2259,7 +2327,7 @@ class _DangerAlertBanner extends StatelessWidget {
           const SizedBox(width: 8),
           Flexible(
             child: Text(
-              '⚠ PERICOLO: $comment',
+              'PERICOLO: $comment',
               style: const TextStyle(
                 color: AppColors.error,
                 fontWeight: FontWeight.bold,

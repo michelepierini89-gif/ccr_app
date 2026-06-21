@@ -98,6 +98,37 @@ class _TeamScreenState extends ConsumerState<TeamScreen> {
   Future<void> _setPreferredTeam(String teamName) async {
     final uid = _userId;
     if (uid == null) return;
+    final current =
+        ref.read(currentUserModelProvider).valueOrNull?.preferredTeamName;
+    if (current != null && current != teamName) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppColors.cardBackground,
+          title: const Text('Sostituire la squadra preferita?',
+              style: TextStyle(color: AppColors.textPrimary)),
+          content: Text(
+            'Hai già "$current" impostata come squadra preferita. '
+            'Vuoi sostituirla con "$teamName"?',
+            style: const TextStyle(color: AppColors.textSecondary),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Annulla',
+                  style: TextStyle(color: AppColors.textSecondary)),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              style:
+                  ElevatedButton.styleFrom(backgroundColor: AppColors.warning),
+              child: const Text('Sostituisci'),
+            ),
+          ],
+        ),
+      );
+      if (confirm != true || !mounted) return;
+    }
     try {
       await ref
           .read(firestoreServiceProvider)
@@ -211,38 +242,49 @@ class _TeamScreenState extends ConsumerState<TeamScreen> {
                         ),
                         const SizedBox(height: 10),
                         if (preferredTeamName == myTeam.nome)
-                          const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.star,
-                                  color: AppColors.warning, size: 16),
-                              SizedBox(width: 6),
-                              Text(
-                                'Squadra preferita',
-                                style: TextStyle(
-                                  color: AppColors.warning,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: AppColors.warning.withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                  color: AppColors.warning
+                                      .withValues(alpha: 0.5)),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.star,
+                                    color: AppColors.warning, size: 18),
+                                SizedBox(width: 8),
+                                Text(
+                                  '⭐ Squadra preferita',
+                                  style: TextStyle(
+                                    color: AppColors.warning,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
+                                  ),
                                 ),
-                              ),
-                            ],
+                              ],
+                            ),
                           )
                         else
-                          OutlinedButton.icon(
-                            onPressed: () => _setPreferredTeam(myTeam.nome),
-                            icon: const Icon(Icons.star_border, size: 16),
-                            label: const Text('Imposta come squadra preferita'),
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: AppColors.warning,
-                              side: BorderSide(
-                                  color: AppColors.warning
-                                      .withValues(alpha: 0.6)),
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 6),
-                              minimumSize: Size.zero,
-                              tapTargetSize:
-                                  MaterialTapTargetSize.shrinkWrap,
-                              textStyle: const TextStyle(fontSize: 12),
+                          SizedBox(
+                            width: double.infinity,
+                            height: 44,
+                            child: ElevatedButton.icon(
+                              onPressed: () => _setPreferredTeam(myTeam.nome),
+                              icon: const Icon(Icons.star_border, size: 18),
+                              label: const Text(
+                                '⭐ Imposta come squadra preferita',
+                                style: TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppColors.warning,
+                                foregroundColor: Colors.black,
+                              ),
                             ),
                           ),
                         const SizedBox(height: 16),
