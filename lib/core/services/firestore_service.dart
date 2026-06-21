@@ -467,6 +467,12 @@ class FirestoreService {
         SetOptions(merge: true),
       );
 
+  Future<void> savePreferredTeamName(String userId, String teamName) =>
+      _db.collection(FirebaseConstants.users).doc(userId).set(
+        {'preferredTeamName': teamName},
+        SetOptions(merge: true),
+      );
+
   Future<void> recordWaypointPassage({
     required String eventId,
     required String userId,

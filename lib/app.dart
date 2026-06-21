@@ -22,6 +22,7 @@ import 'features/pilot/screens/team_screen.dart';
 import 'features/pilot/screens/gps_recording_screen.dart';
 import 'features/pilot/screens/starting_order_pilot_screen.dart';
 import 'features/pilot/screens/race_result_screen.dart';
+import 'features/pilot/screens/pilot_stats_screen.dart';
 import 'features/admin/screens/penalty_settings_screen.dart';
 import 'features/classifica/screens/classifica_screen.dart';
 
@@ -176,6 +177,10 @@ final _routerProvider = Provider<GoRouter>((ref) {
               final id = state.pathParameters['id']!;
               return ChampionshipStandingsScreen(championshipId: id);
             },
+          ),
+          GoRoute(
+            path: 'stats',
+            builder: (context, state) => const PilotStatsScreen(),
           ),
         ],
       ),

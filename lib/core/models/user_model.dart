@@ -9,6 +9,7 @@ class UserModel {
   final String cognome;
   final UserRole role;
   final DateTime createdAt;
+  final String? preferredTeamName;
 
   const UserModel({
     required this.id,
@@ -17,6 +18,7 @@ class UserModel {
     required this.cognome,
     required this.role,
     required this.createdAt,
+    this.preferredTeamName,
   });
 
   String get nomeCompleto => '$nome $cognome';
@@ -30,6 +32,7 @@ class UserModel {
       cognome: d['cognome'] ?? '',
       role: d['role'] == 'admin' ? UserRole.admin : UserRole.pilota,
       createdAt: (d['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      preferredTeamName: d['preferredTeamName'] as String?,
     );
   }
 
@@ -39,6 +42,7 @@ class UserModel {
         'cognome': cognome,
         'role': role.name,
         'createdAt': Timestamp.fromDate(createdAt),
+        if (preferredTeamName != null) 'preferredTeamName': preferredTeamName,
       };
 
   UserModel copyWith({
@@ -47,6 +51,7 @@ class UserModel {
     String? nome,
     String? cognome,
     UserRole? role,
+    String? preferredTeamName,
   }) =>
       UserModel(
         id: id ?? this.id,
@@ -55,5 +60,6 @@ class UserModel {
         cognome: cognome ?? this.cognome,
         role: role ?? this.role,
         createdAt: createdAt,
+        preferredTeamName: preferredTeamName ?? this.preferredTeamName,
       );
 }

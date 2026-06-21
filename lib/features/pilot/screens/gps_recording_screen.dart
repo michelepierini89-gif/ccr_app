@@ -1630,6 +1630,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     Color(0xFFFF00FF), // magenta
     Colors.white,
     Colors.red,
+    Colors.black,
   ];
 
   static const _arrowColorOptions = [
@@ -1638,6 +1639,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     Colors.yellow,
     Colors.green,
     Colors.cyan,
+    Colors.black,
   ];
 
   static const _refTrackColorOptions = [
@@ -1645,6 +1647,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     Colors.orange,
     Color(0xFFFF00FF), // magenta
     Colors.white,
+    Colors.black,
   ];
 
   Widget _colorSwatchRow(
@@ -1654,6 +1657,9 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
       runSpacing: 12,
       children: options.map((c) {
         final isSelected = c.toARGB32() == selected.toARGB32();
+        // Il nero si confonde col background scuro dell'app: bordo bianco
+        // sottile sempre visibile per renderlo distinguibile e selezionabile.
+        final isBlack = c.toARGB32() == Colors.black.toARGB32();
         return GestureDetector(
           onTap: () => onSelect(c),
           child: Container(
@@ -1663,8 +1669,12 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
               color: c,
               shape: BoxShape.circle,
               border: Border.all(
-                color: isSelected ? AppColors.accent : AppColors.border,
-                width: isSelected ? 3 : 1,
+                color: isSelected
+                    ? AppColors.accent
+                    : isBlack
+                        ? Colors.white
+                        : AppColors.border,
+                width: isSelected ? 3 : (isBlack ? 1.5 : 1),
               ),
             ),
           ),

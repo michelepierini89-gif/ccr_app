@@ -95,6 +95,32 @@ class _TeamScreenState extends ConsumerState<TeamScreen> {
     }
   }
 
+  Future<void> _setPreferredTeam(String teamName) async {
+    final uid = _userId;
+    if (uid == null) return;
+    try {
+      await ref
+          .read(firestoreServiceProvider)
+          .savePreferredTeamName(uid, teamName);
+      ref.invalidate(currentUserModelProvider);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('"$teamName" impostata come squadra preferita'),
+          backgroundColor: AppColors.success,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Errore: $e'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    }
+  }
+
   Future<void> _leaveTeam(String teamId) async {
     final uid = _userId;
     if (uid == null) return;
@@ -124,6 +150,8 @@ class _TeamScreenState extends ConsumerState<TeamScreen> {
   Widget build(BuildContext context) {
     final teamsAsync = ref.watch(teamsProvider(widget.eventId));
     final regs = ref.watch(registrationsProvider(widget.eventId)).valueOrNull ?? [];
+    final preferredTeamName =
+        ref.watch(currentUserModelProvider).valueOrNull?.preferredTeamName;
 
     String memberName(String memberId) {
       if (memberId == _userId) return 'Tu';
@@ -181,6 +209,42 @@ class _TeamScreenState extends ConsumerState<TeamScreen> {
                             ),
                           ],
                         ),
+                        const SizedBox(height: 10),
+                        if (preferredTeamName == myTeam.nome)
+                          const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.star,
+                                  color: AppColors.warning, size: 16),
+                              SizedBox(width: 6),
+                              Text(
+                                'Squadra preferita',
+                                style: TextStyle(
+                                  color: AppColors.warning,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          )
+                        else
+                          OutlinedButton.icon(
+                            onPressed: () => _setPreferredTeam(myTeam.nome),
+                            icon: const Icon(Icons.star_border, size: 16),
+                            label: const Text('Imposta come squadra preferita'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppColors.warning,
+                              side: BorderSide(
+                                  color: AppColors.warning
+                                      .withValues(alpha: 0.6)),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 6),
+                              minimumSize: Size.zero,
+                              tapTargetSize:
+                                  MaterialTapTargetSize.shrinkWrap,
+                              textStyle: const TextStyle(fontSize: 12),
+                            ),
+                          ),
                         const SizedBox(height: 16),
                         Text(
                           '${myTeam.membriIds.length} membri',

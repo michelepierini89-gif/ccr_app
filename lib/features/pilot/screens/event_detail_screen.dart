@@ -552,8 +552,8 @@ class _PilotRegistrationSectionState
     }
   }
 
-  Future<void> _openRegistrationDialog(
-      String userId, String nome, String cognome) async {
+  Future<void> _openRegistrationDialog(String userId, String nome,
+      String cognome, String? preferredTeamName) async {
     await showDialog<void>(
       context: context,
       builder: (ctx) => _RegistrationDialog(
@@ -563,6 +563,7 @@ class _PilotRegistrationSectionState
         userId: userId,
         userNome: nome,
         userCognome: cognome,
+        preferredTeamName: preferredTeamName,
         onConfirm: (existingTeam, newTeamName) async {
           Navigator.of(ctx).pop();
           await _doRegister(
@@ -875,6 +876,7 @@ class _PilotRegistrationSectionState
                                     user.id,
                                     user.nome,
                                     user.cognome,
+                                    user.preferredTeamName,
                                   ),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: AppColors.accent,
@@ -943,6 +945,7 @@ class _RegistrationDialog extends ConsumerStatefulWidget {
   final String userId;
   final String userNome;
   final String userCognome;
+  final String? preferredTeamName;
   final Future<void> Function(TeamModel? existingTeam, String? newTeamName)
       onConfirm;
 
@@ -953,6 +956,7 @@ class _RegistrationDialog extends ConsumerStatefulWidget {
     required this.userId,
     required this.userNome,
     required this.userCognome,
+    this.preferredTeamName,
     required this.onConfirm,
   });
 
@@ -968,6 +972,41 @@ class _RegistrationDialogState extends ConsumerState<_RegistrationDialog> {
   bool _isCreatingNew = false;
   final _teamNameCtrl = TextEditingController();
   bool _confirming = false;
+  bool _suggestionApplied = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Pre-seleziona/pre-compila la squadra preferita del pilota appena
+    // arrivano i dati delle squadre già iscritte all'evento (una sola volta).
+    ref.listenManual(teamsProvider(widget.eventId), (prev, next) {
+      final teams = next.valueOrNull;
+      if (teams != null) _applyPreferredSuggestion(teams);
+    }, fireImmediately: true);
+  }
+
+  void _applyPreferredSuggestion(List<TeamModel> teams) {
+    if (_suggestionApplied) return;
+    final preferred = widget.preferredTeamName?.trim();
+    if (preferred == null || preferred.isEmpty) {
+      _suggestionApplied = true;
+      return;
+    }
+    final match = teams
+        .where((t) => t.nome.trim().toLowerCase() == preferred.toLowerCase())
+        .firstOrNull;
+    setState(() {
+      _suggestionApplied = true;
+      if (match != null && match.membriIds.length < widget.maxSquadra) {
+        _selectedTeam = match;
+        _isCreatingNew = false;
+      } else if (match == null) {
+        _isCreatingNew = true;
+        _newTeamName = preferred;
+        _teamNameCtrl.text = preferred;
+      }
+    });
+  }
 
   @override
   void dispose() {
@@ -1013,6 +1052,9 @@ class _RegistrationDialogState extends ConsumerState<_RegistrationDialog> {
             final isFull =
                 team.membriIds.length >= widget.maxSquadra;
             final free = widget.maxSquadra - team.membriIds.length;
+            final isPreferred = widget.preferredTeamName != null &&
+                team.nome.trim().toLowerCase() ==
+                    widget.preferredTeamName!.trim().toLowerCase();
             return Container(
               margin: const EdgeInsets.only(bottom: 8),
               decoration: BoxDecoration(
@@ -1021,9 +1063,11 @@ class _RegistrationDialogState extends ConsumerState<_RegistrationDialog> {
                     : AppColors.cardBackground,
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(
-                  color: isFull
-                      ? AppColors.border.withValues(alpha: 0.4)
-                      : AppColors.border,
+                  color: isPreferred
+                      ? AppColors.warning
+                      : isFull
+                          ? AppColors.border.withValues(alpha: 0.4)
+                          : AppColors.border,
                 ),
               ),
               child: ListTile(
@@ -1033,15 +1077,41 @@ class _RegistrationDialogState extends ConsumerState<_RegistrationDialog> {
                         ? AppColors.textSecondary.withValues(alpha: 0.4)
                         : AppColors.textSecondary,
                     size: 20),
-                title: Text(
-                  team.nome,
-                  style: TextStyle(
-                    color: isFull
-                        ? AppColors.textSecondary.withValues(alpha: 0.5)
-                        : AppColors.textPrimary,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 14,
-                  ),
+                title: Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        team.nome,
+                        style: TextStyle(
+                          color: isFull
+                              ? AppColors.textSecondary.withValues(alpha: 0.5)
+                              : AppColors.textPrimary,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (isPreferred) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: AppColors.warning.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: AppColors.warning),
+                        ),
+                        child: const Text(
+                          '⭐ Preferita',
+                          style: TextStyle(
+                              color: AppColors.warning,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
                 subtitle: Text(
                   isFull
@@ -1127,6 +1197,26 @@ class _RegistrationDialogState extends ConsumerState<_RegistrationDialog> {
                 ),
                 onChanged: (v) => setState(() => _newTeamName = v),
               ),
+              if (widget.preferredTeamName != null &&
+                  _newTeamName?.trim().toLowerCase() ==
+                      widget.preferredTeamName!.trim().toLowerCase())
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.star, color: AppColors.warning, size: 12),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Nome dalla tua squadra preferita',
+                        style: TextStyle(
+                            color: AppColors.warning.withValues(alpha: 0.9),
+                            fontSize: 11,
+                            fontStyle: FontStyle.italic),
+                      ),
+                    ],
+                  ),
+                ),
               const SizedBox(height: 8),
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,

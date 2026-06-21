@@ -562,7 +562,24 @@ class _ProfilePage extends ConsumerWidget {
                       fontWeight: FontWeight.bold),
                 ),
               ),
-              const SizedBox(height: 48),
+              const SizedBox(height: 32),
+              SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: ElevatedButton.icon(
+                  onPressed: () => context.push('/pilot/stats'),
+                  icon: const Icon(Icons.bar_chart),
+                  label: const Text('Le mie statistiche'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.accent,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
               SizedBox(
                 width: double.infinity,
                 height: 50,
