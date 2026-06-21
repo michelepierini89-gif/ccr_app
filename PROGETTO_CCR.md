@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 21 giugno 2026 (Step 30 completato)  
+**Data aggiornamento:** 21 giugno 2026 (Step 31 completato)  
 **Branch:** main  
 **Versione:** 1.0.0+1
 
@@ -1212,15 +1212,65 @@ provider Riverpod che lo istanzia.
 
 ---
 
+### Step 31 — 8 fix dal test reale + intervento critico su prestazioni IMU/GPS (21 giugno 2026) ✅
+
+**PRIORITÀ ASSOLUTA — Lag rotazione/posizione (`imu_fusion_service.dart`, `gps_service.dart`):**
+- `kComplementaryAlpha` 0.96→0.85 + nuovo `_currentAlpha()` velocità-dipendente (0.50 da fermo, 0.70 lento, 0.85 medio, 0.92 veloce) usato in `_onGyroscope()` invece della costante fissa: la bussola corregge il giroscopio molto più rapidamente da fermo/in curva lenta, resta dominante il giroscopio solo ad alta velocità
+- `kUiUpdateIntervalMs` 20ms→16ms (60Hz)
+- GPS anchor blend posizione 90/10→95/5 (`ImuFusionService.updateWithGps`)
+- `GpsService._anchorThresholdMeters()`: soglia da fermo 6m→3m
+- Verificata `gps_recording_screen.dart`: la rotazione mappa in modalità HEADING era già priva di soglia/deadband — si propaga ad ogni rebuild guidato da `ImuFusionService` (ora 60Hz), nessuna modifica necessaria
+
+**FIX CRITICO — Recovery PS potenziato (`gps_service.dart`):**
+- `kSpecialStartRecoveryRadiusMeters`/`kSpecialEndRecoveryRadiusMeters` 80m→120m
+- Nuovo `_tryRecoverSkippedSpecials()`: quando si rileva l'inizio di una PS, scandisce le PS precedenti (per `ordine`) senza ALCUN passaggio registrato (non solo "fine non rilevata", già gestito da `_closeOpenSpecial`) — cerca nell'INTERA traccia di recovery della sessione il punto più vicino al waypoint START, poi (da quel timestamp) il punto più vicino al waypoint FINE; se non trovati entro 120m usa fallback stimato (`inizio = start PS successiva - 2min`, `fine = start PS successiva - 1s`) con `timingError:'speciale_non_rilevata'` — mai più FINE GARA bloccato per una PS saltata per intero
+- Chiamato PRIMA di aprire l'ingresso della PS successiva, così l'ordine resta sempre corretto; gestisce anche PS non adiacenti saltate contemporaneamente
+- Nessuna waypoint detection né recovery nei primi 10s dall'avvio registrazione (`_onPosition`): il buffer GPS si sta ancora stabilizzando, un punto corrotto in questa fase generava falsi "IN SPECIALE" subito dopo START (bug Fix 7)
+
+**FIX 1 — Zone velocità: slider + simbolo cartello (`specials_editor_screen.dart`, `speed_zone_marker.dart` nuovo, `speed_zone_layer.dart`):**
+- Editing inline con slider INIZIO/FINE (stesso componente di inizio/fine speciale, range vincolato alla PS) al posto del tap-su-mappa; campo numerico limite km/h; preview della sezione evidenziata in arancione sulla mappa durante l'editing
+- `SpeedZoneMarkerIcon` (nuovo widget condiviso): cartello stradale realistico, cerchio bianco bordo rosso 3px, numero limite nero al centro, 40px — usato in editor admin, navigazione pilota e riepilogo gara
+- Linea zona su mappa: giallo/lime (`0xFFCCFF00`) opacity 0.7, strokeWidth 8, sopra la traccia rossa (flutter_map non supporta dash pattern nativo)
+
+**FIX 2 — Riepilogo gara pilota (`race_result_screen.dart`):**
+- Mappa con `interactionOptions: InteractionOptions(flags: InteractiveFlag.all)` esplicito (pan/zoom/doppio-tap)
+- `SpeedZoneLayer` aggiunto alla mappa di riepilogo
+- Card speciali: righe "⚠ Pericoli: N" (via `GpxUtils.countDangerPointsInSpecial`) e "🐌 Zone velocità: N" (via `speedZones.where(specialeId==s.id)`), entrambe solo se N>0
+
+**FIX 3 — Waypoint vicino specifico (`waypoint_detector.dart`, `gps_service.dart`, `gps_recording_screen.dart`):**
+- Nuovo `WaypointDetector.nearestWaypoint()` + `GpsService.nearestWaypointLabel` (es. "Inizio PS1", "Fine PS3", "Checkpoint PS2", risolti tramite le mappe inizio/fine/control-point esistenti)
+- `_modeLabel()` mostra `"<label> vicino/vicina"` al posto del generico "WAYPOINT VICINO" quando disponibile
+
+**FIX 4 — Doppia icona pericolo (`gps_recording_screen.dart`):**
+- Rimosso il prefisso `⚠ ` dal testo dei banner avviso (giallo) e allerta (rosso) — resta solo l'icona del banner, non più duplicata nel testo
+
+**FIX 5 — Banner zona velocità + simboli fissi (`gps_service.dart`, `gps_recording_screen.dart`, `speed_zone_layer.dart`):**
+- Nuovo `GpsService.activeSpeedZone` (basato su `_zoneEntryTimestamps`); banner `_SpeedZoneBanner` con limite e velocità attuale colorata verde/rosso, visibile per tutta la permanenza in zona
+- `rotate: false` esplicito su tutti i Marker non-freccia (PS, ristoro, pericolo, waypoint, zone velocità) — comportamento di default già corretto, reso esplicito
+
+**FIX 6 — Squadra preferita più prominente (`team_screen.dart`):**
+- Verificato: la feature (bottone + persistenza + suggerimento iscrizione, Step 30) era già implementata e funzionante — solo poco visibile nel test
+- Bottone "⭐ Imposta come squadra preferita" reso full-width/`ElevatedButton` (era `OutlinedButton` compatto); badge "⭐ Squadra preferita" anch'esso più evidente; dialog di conferma prima di sovrascrivere una preferita diversa già impostata
+
+**Deploy:**
+- `flutter analyze`: zero issues
+- `flutter test`: stesso esito del baseline pre-modifica (5 test pre-esistenti già falliti su `main`, nessuna nuova regressione introdotta)
+- `git commit 630501f`: "fix: lag rotazione IMU + recovery PS potenziato + zone velocità slider e simbolo + waypoint label specifico + doppia icona pericolo + banner zona velocità + simboli fissi + squadra preferita + bug speciale avvio"
+- `flutter build web --release` + `firebase deploy --only hosting` ✅ su https://ccr-enduro.web.app
+- `git push origin main` ✅
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**
 - Ripristinare regole Firestore/Storage granulari per produzione (da git history commit `25ad689`)
 
 **Test su device reale:**
-- Verificare in un nuovo test su strada se i fix dello Step 29 (low-pass gyro, scarto picchi bussola, ancora heading su GPS) hanno stabilizzato la modalità HEADING; se la mappa ruota ancora nella direzione sbagliata, provare `kGyroZSign = -1.0` in `imu_fusion_service.dart`
+- Verificare in un nuovo test su strada se i fix dello Step 31 (alpha complementare velocità-dipendente, anchor GPS 3m, recovery PS 120m) hanno risolto il lag rotazione/posizione e il blocco FINE GARA da PS saltata; se la mappa ruota ancora nella direzione sbagliata, provare `kGyroZSign = -1.0` in `imu_fusion_service.dart`
 - Test end-to-end classifica campionato con più eventi
 - Test flusso iscrizione 2-step su web e Android
+- Risolvere i 5 test pre-esistenti falliti in `routes_test.dart`/`pilot_flow_test.dart` (timer pendente su `GpsRecordingScreen` pre-start, indipendenti dalle modifiche dello Step 31)
 
 **Feature future:**
 - Trail percorso per ogni pilota nella mappa admin live (attualmente solo posizione istantanea)
