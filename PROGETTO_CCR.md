@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 21 giugno 2026 (Step 31 completato)  
+**Data aggiornamento:** 22 giugno 2026 (Step 32 completato)  
 **Branch:** main  
 **Versione:** 1.0.0+1
 
@@ -1261,13 +1261,157 @@ provider Riverpod che lo istanzia.
 
 ---
 
+### Step 32 — 9 fix dal test reale + indagine root-cause "PS0" (22 giugno 2026) ✅
+
+**INDAGINE PRIORITARIA — PS0:**
+
+Causa reale individuata (diversa dall'ipotesi iniziale di un bug nel
+recovery GPS): in `specials_editor_screen.dart` il campo `ordine` di
+`SpecialModel` è **0-based** (`copyWith(ordine: i)` sull'indice di lista),
+mentre `nome` è un campo testuale indipendente scelto dall'admin.
+`classifica_screen.dart` e `special_tile.dart` convertivano già
+correttamente a 1-based (`ordine + 1`) per la UI, ma **tre punti in
+`race_result_screen.dart`** (marker inizio/fine PS sulla mappa di
+riepilogo e badge numerico nella card speciale) usavano `ordine` grezzo:
+la prima speciale veniva quindi etichettata "PS0" — nessuna `SpecialEntry`
+fantasma, nessun bug nel recovery. Verificati tutti i punti di creazione
+di `SpecialEntry` (`_trySpecialStartRecovery`, `_tryRecoverSkippedSpecials`,
+`_handleWaypointDetection`): ognuno popola sempre `specialeId`/`specialeNome`
+da uno `SpecialModel` reale di `_specials`, nessun percorso genera un
+id/nome arbitrario.
+
+- **Fix display**: `ordine` → `ordine + 1` nei 3 punti di
+  `race_result_screen.dart`
+- **Hardening difensivo aggiunto comunque** (`gps_service.dart`): nuovo
+  `_addSpecialEntry()` centralizzato con assert + controllo
+  `_specials.any((s) => s.id == specialeId)` prima di ogni creazione;
+  in `_handleWaypointDetection`, se un waypoint inizio è mappato a uno
+  specialeId non (più) presente in `_specials` (es. speciale cancellata
+  lato admin dopo il caricamento), non crea nulla e logga solo un warning
+  di debug invece di usare `specialId` grezzo come fallback nome
+
+**FIX 1 — Bussola diretta per display heading (`imu_fusion_service.dart`,
+`gps_recording_screen.dart`):**
+- Nuovo `_displayHeadingDeg` con low-pass leggero (`kDisplayAlpha = 0.3`)
+  pilotato direttamente dalla bussola grezza in `_onCompass()`, indipendente
+  dal filtro complementare giroscopio+bussola — risponde in ~3 campioni
+  invece dei secondi di inerzia del filtro esistente
+- `gps_recording_screen.dart`: `_imuHeading` ora legge
+  `imu.displayHeadingDeg` (rotazione mappa/freccia); `fusedHeadingDeg`
+  (filtro complementare) resta usato solo internamente per il dead
+  reckoning della posizione
+
+**FIX 2 — Densità frecce proporzionale allo zoom (`track_layer.dart`):**
+- `TrackDirectionArrowsLayer` legge `MapCamera.of(context).zoom` (la
+  zoom-dipendenza funziona perché il layer è un discendente di
+  `FlutterMap`, si ricostruisce automaticamente ad ogni cambio camera) e
+  calcola lo spacing dinamicamente: 40m (≥17), 80m (≥15), 200m (≥13),
+  500m (≥11), 1500m altrimenti
+
+**FIX 3 — Simboli mappa sempre dritti (`gps_recording_screen.dart`,
+`waypoint_marker.dart`, `speed_zone_layer.dart`, `track_map_screen.dart`,
+`race_result_screen.dart`):**
+- **Scoperta importante**: la semantica di `Marker.rotate` in flutter_map
+  è l'opposto di quanto annotato allo Step 31 — `rotate: true` = il
+  marker resta sempre dritto a schermo (counter-rotate rispetto alla
+  mappa), `rotate: false`/default = il marker ruota CON la mappa. Lo
+  Step 31 aveva impostato `rotate: false` "esplicito" pensando fosse
+  l'opzione corretta per restare dritti: era invece un no-op che lasciava
+  il bug presente
+- Corretto a `rotate: true` su tutti i marker non-direzionali raggiungibili
+  da pinch-rotate (pericolo, zona velocità, ristoro, waypoint, PS
+  inizio/fine, CP) in `gps_recording_screen.dart`, `waypoint_marker.dart`
+  (`WaypointMarkersLayer`), `speed_zone_layer.dart`, `track_map_screen.dart`,
+  `race_result_screen.dart`; la freccia pilota resta `rotate: _headingMode`
+  (comportamento Step 22/23 invariato, è l'unico marker con orientamento
+  legato all'heading)
+
+**FIX 4 — Banner "PS completata" post-speciale (`gps_recording_screen.dart`):**
+- Nuovo banner verde dedicato "PS completata: mm:ss.d" mostrato quando
+  l'ultima speciale chiusa (`gps.specialEntries`, `exitTime != null`) è
+  recente (≤30s) e nessuna nuova speciale è ancora iniziata; ha priorità
+  sulla riga generica di passaggio waypoint esistente (che restava
+  comunque corretta per i CP/ristoro, solo meno esplicita per il caso PS)
+
+**FIX 5 — Zona velocità: raggio uscita ampliato (`app_constants.dart`,
+`waypoint_detector.dart`, `gps_service.dart`):**
+- Nuova costante `speedZoneRadiusMeters = 35.0` (vs 20m dei checkpoint
+  normali): `WaypointDetector.detectPassage()` accetta un `radiusOverrides`
+  opzionale per id waypoint, popolato da `GpsService` per inizio/fine zona
+  — un mancato rilevamento dell'uscita blocca il banner live per il resto
+  della sessione, un rischio peggiore di una precisione minore sul punto
+  esatto (qui senza impatto su timing PS)
+- Verificato il banner `_SpeedZoneBanner`: nessun testo "Zona velocità"
+  duplicato trovato nell'implementazione attuale (una sola occorrenza
+  "Zona {nome} — limite Xkm/h") — nessuna modifica necessaria
+
+**FIX 6 — Segnalazione CP mancati pilota↔admin (nuovo
+`cp_dispute_model.dart`, `firestore_service.dart`, `race_result_screen.dart`,
+`timing_screen.dart`, `firestore.rules`, `functions/index.js`):**
+- `CpDisputeModel`/`DisputedCp`: collezione `cp_disputes/{eventId}/disputes/{pilotId}_{timestamp}`
+- Pilota (`race_result_screen.dart`): banner se ci sono CP mancati nelle
+  proprie speciali completate, dialog con lista CP + nota opzionale,
+  `createCpDispute()`; stato (pending/accepted/rejected) mostrato in
+  tempo reale via `cpDisputesStreamProvider`
+- Admin (`timing_screen.dart`): badge "N segnalazioni CP da verificare" +
+  dialog Accetta/Rifiuta; `resolveCpDispute()` — se accolta, registra un
+  passaggio sintetico per il CP (stesso schema start/end di
+  `ClassificaEngine._computeSpeciali`, timestamp a metà PS) così la
+  penalità sparisce dal calcolo senza logica speciale nel motore di
+  classifica
+- `firestore.rules`: nuova regola `cp_disputes/{eventId}/disputes/{disputeId}`
+  (create autenticato, update solo admin)
+- `functions/index.js`: nuovo trigger `onCpDisputeResolved` (FCM al
+  pilota) — **codice pronto ma non deployato in questa sessione** (solo
+  hosting deploy richiesto); serve `firebase deploy --only functions:onCpDisputeResolved,firestore:rules`
+  separatamente (su WSL2 da path Linux nativo, vedi nota Step 17b)
+
+**FIX 7 — Penalità con motivo esplicito (`classifica_screen.dart`,
+`race_result_screen.dart`):**
+- Sostituito il generico "+Xm PEN" con righe separate per componente:
+  "⚠ +Xm: N CP mancati", "🐌 +Xm: limite zona superato", "⚡ stima
+  recovery" (per `hasTimingWarning`); a livello squadra anche "👥 +Xm:
+  ritiro compagno" e "👤 +Xm: pilota mancante"
+
+**FIX 8 — Icone PS più grandi + anti-sovrapposizione (`gps_recording_screen.dart`):**
+- `_psMarker`: da badge testo 9px sopra icona 18px (stack verticale,
+  58×52) a pillola orizzontale icona+testo 13px (60×30) — più leggibile
+  in navigazione
+- Nuovo `_buildPsMarkers()`: calcola un offset verticale alternato (±16px)
+  quando due punti PS sono geograficamente abbastanza vicini da
+  sovrapporsi a schermo all'attuale zoom (soglia in metri derivata da
+  metri/pixel Web Mercator standard, niente dipendenza da `MapCamera`
+  qui perché il calcolo avviene a livello schermo, non dentro un
+  discendente di `FlutterMap`)
+
+**Deploy:**
+- `flutter analyze`: zero issues (3 errori null-safety intermedi corretti
+  in `race_result_screen.dart`)
+- `git commit 64ade6f`: "fix: bussola diretta rotazione mappa + frecce
+  zoom proporzionale + marker sempre dritti + tempo post-speciale + zona
+  velocità raggio uscita + CP dispute pilota-admin + penalità motivo
+  esplicito + icone PS più grandi + fix display PS0"
+- `flutter build web --release` + `firebase deploy --only hosting` ✅ su
+  https://ccr-enduro.web.app
+- `git push origin main` ✅
+- ⚠️ **Da fare separatamente**: `firebase deploy --only firestore:rules`
+  (nuova regola `cp_disputes`) e `firebase deploy --only functions:onCpDisputeResolved`
+  (FCM segnalazioni CP) — non eseguiti in questa sessione, solo hosting
+  come richiesto
+
+---
+
 ## Prossimi Step
+
+**Deploy in sospeso dallo Step 32:**
+- `firebase deploy --only firestore:rules` per attivare la nuova regola `cp_disputes`
+- `firebase deploy --only functions:onCpDisputeResolved` per attivare la notifica FCM al pilota sull'esito della segnalazione CP (da path Linux nativo su WSL2, vedi nota Step 17b)
 
 **Produzione / sicurezza:**
 - Ripristinare regole Firestore/Storage granulari per produzione (da git history commit `25ad689`)
 
 **Test su device reale:**
-- Verificare in un nuovo test su strada se i fix dello Step 31 (alpha complementare velocità-dipendente, anchor GPS 3m, recovery PS 120m) hanno risolto il lag rotazione/posizione e il blocco FINE GARA da PS saltata; se la mappa ruota ancora nella direzione sbagliata, provare `kGyroZSign = -1.0` in `imu_fusion_service.dart`
+- Verificare in un nuovo test su strada se i fix dello Step 32 (bussola diretta display heading, marker `rotate:true`, raggio uscita zona velocità 35m, icone PS più grandi) risolvono i problemi osservati; verificare anche se i fix dello Step 31 (alpha complementare velocità-dipendente, anchor GPS 3m, recovery PS 120m) hanno risolto il lag rotazione/posizione e il blocco FINE GARA da PS saltata; se la mappa ruota ancora nella direzione sbagliata, provare `kGyroZSign = -1.0` in `imu_fusion_service.dart`
 - Test end-to-end classifica campionato con più eventi
 - Test flusso iscrizione 2-step su web e Android
 - Risolvere i 5 test pre-esistenti falliti in `routes_test.dart`/`pilot_flow_test.dart` (timer pendente su `GpsRecordingScreen` pre-start, indipendenti dalle modifiche dello Step 31)
