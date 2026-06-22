@@ -164,6 +164,43 @@ exports.onStartEnabled = onDocumentUpdated(
   }
 );
 
+// ── Trigger 4: segnalazione CP risolta dall'admin ────────────────────────────
+exports.onCpDisputeResolved = onDocumentUpdated(
+  {
+    document: 'cp_disputes/{eventId}/disputes/{disputeId}',
+    region: 'europe-west1',
+  },
+  async (event) => {
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+    if (!before || !after || before.status === after.status) return;
+    if (after.status !== 'accepted' && after.status !== 'rejected') return;
+
+    const pilotId = after.pilotId;
+    if (!pilotId) return;
+
+    const db = getFirestore();
+    const userDoc = await db.collection('users').doc(pilotId).get();
+    const fcmToken = userDoc.data()?.fcmToken;
+    if (!fcmToken) return;
+
+    const accepted = after.status === 'accepted';
+
+    await getMessaging().send({
+      token: fcmToken,
+      notification: {
+        title: accepted ? '✅ Segnalazione CP accolta' : '❌ Segnalazione CP rifiutata',
+        body: accepted
+          ? 'La tua segnalazione sui checkpoint mancati è stata accolta: la penalità è stata rimossa.'
+          : 'La tua segnalazione sui checkpoint mancati è stata rifiutata.',
+      },
+      data: { type: accepted ? 'cpDisputeAccepted' : 'cpDisputeRejected', eventId: event.params.eventId },
+      android: { priority: 'high' },
+      apns: { payload: { aps: { sound: 'default' } } },
+    });
+  }
+);
+
 // ── Scheduled: archivia automaticamente gli eventi alla fine del giorno di gara ─
 exports.autoArchiveEvents = onSchedule(
   {

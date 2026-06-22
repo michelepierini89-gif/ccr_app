@@ -16,4 +16,6 @@ class FirebaseConstants {
   static const String championships = 'championships';
   static const String penaltySettings = 'penalty_settings';
   static const String speedZoneViolations = 'speedZoneViolations';
+  static const String cpDisputes = 'cp_disputes';
+  static const String disputes = 'disputes';
 }

@@ -93,10 +93,20 @@ class TrackLayer extends StatelessWidget {
 /// tooltip — solo indicazione visiva.
 class TrackDirectionArrowsLayer extends StatelessWidget {
   final List<LatLng> trackPoints;
-  static const double kArrowSpacingMeters = 60.0;
   static const double kArrowSize = 10.0;
 
   const TrackDirectionArrowsLayer({super.key, required this.trackPoints});
+
+  /// Spacing tra frecce in base allo zoom: a zoom ridotto la stessa traccia
+  /// occupa molti meno pixel a schermo, uno spacing fisso in metri produceva
+  /// decine di frecce ammassate. Più si è lontani, più lo spacing cresce.
+  static double _arrowSpacingMeters(double zoomLevel) {
+    if (zoomLevel >= 17) return 40.0; // molto vicino
+    if (zoomLevel >= 15) return 80.0; // vicino
+    if (zoomLevel >= 13) return 200.0; // medio
+    if (zoomLevel >= 11) return 500.0; // lontano
+    return 1500.0; // molto lontano
+  }
 
   static double _bearingDeg(LatLng a, LatLng b) {
     final lat1 = a.latitude * pi / 180;
@@ -108,7 +118,7 @@ class TrackDirectionArrowsLayer extends StatelessWidget {
     return (brng + 360) % 360;
   }
 
-  List<Marker> _buildMarkers() {
+  List<Marker> _buildMarkers(double spacingMeters) {
     if (trackPoints.length < 2) return const [];
     final markers = <Marker>[];
     var accumulated = 0.0;
@@ -119,7 +129,7 @@ class TrackDirectionArrowsLayer extends StatelessWidget {
         trackPoints[i].latitude,
         trackPoints[i].longitude,
       );
-      if (accumulated >= kArrowSpacingMeters) {
+      if (accumulated >= spacingMeters) {
         final bearing = _bearingDeg(trackPoints[i - 1], trackPoints[i]);
         markers.add(Marker(
           point: trackPoints[i],
@@ -140,7 +150,8 @@ class TrackDirectionArrowsLayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MarkerLayer(markers: _buildMarkers());
+    final zoom = MapCamera.of(context).zoom;
+    return MarkerLayer(markers: _buildMarkers(_arrowSpacingMeters(zoom)));
   }
 }
 

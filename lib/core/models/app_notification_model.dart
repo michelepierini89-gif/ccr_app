@@ -6,6 +6,8 @@ enum NotificationType {
   newRegistration,
   pilotWithdrawal,
   specialEntry,
+  cpDisputeAccepted,
+  cpDisputeRejected,
 }
 
 class AppNotificationModel {

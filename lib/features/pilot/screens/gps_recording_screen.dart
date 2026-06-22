@@ -250,7 +250,11 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     if (imu.fusedPosition == null || !mounted) return;
     setState(() {
       _imuPosition = imu.fusedPosition;
-      _imuHeading = imu.fusedHeadingDeg;
+      // displayHeadingDeg: bussola grezza + low-pass leggero, per la
+      // rotazione mappa/freccia — fusedHeadingDeg (filtro complementare)
+      // resta usato solo internamente da ImuFusionService per il dead
+      // reckoning della posizione.
+      _imuHeading = imu.displayHeadingDeg;
     });
   }
 
@@ -301,35 +305,88 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     } catch (_) {}
   }
 
-  Marker _psMarker(LatLng point, String label, Color color, bool isStart) =>
+  Marker _psMarker(LatLng point, String label, Color color, bool isStart,
+          {double offsetY = 0}) =>
       Marker(
         point: point,
-        width: 58,
-        height: 52,
-        rotate: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-              decoration: BoxDecoration(
-                color: color,
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Text(
-                '$label ${isStart ? '▶' : '■'}',
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 9,
-                    fontWeight: FontWeight.bold),
-              ),
+        width: 60,
+        height: 30,
+        rotate: true,
+        child: Transform.translate(
+          offset: Offset(0, offsetY),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(8),
             ),
-            Icon(isStart ? Icons.play_arrow : Icons.stop,
-                color: color, size: 18),
-          ],
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(isStart ? Icons.play_arrow : Icons.stop,
+                    color: Colors.white, size: 18),
+                const SizedBox(width: 3),
+                Text(
+                  label,
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+          ),
         ),
       );
+
+  /// Marker inizio/fine di tutte le speciali, con offset verticale alternato
+  /// quando due punti sono geograficamente vicini abbastanza da
+  /// sovrapporsi a schermo (entro ~50px all'attuale livello di zoom) — le
+  /// dimensioni maggiori (Fix 8) altrimenti farebbero sovrapporre due
+  /// marker di speciali consecutive ravvicinate.
+  List<Marker> _buildPsMarkers(EventModel event) {
+    final metersPerPixel =
+        156543.03392 * cos(curLatForScale * pi / 180) / pow(2, _mapZoom);
+    final thresholdMeters = metersPerPixel * 50;
+    final points = <LatLng>[];
+    final markers = <Marker>[];
+    for (final s in event.speciali) {
+      if (s.annullata) continue;
+      for (final entry in [
+        (s.waypointInizio.latLng, true),
+        (s.waypointFine.latLng, false),
+      ]) {
+        final (point, isStart) = entry;
+        var offsetY = 0.0;
+        for (final prev in points) {
+          if (_haversineMeters(point, prev) < thresholdMeters) {
+            offsetY = points.length.isEven ? -16.0 : 16.0;
+            break;
+          }
+        }
+        points.add(point);
+        markers.add(_psMarker(
+            point, 'PS${s.ordine + 1}', s.color, isStart,
+            offsetY: offsetY));
+      }
+    }
+    return markers;
+  }
+
+  double get curLatForScale =>
+      ref.read(gpsServiceProvider).lastPosition?.latitude ?? 44.0;
+
+  double _haversineMeters(LatLng a, LatLng b) {
+    const r = 6371000.0;
+    final dLat = (b.latitude - a.latitude) * pi / 180;
+    final dLon = (b.longitude - a.longitude) * pi / 180;
+    final x = sin(dLat / 2) * sin(dLat / 2) +
+        cos(a.latitude * pi / 180) *
+            cos(b.latitude * pi / 180) *
+            sin(dLon / 2) *
+            sin(dLon / 2);
+    return 2 * r * asin(sqrt(x));
+  }
 
   void _recenter() {
     final pos = ref.read(gpsServiceProvider).lastPosition;
@@ -899,6 +956,22 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     final lastPassage = gps.passages.isNotEmpty ? gps.passages.last : null;
     final trackAppearance = ref.watch(trackAppearanceProvider);
 
+    // Ultima speciale chiusa: mostrata come banner "PS completata: <tempo>"
+    // al posto della riga generica di passaggio, finché non si entra nella
+    // speciale successiva (gps.currentSpecialNome torna non-null) o per
+    // max 30s — qualunque condizione si verifichi prima.
+    SpecialEntry? lastCompletedSpecial;
+    for (int i = gps.specialEntries.length - 1; i >= 0; i--) {
+      if (gps.specialEntries[i].exitTime != null) {
+        lastCompletedSpecial = gps.specialEntries[i];
+        break;
+      }
+    }
+    final showSpecialCompletedBanner = gps.currentSpecialNome == null &&
+        lastCompletedSpecial != null &&
+        DateTime.now().difference(lastCompletedSpecial.exitTime!) <=
+            const Duration(seconds: 30);
+
     return StreamBuilder<Position>(
       stream: _gpsStream,
       builder: (context, snap) {
@@ -1169,26 +1242,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                     ]),
                   // PS start/end markers from event specials
                   if (event != null && event.speciali.isNotEmpty)
-                    MarkerLayer(
-                      markers: [
-                        for (int i = 0; i < event.speciali.length; i++) ...[
-                          _psMarker(
-                            LatLng(event.speciali[i].waypointInizio.lat,
-                                event.speciali[i].waypointInizio.lng),
-                            'PS${i + 1}',
-                            event.speciali[i].color,
-                            true,
-                          ),
-                          _psMarker(
-                            LatLng(event.speciali[i].waypointFine.lat,
-                                event.speciali[i].waypointFine.lng),
-                            'PS${i + 1}',
-                            event.speciali[i].color,
-                            false,
-                          ),
-                        ],
-                      ],
-                    ),
+                    MarkerLayer(markers: _buildPsMarkers(event)),
                   // Fuel point marker
                   if (event?.fuelPoint != null)
                     MarkerLayer(markers: [
@@ -1197,7 +1251,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                             event.fuelPoint!.lng),
                         width: 40,
                         height: 48,
-                        rotate: false,
+                        rotate: true,
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
@@ -1237,7 +1291,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                           point: dp.latLng,
                           width: 36,
                           height: 36,
-                          rotate: false,
+                          rotate: true,
                           child: GestureDetector(
                             onTap: () {
                               ScaffoldMessenger.of(context).showSnackBar(
@@ -1276,7 +1330,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                         point: LatLng(wp.lat, wp.lng),
                         width: 32,
                         height: 38,
-                        rotate: false,
+                        rotate: true,
                         child: _WaypointPin(
                           color: isNear
                               ? AppColors.warning
@@ -1479,6 +1533,29 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
               ],
             ),
           )
+        else if (showSpecialCompletedBanner)
+          Container(
+            color: AppColors.success.withValues(alpha: 0.08),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Row(
+              children: [
+                const Icon(Icons.timer,
+                    color: AppColors.success, size: 16),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'PS completata: ${_formatElapsed(lastCompletedSpecial!.elapsed!)}',
+                    style: const TextStyle(
+                        color: AppColors.success,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          )
         else if (lastPassage != null)
           Container(
             color: AppColors.background,
@@ -1630,15 +1707,18 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
       for (int i = gps.specialEntries.length - 1; i >= 0; i--) {
         final e = gps.specialEntries[i];
         if (e.exitTime != null && e.elapsed != null) {
-          final d = e.elapsed!;
-          final m = d.inMinutes;
-          final s = d.inSeconds % 60;
-          final tenths = (d.inMilliseconds % 1000) ~/ 100;
-          return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}.$tenths';
+          return _formatElapsed(e.elapsed!);
         }
       }
     }
     return LocationUtils.formatTimestamp(passage.timestamp);
+  }
+
+  static String _formatElapsed(Duration d) {
+    final m = d.inMinutes;
+    final s = d.inSeconds % 60;
+    final tenths = (d.inMilliseconds % 1000) ~/ 100;
+    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}.$tenths';
   }
 
   static const _trackColorOptions = [

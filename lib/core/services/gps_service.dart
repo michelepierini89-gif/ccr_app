@@ -124,6 +124,12 @@ class GpsService extends ChangeNotifier {
   final Map<String, String> _zoneStartToZone = {};
   final Map<String, String> _zoneEndToZone = {};
   final Map<String, DateTime> _zoneEntryTimestamps = {};
+  // Raggio di detection più ampio (AppConstants.speedZoneRadiusMeters) per
+  // inizio/fine zona velocità: una mancata conferma dell'uscita blocca il
+  // banner live per il resto della sessione, un rischio peggiore di una
+  // precisione minore sul punto esatto (qui non c'è alcun impatto sul
+  // timing PS, solo sul calcolo della velocità media nella zona).
+  final Map<String, double> _zoneRadiusOverrides = {};
   List<WaypointModel> _fuelPoints = [];
   final Set<String> _passedFuelPoints = {};
   List<DangerPointModel> _dangerPoints = [];
@@ -367,6 +373,32 @@ class GpsService extends ChangeNotifier {
   ///      the start is retroactively registered using that point's timestamp.
   ///
   /// Each special is attempted at most once ([_recoveryAttempted]) to prevent loops.
+  /// Crea una [SpecialEntry] solo se [specialeId] corrisponde a una speciale
+  /// realmente presente in [_specials] (la lista caricata dall'admin per
+  /// l'evento corrente). Nessun percorso di recovery può quindi inventare
+  /// una PS con id/nome arbitrario: se la speciale non esiste più (es.
+  /// cancellata lato admin dopo che i waypoint erano già stati caricati),
+  /// non viene creato nulla e viene solo loggato un warning di debug.
+  void _addSpecialEntry({
+    required String specialeId,
+    required DateTime entryTime,
+    bool recoveredStart = false,
+  }) {
+    final special = _specials.where((s) => s.id == specialeId).firstOrNull;
+    if (special == null) {
+      debugPrint(
+          'SPECIAL ENTRY SCARTATA: nessuna speciale con id $specialeId in _specials');
+      return;
+    }
+    assert(_specials.any((s) => s.id == specialeId));
+    _specialEntries.add(SpecialEntry(
+      specialeId: special.id,
+      specialeNome: special.nome,
+      entryTime: entryTime,
+      recoveredStart: recoveredStart,
+    ));
+  }
+
   Future<void> _trySpecialStartRecovery(
       LatLng currentPos, DateTime now) async {
     for (final special in _specials) {
@@ -442,12 +474,11 @@ class GpsService extends ChangeNotifier {
       // Open the special with the recovered entry time
       _currentSpecialId = special.id;
       _currentSpecialNome = special.nome;
-      _specialEntries.add(SpecialEntry(
+      _addSpecialEntry(
         specialeId: special.id,
-        specialeNome: special.nome,
         entryTime: recoveredTime,
         recoveredStart: true,
-      ));
+      );
 
       // Notify the UI
       _recoveryStreamCtrl.add('⚡ Inizio ${special.nome} recuperato');
@@ -534,12 +565,13 @@ class GpsService extends ChangeNotifier {
 
       _passedWaypoints.add(startWp.id);
       _passages.add(WaypointPassage(waypoint: startWp, timestamp: entryTime));
-      _specialEntries.add(SpecialEntry(
+      final entriesBefore = _specialEntries.length;
+      _addSpecialEntry(
         specialeId: prev.id,
-        specialeNome: prev.nome,
         entryTime: entryTime,
         recoveredStart: recoveredStart,
-      ));
+      );
+      if (_specialEntries.length == entriesBefore) continue;
       _recoveryAttempted.add(prev.id);
 
       // Recovery immediato anche della fine, nella finestra da entryTime a
@@ -646,19 +678,21 @@ class GpsService extends ChangeNotifier {
       }
       if (_currentSpecialId == null) {
         final special = _specials.where((s) => s.id == specialId).firstOrNull;
-        // Recupera eventuali speciali precedenti saltate per intero (mai
-        // avviate) PRIMA di aprire questa, così l'ordine resta corretto.
-        if (special != null) {
+        if (special == null) {
+          // wp.id è mappato a uno specialeId non (più) presente in _specials
+          // (es. speciale cancellata lato admin dopo il caricamento dei
+          // waypoint): nessuna SpecialEntry va creata con id/nome arbitrario.
+          debugPrint(
+              'WAYPOINT INIZIO IGNORATO: speciale $specialId non trovata in _specials');
+        } else {
+          // Recupera eventuali speciali precedenti saltate per intero (mai
+          // avviate) PRIMA di aprire questa, così l'ordine resta corretto.
           await _tryRecoverSkippedSpecials(special, passageTs);
           if (_disposed) return;
+          _currentSpecialId = specialId;
+          _currentSpecialNome = special.nome;
+          _addSpecialEntry(specialeId: specialId, entryTime: passageTs);
         }
-        _currentSpecialId = specialId;
-        _currentSpecialNome = special?.nome;
-        _specialEntries.add(SpecialEntry(
-          specialeId: specialId,
-          specialeNome: special?.nome ?? specialId,
-          entryTime: passageTs,
-        ));
       }
     } else if (_fineToSpecial.containsKey(wp.id) &&
         _currentSpecialId == _fineToSpecial[wp.id]) {
@@ -981,12 +1015,15 @@ class GpsService extends ChangeNotifier {
     _zoneStartToZone.clear();
     _zoneEndToZone.clear();
     _zoneEntryTimestamps.clear();
+    _zoneRadiusOverrides.clear();
     final zoneWaypoints = <WaypointModel>[];
     for (final z in speedZones) {
       final startId = '${z.id}_start';
       final endId = '${z.id}_end';
       _zoneStartToZone[startId] = z.id;
       _zoneEndToZone[endId] = z.id;
+      _zoneRadiusOverrides[startId] = AppConstants.speedZoneRadiusMeters;
+      _zoneRadiusOverrides[endId] = AppConstants.speedZoneRadiusMeters;
       zoneWaypoints.add(WaypointModel(
         id: startId,
         nome: 'Zona ${z.nome} - inizio',
@@ -1192,7 +1229,8 @@ class GpsService extends ChangeNotifier {
       _consecutiveDiscarded++;
       if (pos.accuracy <= kMaxAccuracyDetectionMeters) {
         final detection = _waypointDetector.detectPassage(
-            rawLatLng, now, _waypoints, _passedWaypoints);
+            rawLatLng, now, _waypoints, _passedWaypoints,
+            radiusOverrides: _zoneRadiusOverrides);
         if (detection != null) {
           await _handleWaypointDetection(detection);
         }
@@ -1331,7 +1369,8 @@ class GpsService extends ChangeNotifier {
       // point); il timestamp usato è quello della PRIMA rilevazione, non
       // della seconda.
       final detection = _waypointDetector.detectPassage(
-          filteredPos, now, _waypoints, _passedWaypoints);
+          filteredPos, now, _waypoints, _passedWaypoints,
+          radiusOverrides: _zoneRadiusOverrides);
       if (detection != null) {
         await _handleWaypointDetection(detection);
         if (_disposed) return;

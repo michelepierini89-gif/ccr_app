@@ -33,8 +33,9 @@ class WaypointDetector {
     LatLng position,
     DateTime ts,
     List<WaypointModel> waypoints,
-    Set<String> alreadyPassed,
-  ) {
+    Set<String> alreadyPassed, {
+    Map<String, double>? radiusOverrides,
+  }) {
     for (final wp in waypoints) {
       if (alreadyPassed.contains(wp.id)) continue;
       final dist = LocationUtils.haversineDistance(
@@ -45,9 +46,11 @@ class WaypointDetector {
       );
       // Checkpoints (intermedio) use a wider radius because they are
       // boolean-only and have no impact on special timing accuracy.
-      final radius = wp.type == WaypointType.intermedio
-          ? AppConstants.waypointCheckpointRadiusMeters
-          : AppConstants.waypointRadiusMeters;
+      // radiusOverrides (es. inizio/fine zona velocità) prevale su entrambi.
+      final radius = radiusOverrides?[wp.id] ??
+          (wp.type == WaypointType.intermedio
+              ? AppConstants.waypointCheckpointRadiusMeters
+              : AppConstants.waypointRadiusMeters);
       if (dist <= radius) {
         final previousCount = _consecutiveNearCount[wp.id] ?? 0;
         if (previousCount == 0) {

@@ -29,6 +29,25 @@ class ImuFusionService extends ChangeNotifier {
   double _lastCompassDeg = 0.0;
   bool _headingInitialized = false;
 
+  // ── Heading per il display (rotazione mappa/freccia) ──
+  // Indipendente dal filtro complementare giroscopio+bussola sopra: quello
+  // resta usato per dead reckoning/posizione, qui invece la bussola grezza
+  // pilota direttamente la rotazione mostrata a schermo, con solo un
+  // leggero low-pass per eliminare il rumore — risponde in ~3 campioni
+  // invece dei secondi di inerzia del filtro complementare.
+  double _displayHeadingDeg = 0.0;
+  static const double kDisplayAlpha = 0.3;
+
+  void _updateDisplayHeading(double compassDeg) {
+    if (!_headingInitialized) {
+      _displayHeadingDeg = compassDeg;
+      return;
+    }
+    final diff = _angularDiff(_displayHeadingDeg, compassDeg);
+    _displayHeadingDeg =
+        (_displayHeadingDeg + kDisplayAlpha * diff + 360) % 360;
+  }
+
   // Alpha per correzione deriva giroscopio con bussola, velocità-dipendente
   // (vedi _currentAlpha): da fermo la bussola deve governare quasi
   // completamente l'heading (il giroscopio non ha nulla da integrare e
@@ -124,6 +143,7 @@ class ImuFusionService extends ChangeNotifier {
   // ── Public getters ──
   LatLng? get fusedPosition => _fusedPosition;
   double get fusedHeadingDeg => _headingDeg;
+  double get displayHeadingDeg => _displayHeadingDeg;
   double get fusedSpeedKmh => _speedMs * 3.6;
   bool get isRunning => _isRunning;
 
@@ -174,6 +194,7 @@ class ImuFusionService extends ChangeNotifier {
 
   void _reset() {
     _headingDeg = 0.0;
+    _displayHeadingDeg = 0.0;
     _headingInitialized = false;
     _filtGyroZ = 0.0;
     _filtAccelX = 0.0;
@@ -250,6 +271,8 @@ class ImuFusionService extends ChangeNotifier {
   void _onCompass(CompassEvent event) {
     if (event.heading == null || event.heading!.isNaN) return;
     final compassDeg = (event.heading! + 360) % 360;
+
+    _updateDisplayHeading(compassDeg);
 
     if (!_headingInitialized) {
       // Prima lettura bussola: inizializza heading direttamente

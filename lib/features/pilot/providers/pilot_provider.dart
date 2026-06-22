@@ -1,4 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../core/models/cp_dispute_model.dart';
 import '../../../core/models/event_model.dart';
 import '../../../core/models/registration_model.dart';
 import '../../../core/providers/offline_provider.dart';
@@ -18,6 +19,11 @@ final openEventsProvider = StreamProvider<List<EventModel>>((ref) {
 
 final archivedEventsProvider = StreamProvider<List<EventModel>>((ref) {
   return ref.watch(firestoreServiceProvider).getArchivedEvents();
+});
+
+final cpDisputesStreamProvider =
+    StreamProvider.family<List<CpDisputeModel>, String>((ref, eventId) {
+  return ref.watch(firestoreServiceProvider).getCpDisputesStream(eventId);
 });
 
 final myRegistrationsProvider =

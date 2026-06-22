@@ -52,6 +52,8 @@ class _NotificationListenerWidgetState
       NotificationType.newRegistration => AppColors.warning,
       NotificationType.pilotWithdrawal => AppColors.error,
       NotificationType.specialEntry => AppColors.accent,
+      NotificationType.cpDisputeAccepted => AppColors.success,
+      NotificationType.cpDisputeRejected => AppColors.error,
     };
 
     ScaffoldMessenger.of(context).showSnackBar(

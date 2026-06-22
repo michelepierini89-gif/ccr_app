@@ -3,8 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import '../../../core/models/classifica_model.dart';
+import '../../../core/models/cp_dispute_model.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/csv_export.dart';
+import '../../admin/providers/admin_provider.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../classifica/providers/classifica_provider.dart';
 import '../../pilot/providers/pilot_provider.dart';
@@ -126,6 +128,7 @@ class _AdminTimingView extends ConsumerWidget {
 
     return Column(
       children: [
+        _CpDisputesBanner(eventId: eventId),
         Container(
           color: AppColors.cardBackground,
           padding:
@@ -162,6 +165,173 @@ class _AdminTimingView extends ConsumerWidget {
                   _TimingEntryCard(entry: entries[i]),
             ),
           ),
+        ),
+      ],
+    );
+  }
+}
+
+// ── CP disputes (admin) ─────────────────────────────────────────────────────────
+
+class _CpDisputesBanner extends ConsumerWidget {
+  final String eventId;
+  const _CpDisputesBanner({required this.eventId});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final disputesAsync = ref.watch(cpDisputesStreamProvider(eventId));
+    final pending = (disputesAsync.valueOrNull ?? [])
+        .where((d) => d.status == CpDisputeStatus.pending)
+        .toList();
+    if (pending.isEmpty) return const SizedBox.shrink();
+
+    return Container(
+      width: double.infinity,
+      color: AppColors.warning.withValues(alpha: 0.12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: Row(
+        children: [
+          const Icon(Icons.flag, color: AppColors.warning, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '${pending.length} segnalazioni CP da verificare',
+              style: const TextStyle(
+                  color: AppColors.warning,
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold),
+            ),
+          ),
+          TextButton(
+            onPressed: () => showDialog(
+              context: context,
+              builder: (_) =>
+                  _CpDisputesDialog(eventId: eventId, disputes: pending),
+            ),
+            child: const Text('Vedi',
+                style: TextStyle(color: AppColors.warning)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CpDisputesDialog extends ConsumerWidget {
+  final String eventId;
+  final List<CpDisputeModel> disputes;
+  const _CpDisputesDialog({required this.eventId, required this.disputes});
+
+  Future<void> _resolve(BuildContext context, WidgetRef ref,
+      CpDisputeModel dispute, bool accept) async {
+    final event = await ref.read(eventProvider(eventId).future);
+    if (event == null) return;
+    try {
+      await ref.read(firestoreServiceProvider).resolveCpDispute(
+            event: event,
+            disputeId: dispute.id,
+            accept: accept,
+            pilotId: dispute.pilotId,
+            missedCps: dispute.missedCps,
+          );
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(accept
+              ? 'Segnalazione accolta: penalità rimossa'
+              : 'Segnalazione rifiutata'),
+          backgroundColor:
+              accept ? AppColors.success : AppColors.textSecondary,
+        ));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Errore: $e'),
+          backgroundColor: AppColors.error,
+        ));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return AlertDialog(
+      backgroundColor: AppColors.cardBackground,
+      title: const Text('Segnalazioni CP da verificare',
+          style: TextStyle(color: AppColors.textPrimary)),
+      content: SizedBox(
+        width: 400,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: disputes
+                .map((d) => Container(
+                      margin: const EdgeInsets.only(bottom: 10),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: AppColors.background,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppColors.border),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '${d.pilotName} — ${d.teamName}',
+                            style: const TextStyle(
+                                color: AppColors.textPrimary,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13),
+                          ),
+                          const SizedBox(height: 4),
+                          ...d.missedCps.map((cp) => Text(
+                                '• ${cp.specialeNome} — P${cp.position} (${cp.cpNome})',
+                                style: const TextStyle(
+                                    color: AppColors.textSecondary,
+                                    fontSize: 12),
+                              )),
+                          if (d.pilotNote != null &&
+                              d.pilotNote!.isNotEmpty) ...[
+                            const SizedBox(height: 4),
+                            Text('Nota: ${d.pilotNote}',
+                                style: const TextStyle(
+                                    color: AppColors.textSecondary,
+                                    fontSize: 12,
+                                    fontStyle: FontStyle.italic)),
+                          ],
+                          const SizedBox(height: 8),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              TextButton(
+                                onPressed: () =>
+                                    _resolve(context, ref, d, false),
+                                child: const Text('Rifiuta',
+                                    style: TextStyle(
+                                        color: AppColors.textSecondary)),
+                              ),
+                              const SizedBox(width: 4),
+                              ElevatedButton(
+                                onPressed: () =>
+                                    _resolve(context, ref, d, true),
+                                style: ElevatedButton.styleFrom(
+                                    backgroundColor: AppColors.success),
+                                child: const Text('Accetta'),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ))
+                .toList(),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Chiudi',
+              style: TextStyle(color: AppColors.accent)),
         ),
       ],
     );

@@ -3,6 +3,7 @@ import 'package:latlong2/latlong.dart';
 import '../constants/firebase_constants.dart';
 import '../models/app_notification_model.dart';
 import '../models/championship_model.dart';
+import '../models/cp_dispute_model.dart';
 import '../models/event_model.dart';
 import '../models/penalty_settings_model.dart';
 import '../models/registration_model.dart';
@@ -543,6 +544,121 @@ class FirestoreService {
     return snap.docs
         .map((d) => SpeedZoneViolation.fromFirestore(d))
         .toList();
+  }
+
+  // ── Segnalazioni CP mancati (pilota → admin) ────────────────────────────
+
+  Future<void> createCpDispute({
+    required String eventId,
+    required String pilotId,
+    required String pilotName,
+    required String teamName,
+    required List<DisputedCp> missedCps,
+    String? pilotNote,
+  }) async {
+    final now = DateTime.now();
+    final disputeId = '${pilotId}_${now.millisecondsSinceEpoch}';
+    await _db
+        .collection(FirebaseConstants.cpDisputes)
+        .doc(eventId)
+        .collection(FirebaseConstants.disputes)
+        .doc(disputeId)
+        .set(CpDisputeModel(
+          id: disputeId,
+          eventId: eventId,
+          pilotId: pilotId,
+          pilotName: pilotName,
+          teamName: teamName,
+          missedCps: missedCps,
+          pilotNote: pilotNote,
+          timestamp: now,
+          status: CpDisputeStatus.pending,
+        ).toFirestore());
+    await _createNotification(eventId, {
+      'type': 'cp_dispute',
+      'pilotId': pilotId,
+      'pilotName': pilotName,
+    });
+  }
+
+  Stream<List<CpDisputeModel>> getCpDisputesStream(String eventId) => _db
+      .collection(FirebaseConstants.cpDisputes)
+      .doc(eventId)
+      .collection(FirebaseConstants.disputes)
+      .orderBy('timestamp', descending: true)
+      .snapshots()
+      .map((s) =>
+          s.docs.map((d) => CpDisputeModel.fromFirestore(d)).toList());
+
+  /// Risolve una segnalazione CP. Se accolta, registra un passaggio
+  /// sintetico per ogni CP contestato con timestamp a metà tra inizio e
+  /// fine della PS (stessa risoluzione start/end usata da
+  /// ClassificaEngine._computeSpeciali): da quel momento il CP risulta
+  /// passato e la penalità sparisce dal calcolo senza alcuna logica
+  /// speciale nel motore di classifica.
+  Future<void> resolveCpDispute({
+    required EventModel event,
+    required String disputeId,
+    required bool accept,
+    required String pilotId,
+    required List<DisputedCp> missedCps,
+  }) async {
+    final eventId = event.id;
+    await _db
+        .collection(FirebaseConstants.cpDisputes)
+        .doc(eventId)
+        .collection(FirebaseConstants.disputes)
+        .doc(disputeId)
+        .update({'status':
+            (accept ? CpDisputeStatus.accepted : CpDisputeStatus.rejected)
+                .name});
+
+    if (accept) {
+      final myPassages = (await getPassagesOnce(eventId))
+          .where((p) => p.userId == pilotId)
+          .toList();
+      for (final cp in missedCps) {
+        final special =
+            event.speciali.where((s) => s.id == cp.specialeId).firstOrNull;
+        if (special == null) continue;
+        final iniP = myPassages
+            .where((p) => p.waypointId == special.waypointInizio.id)
+            .toList()
+          ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+        final finP = myPassages
+            .where((p) => p.waypointId == special.waypointFine.id)
+            .toList()
+          ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+        if (iniP.isEmpty || finP.isEmpty) continue;
+        final start = iniP.first;
+        final end = finP.firstWhere(
+            (p) => p.timestamp.isAfter(start.timestamp),
+            orElse: () => finP.first);
+        if (!end.timestamp.isAfter(start.timestamp)) continue;
+        final midTs = start.timestamp
+            .add((end.timestamp.difference(start.timestamp)) ~/ 2);
+        await recordWaypointPassage(
+          eventId: eventId,
+          userId: pilotId,
+          waypointId: cp.cpId,
+          waypointNome: cp.cpNome,
+          timestamp: midTs,
+        );
+      }
+    }
+
+    await _sendUserNotification(
+      recipientId: pilotId,
+      type: accept
+          ? NotificationType.cpDisputeAccepted
+          : NotificationType.cpDisputeRejected,
+      title: accept
+          ? '✅ Segnalazione CP accolta'
+          : '❌ Segnalazione CP rifiutata',
+      body: accept
+          ? 'La tua segnalazione sui checkpoint mancati è stata accolta: la penalità è stata rimossa.'
+          : 'La tua segnalazione sui checkpoint mancati è stata rifiutata.',
+    );
   }
 
   // Penalty settings (documento unico 'default' nella collezione penalty_settings)

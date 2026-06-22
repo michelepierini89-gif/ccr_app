@@ -7,7 +7,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart';
 import '../../../core/models/classifica_model.dart';
+import '../../../core/models/cp_dispute_model.dart';
 import '../../../core/models/event_model.dart';
+import '../../../core/models/penalty_settings_model.dart';
+import '../../../core/models/registration_model.dart';
 import '../../../core/models/special_model.dart';
 import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
@@ -138,6 +141,8 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
               myEntry,
               statusData,
               pilotPoints,
+              userId,
+              regAsync.valueOrNull,
             ),
           ),
         ],
@@ -209,9 +214,9 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
         ..sort((a, b) => a.ordine.compareTo(b.ordine));
       for (final s in speciali) {
         if (s.annullata) continue;
-        markers.add(_psMarker(s.waypointInizio.latLng, 'PS${s.ordine}▶',
+        markers.add(_psMarker(s.waypointInizio.latLng, 'PS${s.ordine + 1}▶',
             const Color(0xFF00C853), true));
-        markers.add(_psMarker(s.waypointFine.latLng, '⏹ PS${s.ordine}',
+        markers.add(_psMarker(s.waypointFine.latLng, '⏹ PS${s.ordine + 1}',
             AppColors.error, false));
         for (final cp in s.controlPoints) {
           markers.add(_cpMarker(cp.latLng, waypointPassati.contains(cp.id)));
@@ -261,6 +266,7 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
         point: point,
         width: 66,
         height: 52,
+        rotate: true,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -292,6 +298,7 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
         point: point,
         width: 20,
         height: 20,
+        rotate: true,
         child: Container(
           decoration: BoxDecoration(
             color: passed ? const Color(0xFF00C853) : AppColors.error,
@@ -308,12 +315,217 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
 
   // ── Summary ──────────────────────────────────────────────────────────────────
 
+  /// CP segnati come mancati su tutte le speciali completate da [myEntry],
+  /// risolti a [DisputedCp] (con id/nome del CP reale) per poter creare la
+  /// segnalazione senza dover ri-risolvere posizione → waypoint più avanti.
+  List<DisputedCp> _computeMissedCps(
+      List<SpecialModel> speciali, ClassificaEntry? myEntry) {
+    final result = <DisputedCp>[];
+    for (final s in speciali) {
+      final tempo = _findTempo(myEntry, s.id);
+      if (tempo == null || tempo.controlPointsOk) continue;
+      for (final pos in tempo.missedCpPositions) {
+        if (pos < 1 || pos > s.controlPoints.length) continue;
+        final cp = s.controlPoints[pos - 1];
+        result.add(DisputedCp(
+          specialeId: s.id,
+          specialeNome: s.nome,
+          cpId: cp.id,
+          cpNome: cp.nome,
+          position: pos,
+        ));
+      }
+    }
+    return result;
+  }
+
+  Future<void> _showCpDisputeDialog(
+    BuildContext context,
+    EventModel event,
+    String userId,
+    String pilotName,
+    String teamName,
+    List<DisputedCp> missedCps,
+  ) async {
+    final noteCtrl = TextEditingController();
+    final sent = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: const Text('Segnalazione CP mancati',
+            style: TextStyle(color: AppColors.textPrimary)),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Verrà segnalato all\'organizzatore che i seguenti checkpoint '
+                'potrebbero essere stati rilevati erroneamente come mancati:',
+                style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              ...missedCps.map((cp) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Text(
+                      '• ${cp.specialeNome} — P${cp.position} (${cp.cpNome})',
+                      style: const TextStyle(
+                          color: AppColors.textPrimary, fontSize: 13),
+                    ),
+                  )),
+              const SizedBox(height: 12),
+              TextField(
+                controller: noteCtrl,
+                maxLines: 3,
+                style: const TextStyle(color: AppColors.textPrimary),
+                decoration: const InputDecoration(
+                  hintText: 'Note per l\'organizzatore (opzionale)',
+                  hintStyle: TextStyle(color: AppColors.textSecondary),
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annulla',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.accent),
+            child: const Text('Invia'),
+          ),
+        ],
+      ),
+    );
+    if (sent != true || !context.mounted) return;
+    try {
+      await ref.read(firestoreServiceProvider).createCpDispute(
+            eventId: event.id,
+            pilotId: userId,
+            pilotName: pilotName,
+            teamName: teamName,
+            missedCps: missedCps,
+            pilotNote: noteCtrl.text.trim().isEmpty
+                ? null
+                : noteCtrl.text.trim(),
+          );
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Segnalazione inviata all\'organizzatore'),
+          backgroundColor: AppColors.success,
+        ));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Errore invio segnalazione: $e'),
+          backgroundColor: AppColors.error,
+        ));
+      }
+    }
+  }
+
+  Widget _buildCpDisputeBanner(
+    BuildContext context,
+    EventModel? event,
+    String? userId,
+    RegistrationModel? myReg,
+    List<DisputedCp> missedCps,
+  ) {
+    if (missedCps.isEmpty || event == null || userId == null) {
+      return const SizedBox.shrink();
+    }
+    final disputesAsync = ref.watch(cpDisputesStreamProvider(event.id));
+    final myDisputes = (disputesAsync.valueOrNull ?? [])
+        .where((d) => d.pilotId == userId)
+        .toList();
+    final latest = myDisputes.isNotEmpty ? myDisputes.first : null;
+
+    final (String statusText, Color statusColor, bool canSend) =
+        switch (latest?.status) {
+      CpDisputeStatus.pending => (
+          'Segnalazione inviata — in attesa di verifica admin.',
+          AppColors.warning,
+          false
+        ),
+      CpDisputeStatus.accepted => (
+          'Segnalazione accolta: la penalità è stata rimossa.',
+          AppColors.success,
+          false
+        ),
+      CpDisputeStatus.rejected => (
+          'Segnalazione rifiutata dall\'organizzatore.',
+          AppColors.error,
+          false
+        ),
+      null => (
+          'Hai ${missedCps.length} checkpoint segnati come mancati. Se '
+              'ritieni siano stati rilevati erroneamente dal GPS, puoi '
+              'inviare una segnalazione all\'admin.',
+          AppColors.warning,
+          true
+        ),
+    };
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: statusColor.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: statusColor.withValues(alpha: 0.4)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: statusColor, size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(statusText,
+                    style: TextStyle(color: statusColor, fontSize: 12)),
+              ),
+            ],
+          ),
+          if (canSend) ...[
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                onPressed: () => _showCpDisputeDialog(
+                  context,
+                  event,
+                  userId,
+                  myReg?.nomeCompleto ?? '',
+                  myReg?.teamName ?? '',
+                  missedCps,
+                ),
+                style: OutlinedButton.styleFrom(
+                    foregroundColor: statusColor,
+                    side: BorderSide(color: statusColor)),
+                child: const Text('Invia segnalazione CP'),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _buildSummary(
     BuildContext context,
     EventModel? event,
     ClassificaEntry? myEntry,
     Map<String, dynamic>? statusData,
     List<LatLng> pilotPoints,
+    String? userId,
+    RegistrationModel? myReg,
   ) {
     final speciali = event != null
         ? ([...event.speciali]..sort((a, b) => a.ordine.compareTo(b.ordine)))
@@ -324,6 +536,7 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
     final distanceKm = _computeDistanceKm(pilotPoints);
     final retiredReason = statusData?['retiredReason'] as String?;
     final finishedAt = (statusData?['finishedAt'] as Timestamp?)?.toDate();
+    final missedCps = _computeMissedCps(speciali, myEntry);
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
@@ -334,6 +547,7 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
             _StatusHeader(entry: myEntry),
             const SizedBox(height: 16),
           ],
+          _buildCpDisputeBanner(context, event, userId, myReg, missedCps),
           if (speciali.isNotEmpty) ...[
             const Text(
               'Prove speciali',
@@ -500,7 +714,7 @@ class _SpecialRow extends StatelessWidget {
             ),
             alignment: Alignment.center,
             child: Text(
-              '${special.ordine}',
+              '${special.ordine + 1}',
               style: TextStyle(
                 color: special.color,
                 fontWeight: FontWeight.bold,
@@ -526,8 +740,31 @@ class _SpecialRow extends StatelessWidget {
                   Padding(
                     padding: const EdgeInsets.only(top: 2),
                     child: Text(
-                      '⚠ CP mancati: ${tempo!.missedCpPositions.length}',
+                      '⚠ +${PenaltySettingsModel.formatSeconds(tempo!.penaltySeconds - tempo!.speedZonePenaltySeconds)}: '
+                      '${tempo!.missedCpPositions.length} CP mancati',
                       style: const TextStyle(
+                        color: AppColors.warning,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ),
+                if (done && tempo!.speedZonePenaltySeconds > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      '🐌 +${PenaltySettingsModel.formatSeconds(tempo!.speedZonePenaltySeconds)}: limite zona superato',
+                      style: const TextStyle(
+                        color: AppColors.warning,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ),
+                if (done && tempo!.hasTimingWarning)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 2),
+                    child: Text(
+                      '⚡ stima recovery',
+                      style: TextStyle(
                         color: AppColors.warning,
                         fontSize: 11,
                       ),

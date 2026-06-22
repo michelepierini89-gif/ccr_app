@@ -4,6 +4,12 @@ class AppConstants {
   // Checkpoints (WaypointType.intermedio) use a wider radius: they are boolean
   // pass/fail only and do not affect special timing, so a larger radius is safe.
   static const double waypointCheckpointRadiusMeters = 20.0;
+  // Zone a velocità controllata: inizio/fine sono solo indicativi (nessun
+  // impatto su timing PS o validazione CP), ma un mancato rilevamento
+  // dell'uscita blocca il banner live per il resto della sessione — raggio
+  // più ampio dei checkpoint normali per privilegiare l'affidabilità
+  // dell'uscita rispetto alla precisione del punto esatto.
+  static const double speedZoneRadiusMeters = 35.0;
   // Radius within which a fuel point ("punto ristoro") is considered passed.
   static const double fuelPointRadiusMeters = 15.0;
   static const int gpsIntervalNearWaypointMs = 250;

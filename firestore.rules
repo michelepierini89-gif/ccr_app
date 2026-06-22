@@ -125,6 +125,16 @@ service cloud.firestore {
       allow read, write: if isAuthenticated();
     }
 
+    // Segnalazioni pilota di CP rilevati erroneamente come mancati: il
+    // pilota crea la propria segnalazione, solo l'admin la aggiorna
+    // (accetta/rifiuta) — lettura aperta a tutti gli autenticati (l'admin
+    // per gestirle, il pilota per vedere l'esito della propria).
+    match /cp_disputes/{eventId}/disputes/{disputeId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isAdmin();
+    }
+
     // Alias 'gps_tracks' (compatibilità futura, stesso significato di 'tracking')
     match /gps_tracks/{eventId} {
       allow read: if isAuthenticated();

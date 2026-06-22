@@ -53,7 +53,7 @@ class SpeedZoneLayer extends StatelessWidget {
                   : z.startLatLng,
               width: 40,
               height: 40,
-              rotate: false,
+              rotate: true,
               child: IgnorePointer(
                 child: SpeedZoneMarkerIcon(
                     speedLimit: z.maxSpeedKmh.round()),

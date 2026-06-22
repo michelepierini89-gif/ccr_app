@@ -368,7 +368,7 @@ class _EntryCardState extends State<_EntryCard> {
                       if (e.ritiroCompagno &&
                           e.ritiroCompagnoPenaltySeconds > 0)
                         Text(
-                          '+${PenaltySettingsModel.formatSeconds(e.ritiroCompagnoPenaltySeconds)} PEN',
+                          '👥 +${PenaltySettingsModel.formatSeconds(e.ritiroCompagnoPenaltySeconds)}: ritiro compagno',
                           style: const TextStyle(
                               color: AppColors.warning,
                               fontSize: 10,
@@ -377,7 +377,7 @@ class _EntryCardState extends State<_EntryCard> {
                       if (e.pilotiMancanti > 0 &&
                           e.pilotiMancantiPenaltySeconds > 0)
                         Text(
-                          '+${PenaltySettingsModel.formatSeconds(e.pilotiMancantiPenaltySeconds)} PEN',
+                          '👤 +${PenaltySettingsModel.formatSeconds(e.pilotiMancantiPenaltySeconds)}: pilota mancante',
                           style: const TextStyle(
                               color: AppColors.warning,
                               fontSize: 10,
@@ -652,19 +652,42 @@ class _SpecialRow extends StatelessWidget {
                     fontFamily: 'monospace',
                   ),
                 ),
-              if (special.penaltySeconds > 0)
-                Text(
-                  '+${PenaltySettingsModel.formatSeconds(special.penaltySeconds)} PEN',
-                  style: const TextStyle(
-                      color: AppColors.warning,
-                      fontSize: 9,
-                      fontWeight: FontWeight.bold),
-                ),
+              ..._buildPenaltyReasons(special),
             ],
           ),
         ],
       ),
     );
+  }
+
+  /// Motivo esplicito di ogni penalità invece del generico "+Xm PEN":
+  /// CP mancati e zona velocità sono componenti indipendenti di
+  /// [special.penaltySeconds] (vedi ClassificaEngine._computeSpeciali), un
+  /// tempo PS con recovery impreciso (hasTimingWarning) non ha una
+  /// penalità in secondi ma va segnalato comunque come stima.
+  List<Widget> _buildPenaltyReasons(SpecialTempo special) {
+    const style = TextStyle(
+        color: AppColors.warning, fontSize: 9, fontWeight: FontWeight.bold);
+    final widgets = <Widget>[];
+    final cpSeconds = special.penaltySeconds - special.speedZonePenaltySeconds;
+    if (special.missedCpPositions.isNotEmpty && cpSeconds > 0) {
+      widgets.add(Text(
+        '⚠ +${PenaltySettingsModel.formatSeconds(cpSeconds)}: '
+        '${special.missedCpPositions.length} CP mancati',
+        style: style,
+      ));
+    }
+    if (special.speedZonePenaltySeconds > 0) {
+      widgets.add(Text(
+        '🐌 +${PenaltySettingsModel.formatSeconds(special.speedZonePenaltySeconds)}: '
+        'limite zona superato',
+        style: style,
+      ));
+    }
+    if (special.hasTimingWarning) {
+      widgets.add(const Text('⚡ stima recovery', style: style));
+    }
+    return widgets;
   }
 }
 

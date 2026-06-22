@@ -48,6 +48,7 @@ class WaypointMarkersLayer extends StatelessWidget {
       point: dp.latLng,
       width: 36,
       height: 36,
+      rotate: true,
       child: GestureDetector(
         onTap: () {
           onDangerTap?.call(dp);
@@ -81,6 +82,7 @@ class WaypointMarkersLayer extends StatelessWidget {
           point: wp.latLng,
           width: 48,
           height: 48,
+          rotate: true,
           child: GestureDetector(
             onTap: () => onTap?.call(wp),
             child: Column(

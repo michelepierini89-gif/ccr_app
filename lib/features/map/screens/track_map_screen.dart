@@ -100,6 +100,7 @@ class _TrackMapScreenState extends State<TrackMapScreen> {
                     point: widget.fuelPoint!.latLng,
                     width: 44,
                     height: 52,
+                    rotate: true,
                     child: GestureDetector(
                       onTap: () => setState(
                           () => _selectedWaypoint = widget.fuelPoint),
