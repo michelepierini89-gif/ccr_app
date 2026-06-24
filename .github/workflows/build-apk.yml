@@ -30,16 +30,15 @@ jobs:
       - name: Build debug APK
         run: flutter build apk --debug
 
-      - name: Generate test keystore for release signing
+      - name: Decode release keystore
         run: |
-          keytool -genkey -v \
-            -keystore android/app/test-keystore.jks \
-            -alias testkey \
-            -keyalg RSA -keysize 2048 -validity 365 \
-            -dname "CN=CCR Test, OU=Test, O=CCR, L=IT, ST=IT, C=IT" \
-            -storepass testpass123 -keypass testpass123
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/ccr-release-key.jks
 
       - name: Build release APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: flutter build apk --release
 
       - name: Upload debug APK

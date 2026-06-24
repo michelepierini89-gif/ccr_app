@@ -47,6 +47,10 @@ app.*.map.json
 # Firebase config (add manually after cloning)
 ios/Runner/GoogleService-Info.plist
 
+# Keystore di firma release Android — mai committare, va in GitHub Secrets
+android/app/*.jks
+android/app/*.keystore
+
 # Desktop platforms (not supported)
 macos/
 windows/

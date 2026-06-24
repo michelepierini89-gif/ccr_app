@@ -227,6 +227,15 @@ class GpsService extends ChangeNotifier {
   /// "Ripristina GPS" diventa visibile in UI.
   static const int kGpsStaleSeconds = 30;
 
+  // Le scritture Firestore del live tracking sono throttlate
+  // indipendentemente dalla cadenza dei fix GPS (che resta piena per
+  // Kalman/waypoint detection/polyline locale): la mappa live admin non ha
+  // bisogno di più di un aggiornamento ogni 2s, mentre la cadenza GPS in
+  // modalità inSpecial/nearWaypoint arriva fino a 4Hz (250ms) — senza
+  // questo limite si arriverebbe a migliaia di scritture/ora per pilota.
+  static const int kFirestoreUpdateIntervalMs = 2000;
+  DateTime? _lastFirestoreUpdateTs;
+
   bool get isRecording => _isRecording;
   String? get activeEventId => _activeEventId;
 
@@ -1078,6 +1087,7 @@ class GpsService extends ChangeNotifier {
     _mode = GpsMode.transfer;
     _recordingStart = DateTime.now();
     _lastRawPositionTs = null;
+    _lastFirestoreUpdateTs = null;
     _isRestartingGps = false;
     // Notifica IMMEDIATA: la schermata di navigazione deve apparire subito,
     // indipendentemente da quanto impiega il GPS a fornire un fix. Tutto
@@ -1488,19 +1498,26 @@ class GpsService extends ChangeNotifier {
 
     // Push live tracking to Firestore — queue offline if unavailable.
     // Usa coordinate Kalman-filtrate e velocità geometrica (mai position.speed).
+    // Throttlato a kFirestoreUpdateIntervalMs: la cadenza dei fix GPS sopra
+    // (fino a 4Hz) resta piena per Kalman/detection/polyline, solo questa
+    // scrittura verso la mappa live admin è limitata.
     if (_activeEventId != null && _activeUserId != null) {
-      final point = GpsPointModel(
-        userId: _activeUserId!,
-        eventId: _activeEventId!,
-        lat: filteredPos.latitude,
-        lng: filteredPos.longitude,
-        accuracy: pos.accuracy,
-        speed: _geometricSpeedKmh / 3.6,
-        timestamp: now,
-        specialeId: _currentSpecialId,
-        waypointPassati: _passedWaypoints.toList(),
-      );
-      if (!_writesBlocked) {
+      final dueForFirestore = _lastFirestoreUpdateTs == null ||
+          now.difference(_lastFirestoreUpdateTs!).inMilliseconds >=
+              kFirestoreUpdateIntervalMs;
+      if (dueForFirestore && !_writesBlocked) {
+        _lastFirestoreUpdateTs = now;
+        final point = GpsPointModel(
+          userId: _activeUserId!,
+          eventId: _activeEventId!,
+          lat: filteredPos.latitude,
+          lng: filteredPos.longitude,
+          accuracy: pos.accuracy,
+          speed: _geometricSpeedKmh / 3.6,
+          timestamp: now,
+          specialeId: _currentSpecialId,
+          waypointPassati: _passedWaypoints.toList(),
+        );
         _firestoreService.updatePilotTracking(point).catchError((_) {
           _offlineQueue.queueTracking(point).ignore();
         });
@@ -1584,6 +1601,7 @@ class GpsService extends ChangeNotifier {
     _dangerBlinking = false;
     _isRestartingGps = false;
     _lastRawPositionTs = null;
+    _lastFirestoreUpdateTs = null;
     _imu.stop();
     WakelockPlus.disable().ignore();
     _safeNotify();

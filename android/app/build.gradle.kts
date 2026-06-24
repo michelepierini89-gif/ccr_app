@@ -25,10 +25,10 @@ android {
 
     signingConfigs {
         create("release") {
-            keyAlias = "testkey"
-            keyPassword = "testpass123"
-            storeFile = file("test-keystore.jks")
-            storePassword = "testpass123"
+            keyAlias = System.getenv("KEY_ALIAS") ?: "ccr-release"
+            keyPassword = System.getenv("KEY_PASSWORD") ?: ""
+            storeFile = file("ccr-release-key.jks")
+            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
         }
     }
 

@@ -1401,7 +1401,38 @@ id/nome arbitrario.
 
 ---
 
+### Step 33 — Keystore release reale, hardening predizione IMU, throttle Firestore live tracking (23 giugno 2026) ✅
+
+**1 — Keystore Android reale (sicurezza APK):**
+- Generato un keystore PKCS12 reale e permanente (`ccr-release`, validità 10000 giorni, password random 256-bit) **fuori dal repository** (`~/ccr_keystore/`, non in `/mnt/d/ccr_app`) — non è mai esistito un commit con questo file
+- `.github/workflows/build-apk.yml`: rimosso lo step che generava `test-keystore.jks` con credenziali in chiaro (`testpass123`); nuovo step "Decode release keystore" che decodifica `secrets.KEYSTORE_BASE64` in `android/app/ccr-release-key.jks`; lo step build release riceve `KEYSTORE_PASSWORD`/`KEY_ALIAS`/`KEY_PASSWORD` come env da `secrets.*`
+- `android/app/build.gradle.kts`: `signingConfigs.release` legge `System.getenv("KEY_ALIAS"|"KEY_PASSWORD"|"KEYSTORE_PASSWORD")`, nessuna password hardcoded (solo l'alias ha un default non sensibile); `storeFile` punta a `ccr-release-key.jks`
+- `.gitignore`: aggiunto `android/app/*.jks` e `*.keystore`
+- ⚠️ **Azione manuale richiesta**: aggiungere su GitHub (Settings → Secrets and variables → Actions) i 4 secret `KEYSTORE_BASE64`/`KEYSTORE_PASSWORD`/`KEY_ALIAS`/`KEY_PASSWORD` — valori in `~/ccr_keystore/credenziali_github_secrets.txt` (password) e `~/ccr_keystore/keystore_base64.txt` (base64, da copiare integralmente). **Nota PKCS12**: keytool ha imposto store password = key password (i due secret hanno lo stesso valore). Dopo aver aggiunto i secret, triggerare manualmente il workflow per verificare la build release firmata. Conservare `~/ccr_keystore/ccr-release-key.jks` in un posto sicuro (es. password manager/backup): se perso, non si potrà più aggiornare l'APK con la stessa identità di firma.
+
+**2 — Hardening predizione posizione GPS/IMU:**
+- Analisi del codice reale: un sistema di posizione predittiva GPS+IMU esiste già da 5 step dedicati (23/24/29/31/32) — `ImuFusionService._fusedPosition`, dead reckoning accelerometro+heading con GPS anchor, usato come `_imuPosition` in `gps_recording_screen.dart` per freccia/marker. Implementare una struttura "predictedPosition" parallela (come da bozza iniziale) avrebbe duplicato questa logica già esistente e tunata sul campo — scartato in favore di un hardening del meccanismo esistente
+- `ImuFusionService`: nuovo `_gpsAnchorTs` (timestamp dell'ultimo anchor GPS, aggiornato in `updateWithGps`); nuove costanti `kMinPredictionSpeedKmh = 5.0` (sotto questa velocità il dead reckoning non sposta più `_fusedPosition` — a velocità così basse lo spostamento stimato è jitter dell'accelerometro, non movimento reale) e `kMaxPredictionWindowMs = 800` (oltre questo tempo dall'ultimo fix GPS, il dead reckoning si ferma invece di continuare a estrapolare senza correzione)
+- `_onAccelerometer()`: il movimento di `_fusedPosition` avviene solo se entrambe le condizioni sono soddisfatte (`canPredict`); l'integrazione di velocità/heading prosegue comunque, solo lo spostamento di posizione è gated
+- `_reset()`: azzera anche `_gpsAnchorTs` tra una sessione e l'altra
+
+**3 — Audit memoria/performance IMU+GPS:**
+- **Lifecycle subscription (verificato, nessuna modifica necessaria)**: `ImuFusionService.dispose()→stop()` cancella le 3 subscription (gyro/accel/compass); `GpsService.stopRecording()`/`dispose()` cancellano `_positionSub` e chiudono tutti gli `StreamController`; `startRecording()`/`stopRecording()` chiamano `_imu.start()`/`_imu.stop()` simmetricamente in tutti i path di uscita (FINE GARA, RITIRO, timeout). Nessun listener orfano.
+- **Buffer circolari (analizzato, cap letterale scartato)**: `_recoveryTrack`/`_recoveryTimestamps` sono intenzionalmente full-session — `_tryRecoverSkippedSpecials` (Step 31) scandisce l'INTERA traccia per recuperare PS saltate anche a fine gara; un cap FIFO a dimensione fissa avrebbe rotto questa funzionalità già esistente. `_trackPoints` (polyline blu) alimenta distanza totale e viene salvato su Firestore/risultati gara — troncarlo avrebbe perso dati di gara reali. Stima memoria per una gara di 4.5h a 250ms: ~65k punti ≈ 5-10MB, trascurabile su device reali. Nessuna modifica.
+- **Throttle Firestore live tracking (implementato)**: `GpsService._onPosition()` chiamava `updatePilotTracking()` ad ogni fix accettato (fino a 4Hz in modalità inSpecial/nearWaypoint — non 60Hz, quella è solo la cadenza locale IMU che non scrive mai su Firestore). Nuovo `_lastFirestoreUpdateTs` + `kFirestoreUpdateIntervalMs = 2000`: la scrittura del documento di tracking live è throttlata a 1 ogni 2s, indipendentemente dalla cadenza GPS che resta piena per Kalman/waypoint detection/polyline locale (mai toccati dal throttle); i passaggi waypoint/timing PS (`_handleWaypointDetection`) restano immediati, non passano da questo throttle. Reset di `_lastFirestoreUpdateTs` in `startRecording()`/`stopRecording()`.
+
+**Deploy:**
+- `flutter analyze`: zero issues (187s)
+- `git commit`: "fix: keystore Android reale + hardening predizione IMU + throttle Firestore live tracking"
+- `flutter build web --release` + `firebase deploy --only hosting` ✅ su https://ccr-enduro.web.app
+- `git push origin main` ✅ → Actions builda debug APK regolarmente; la build release fallirà finché i 4 secret GitHub non vengono aggiunti manualmente (vedi punto 1)
+
+---
+
 ## Prossimi Step
+
+**Azione manuale richiesta dallo Step 33:**
+- Aggiungere i 4 secret GitHub (`KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`) — valori in `~/ccr_keystore/` — poi triggerare il workflow per verificare la build release firmata
 
 **Deploy in sospeso dallo Step 32:**
 - `firebase deploy --only firestore:rules` per attivare la nuova regola `cp_disputes`

@@ -122,6 +122,23 @@ class ImuFusionService extends ChangeNotifier {
   // Sopra questa soglia resettiamo l'integrazione (gap).
   static const double kMaxDtSeconds = 0.5;
 
+  // Timestamp dell'ultimo anchor GPS accettato (vedi updateWithGps).
+  // Usato per limitare quanto a lungo il dead reckoning può estrapolare
+  // senza una nuova correzione GPS.
+  DateTime? _gpsAnchorTs;
+
+  // Sotto questa velocità il dead reckoning non sposta più _fusedPosition:
+  // a velocità così basse il rumore dell'accelerometro produce uno
+  // spostamento stimato che è puro jitter, non un vero movimento — meglio
+  // restare ancorati all'ultimo fix GPS che disegnare una deriva fittizia.
+  static const double kMinPredictionSpeedKmh = 5.0;
+
+  // Finestra massima di estrapolazione dall'ultimo anchor GPS: oltre questo
+  // tempo senza un nuovo fix, il dead reckoning si ferma (niente nuovo
+  // spostamento) invece di continuare a derivare senza alcuna correzione —
+  // meglio una posizione leggermente vecchia che una stimata a vuoto.
+  static const int kMaxPredictionWindowMs = 800;
+
   // ── UI throttle ──
   // 16ms = 60Hz: il DOOGEE ha retto bene nel test reale a 50Hz, saliamo al
   // massimo che garantisce ancora un frame pieno a schermo (60fps) per la
@@ -201,6 +218,7 @@ class ImuFusionService extends ChangeNotifier {
     _filtAccelY = 0.0;
     _speedMs = 0.0;
     _fusedPosition = null;
+    _gpsAnchorTs = null;
     _lastGyroTs = null;
     _lastAccelTs = null;
     _lastUiNotifyTs = null;
@@ -231,6 +249,8 @@ class ImuFusionService extends ChangeNotifier {
     required DateTime timestamp,
     double? gpsBearingDeg,
   }) {
+    _gpsAnchorTs = timestamp;
+
     if (_fusedPosition == null) {
       // Prima posizione disponibile: inizializza direttamente
       _fusedPosition = position;
@@ -371,9 +391,18 @@ class ImuFusionService extends ChangeNotifier {
     // Velocità negativa limitata a -5 m/s (frenata brusca)
 
     // Dead reckoning: sposta _fusedPosition nella direzione
-    // _headingDeg della distanza _speedMs * dt
+    // _headingDeg della distanza _speedMs * dt — solo se sopra la soglia
+    // minima di velocità (altrimenti è jitter dell'accelerometro, non un
+    // vero movimento) e dentro la finestra massima dall'ultimo anchor GPS
+    // (oltre questo tempo l'estrapolazione senza correzione non è più
+    // affidabile: meglio restare fermi sull'ultima posizione ancorata).
+    final msSinceAnchor = _gpsAnchorTs != null
+        ? now.difference(_gpsAnchorTs!).inMilliseconds
+        : kMaxPredictionWindowMs + 1;
+    final canPredict = _speedMs.abs() * 3.6 >= kMinPredictionSpeedKmh &&
+        msSinceAnchor <= kMaxPredictionWindowMs;
     final distM = _speedMs.abs() * dt;
-    if (distM > 0.001) {
+    if (canPredict && distM > 0.001) {
       // > 1mm: sposta
       _fusedPosition = _movePosition(
         _fusedPosition!,
