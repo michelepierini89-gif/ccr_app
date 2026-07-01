@@ -32,20 +32,31 @@ class ImuFusionService extends ChangeNotifier {
   // ── Heading per il display (rotazione mappa/freccia) ──
   // Indipendente dal filtro complementare giroscopio+bussola sopra: quello
   // resta usato per dead reckoning/posizione, qui invece la bussola grezza
-  // pilota direttamente la rotazione mostrata a schermo, con solo un
-  // leggero low-pass per eliminare il rumore — risponde in ~3 campioni
-  // invece dei secondi di inerzia del filtro complementare.
+  // pilota direttamente la rotazione mostrata a schermo, con low-pass
+  // adattivo alla velocità e clamp anti-scossone.
   double _displayHeadingDeg = 0.0;
-  static const double kDisplayAlpha = 0.3;
+
+  // Alpha velocità-dipendente: da fermo filtra di più (scossoni moto ferma),
+  // in movimento diventa più reattivo per seguire le curve.
+  double _displayAlpha() {
+    if (_speedMs < 2.0) return 0.12;
+    if (_speedMs < 10.0) return 0.20;
+    return 0.28;
+  }
+
+  // Variazione massima del display heading per singolo campione bussola (°).
+  // Limita gli scossoni violenti che andrebbero oltre questa soglia.
+  static const double kMaxHeadingDeltaPerSample = 8.0;
 
   void _updateDisplayHeading(double compassDeg) {
     if (!_headingInitialized) {
       _displayHeadingDeg = compassDeg;
       return;
     }
-    final diff = _angularDiff(_displayHeadingDeg, compassDeg);
+    double diff = _angularDiff(_displayHeadingDeg, compassDeg);
+    diff = diff.clamp(-kMaxHeadingDeltaPerSample, kMaxHeadingDeltaPerSample);
     _displayHeadingDeg =
-        (_displayHeadingDeg + kDisplayAlpha * diff + 360) % 360;
+        (_displayHeadingDeg + _displayAlpha() * diff + 360) % 360;
   }
 
   // Alpha per correzione deriva giroscopio con bussola, velocità-dipendente
@@ -388,6 +399,13 @@ class ImuFusionService extends ChangeNotifier {
     // Integra accelerazione → velocità con decay
     _speedMs = (_speedMs + aForward * dt) * kSpeedDecayFactor;
     _speedMs = _speedMs.clamp(-5.0, kMaxSpeedMs);
+
+    // ZUPT (Zero Velocity Update): se la velocità stimata è quasi zero e
+    // l'accelerazione filtrata è trascurabile, azzera per bloccare la deriva
+    // dell'accelerometro (il GPS correggerà appena ci sarà movimento reale).
+    if (_speedMs.abs() < 0.3 && _filtAccelX.abs() < 0.1 && _filtAccelY.abs() < 0.1) {
+      _speedMs = 0.0;
+    }
     // Velocità negativa limitata a -5 m/s (frenata brusca)
 
     // Dead reckoning: sposta _fusedPosition nella direzione

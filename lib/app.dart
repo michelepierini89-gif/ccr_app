@@ -25,6 +25,7 @@ import 'features/pilot/screens/race_result_screen.dart';
 import 'features/pilot/screens/pilot_stats_screen.dart';
 import 'features/admin/screens/penalty_settings_screen.dart';
 import 'features/classifica/screens/classifica_screen.dart';
+import 'features/map/screens/offline_maps_screen.dart';
 
 final _routerProvider = Provider<GoRouter>((ref) {
   return GoRouter(
@@ -181,6 +182,10 @@ final _routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: 'stats',
             builder: (context, state) => const PilotStatsScreen(),
+          ),
+          GoRoute(
+            path: 'offline-maps',
+            builder: (context, state) => const OfflineMapsScreen(),
           ),
         ],
       ),

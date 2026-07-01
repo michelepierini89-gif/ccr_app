@@ -108,8 +108,8 @@ class ClassificaEngine {
       ));
     }
 
-    // Compute special times for each entry (CP penalties included in tempo)
-    final computed = rawEntries.map((e) {
+    // PASSO 1: calcola i tempi reali per tutte le entry.
+    var computed = rawEntries.map((e) {
       final speciali =
           _computeSpeciali(event, e.passages, e.speedZoneViolations, penalties);
       final cpTotale = speciali.fold(Duration.zero, (acc, s) => acc + s.tempo);
@@ -128,6 +128,41 @@ class ClassificaEngine {
         pilotiMancantiPenaltySeconds: pilotiMancantiPenaltySeconds,
       );
     }).toList();
+
+    // PASSO 2: penalità forfettaria PS saltate = peggiore tempo registrato
+    // tra tutti i piloti per quella PS + 30 minuti.
+    final hasSkipped = computed.any((c) => c.speciali.any((st) => st.skipped));
+    if (hasSkipped) {
+      final worstBySp = <String, Duration>{};
+      for (final c in computed) {
+        for (final st in c.speciali) {
+          if (st.skipped) continue;
+          if (st.timingError == 'rilevamento_non_valido') continue;
+          final prev = worstBySp[st.specialeId];
+          if (prev == null || st.tempo > prev) worstBySp[st.specialeId] = st.tempo;
+        }
+      }
+      computed = computed.map((c) {
+        if (!c.speciali.any((st) => st.skipped)) return c;
+        final updated = c.speciali.map((st) {
+          if (!st.skipped) return st;
+          final worst = worstBySp[st.specialeId] ?? const Duration(minutes: 90);
+          final forfeit = worst + const Duration(minutes: 30);
+          return st.copyWith(tempo: forfeit, penaltySeconds: forfeit.inSeconds);
+        }).toList();
+        final cpTotale2 = updated.fold(Duration.zero, (acc, s) => acc + s.tempo);
+        final tempoTotale2 = cpTotale2 +
+            Duration(seconds: c.ritiroPenaltySeconds) +
+            Duration(seconds: c.pilotiMancantiPenaltySeconds);
+        return (
+          entry: c.entry,
+          speciali: updated,
+          tempoTotale: tempoTotale2,
+          ritiroPenaltySeconds: c.ritiroPenaltySeconds,
+          pilotiMancantiPenaltySeconds: c.pilotiMancantiPenaltySeconds,
+        );
+      }).toList();
+    }
 
     final specialiValide =
         event.speciali.where((s) => !s.annullata).length;
@@ -163,6 +198,21 @@ class ClassificaEngine {
           (p) => p.timestamp.isAfter(start.timestamp),
           orElse: () => finP.first);
       if (!end.timestamp.isAfter(start.timestamp)) continue;
+
+      // PS saltata volontariamente dal pilota: tempo provvisorio zero,
+      // la penalità forfettaria viene applicata nel passo 2 di compute().
+      if (end.timingError == 'speciale_saltata') {
+        result.add(SpecialTempo(
+          specialeId: special.id,
+          specialeNome: special.nome,
+          ordine: special.ordine,
+          tempo: Duration.zero,
+          controlPointsOk: false,
+          skipped: true,
+          timingError: 'speciale_saltata',
+        ));
+        continue;
+      }
 
       final cleanTempo = end.timestamp.difference(start.timestamp);
 

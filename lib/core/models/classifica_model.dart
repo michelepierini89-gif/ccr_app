@@ -106,6 +106,7 @@ class SpecialTempo {
   final DateTime? rawEndTime;   // timestamp grezzo di fine (debug admin)
   final List<SpeedZoneViolationInfo> speedZoneViolations; // violazioni zona velocità, solo admin
   final int speedZonePenaltySeconds; // quota di penaltySeconds dovuta alle zone velocità
+  final bool skipped; // pilota ha saltato volontariamente questa PS
 
   const SpecialTempo({
     required this.specialeId,
@@ -118,9 +119,26 @@ class SpecialTempo {
     this.timingError,
     this.rawStartTime,
     this.rawEndTime,
+    this.skipped = false,
     this.speedZoneViolations = const [],
     this.speedZonePenaltySeconds = 0,
   });
+
+  SpecialTempo copyWith({Duration? tempo, int? penaltySeconds}) => SpecialTempo(
+        specialeId: specialeId,
+        specialeNome: specialeNome,
+        ordine: ordine,
+        tempo: tempo ?? this.tempo,
+        controlPointsOk: controlPointsOk,
+        missedCpPositions: missedCpPositions,
+        penaltySeconds: penaltySeconds ?? this.penaltySeconds,
+        timingError: timingError,
+        rawStartTime: rawStartTime,
+        rawEndTime: rawEndTime,
+        speedZoneViolations: speedZoneViolations,
+        speedZonePenaltySeconds: speedZonePenaltySeconds,
+        skipped: skipped,
+      );
 
   String get tempoFormatted {
     final m = tempo.inMinutes;

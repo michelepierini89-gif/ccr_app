@@ -336,7 +336,6 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
                                 .expand((s) =>
                                     [s.waypointInizio, s.waypointFine])
                                 .toList(),
-                            interactive: false,
                             fuelPoint: event.fuelPoint,
                             dangerPoints: event.dangerPoints,
                           ),
@@ -528,7 +527,21 @@ class _PilotRegistrationSectionState
           backgroundColor: AppColors.success,
         ));
       }
-    } catch (_) {
+    } catch (e) {
+      // Nome squadra duplicato: mostra errore, non mettere in coda offline.
+      if (e is Exception && e.toString().contains('team_name_exists')) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text(
+              'Esiste già una squadra con questo nome. '
+              'Scegli un nome diverso o unisciti alla squadra esistente.',
+            ),
+            backgroundColor: AppColors.error,
+            duration: Duration(seconds: 5),
+          ));
+        }
+        return;
+      }
       final queue = ref.read(offlineQueueProvider);
       if (existingTeam != null) {
         await queue.queueJoinTeam(

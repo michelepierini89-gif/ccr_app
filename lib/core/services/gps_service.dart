@@ -321,15 +321,16 @@ class GpsService extends ChangeNotifier {
   Stream<String> get dangerPassedStream => _dangerPassedStreamCtrl.stream;
 
   /// True se non arriva nessuna posizione GPS (valida o no) da almeno
-  /// [kGpsStaleSeconds] secondi durante una registrazione attiva. Usato
-  /// solo per mostrare/nascondere il pulsante manuale "Ripristina GPS":
-  /// nessuna azione automatica viene presa in base a questo valore.
+  /// [kGpsStaleSeconds] secondi durante una registrazione attiva E il
+  /// pilota era in movimento. Da fermo è normale ricevere pochi update
+  /// (distanceFilter li scarta), quindi non segnalare stale.
   bool get isGpsStale {
     if (!_isRecording) return false;
+    // Da fermo (<2 km/h) il distanceFilter scarta i fix: non è un problema.
+    if (_geometricSpeedKmh < 2.0) return false;
     final reference = _lastRawPositionTs ?? _recordingStart;
     if (reference == null) return false;
-    return DateTime.now().difference(reference).inSeconds >=
-        kGpsStaleSeconds;
+    return DateTime.now().difference(reference).inSeconds >= kGpsStaleSeconds;
   }
 
   /// True durante il riavvio manuale dello stream GPS (richiesto dal pilota).
@@ -975,6 +976,93 @@ class GpsService extends ChangeNotifier {
         }
       }
     }
+  }
+
+  /// Salta volontariamente la PS corrente (o la prima non ancora avviata).
+  /// Registra inizio e fine con [timingError: 'speciale_saltata'] su
+  /// Firestore: ClassificaEngine applicherà la penalità forfettaria.
+  Future<void> skipCurrentSpecial() async {
+    final now = DateTime.now();
+
+    SpecialModel? toSkip;
+    if (_currentSpecialId != null) {
+      toSkip = _specials.where((s) => s.id == _currentSpecialId).firstOrNull;
+    } else {
+      final ordered = _specials.where((s) => !s.annullata).toList()
+        ..sort((a, b) => a.ordine.compareTo(b.ordine));
+      for (final s in ordered) {
+        if (!_passedWaypoints.contains(s.waypointInizio.id)) {
+          toSkip = s;
+          break;
+        }
+      }
+    }
+    if (toSkip == null) return;
+
+    final startWp = toSkip.waypointInizio;
+    final endWp = toSkip.waypointFine;
+    final startTs = now.subtract(const Duration(seconds: 1));
+
+    // Marca tutti i waypoint della speciale come passati
+    _passedWaypoints.add(startWp.id);
+    _passedWaypoints.add(endWp.id);
+    for (final cp in toSkip.controlPoints) {
+      _passedWaypoints.add(cp.id);
+    }
+
+    // Apri e chiudi la SpecialEntry con flag skipped
+    final entryIdx = _specialEntries.lastIndexWhere(
+        (e) => e.specialeId == toSkip!.id && e.exitTime == null);
+    final DateTime entryTime;
+    if (entryIdx >= 0) {
+      entryTime = _specialEntries[entryIdx].entryTime;
+      _specialEntries[entryIdx] = _specialEntries[entryIdx].withExit(now);
+    } else {
+      entryTime = startTs;
+      _addSpecialEntry(specialeId: toSkip.id, entryTime: entryTime);
+      if (_specialEntries.isNotEmpty) {
+        _specialEntries[_specialEntries.length - 1] =
+            _specialEntries.last.withExit(now);
+      }
+    }
+
+    _currentSpecialId = null;
+    _currentSpecialNome = null;
+
+    _passages.add(WaypointPassage(waypoint: startWp, timestamp: entryTime));
+    _passages.add(WaypointPassage(waypoint: endWp, timestamp: now));
+
+    if (_activeEventId != null && _activeUserId != null) {
+      try {
+        await _firestoreService.recordWaypointPassage(
+          eventId: _activeEventId!,
+          userId: _activeUserId!,
+          waypointId: startWp.id,
+          waypointNome: startWp.nome,
+          timestamp: entryTime,
+          timingError: 'speciale_saltata',
+        );
+        await _firestoreService.recordWaypointPassage(
+          eventId: _activeEventId!,
+          userId: _activeUserId!,
+          waypointId: endWp.id,
+          waypointNome: endWp.nome,
+          timestamp: now,
+          timingError: 'speciale_saltata',
+        );
+      } catch (_) {
+        await _offlineQueue.queuePassage(
+          eventId: _activeEventId!,
+          userId: _activeUserId!,
+          waypointId: endWp.id,
+          waypointNome: endWp.nome,
+          timestamp: now,
+        );
+      }
+    }
+
+    _recoveryStreamCtrl.add('⏭ ${toSkip.nome} saltata — penalità applicata');
+    _safeNotify();
   }
 
   Future<bool> requestPermissions() async {

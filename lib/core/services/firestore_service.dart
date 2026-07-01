@@ -159,7 +159,21 @@ class FirestoreService {
   }
 
   // Teams
+  /// Crea una squadra solo se non esiste già una con lo stesso nome
+  /// (case-insensitive, trim) nello stesso evento.
+  /// Lancia [Exception('team_name_exists')] in caso di duplicato.
   Future<String> createTeam(TeamModel team) async {
+    final existing = await _db
+        .collection(FirebaseConstants.events)
+        .doc(team.eventId)
+        .collection(FirebaseConstants.teams)
+        .get();
+    final nameLower = team.nome.trim().toLowerCase();
+    final duplicate = existing.docs.any(
+      (d) => (d.data()['nome'] as String? ?? '').trim().toLowerCase() == nameLower,
+    );
+    if (duplicate) throw Exception('team_name_exists');
+
     final ref = await _db
         .collection(FirebaseConstants.events)
         .doc(team.eventId)

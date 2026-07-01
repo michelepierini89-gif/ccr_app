@@ -579,6 +579,23 @@ class _ProfilePage extends ConsumerWidget {
                   ),
                 ),
               ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: OutlinedButton.icon(
+                  onPressed: () => context.push('/pilot/offline-maps'),
+                  icon: const Icon(Icons.map_outlined,
+                      color: AppColors.textSecondary),
+                  label: const Text('Mappe offline',
+                      style: TextStyle(color: AppColors.textSecondary)),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: AppColors.border),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+              ),
               const SizedBox(height: 16),
               SizedBox(
                 width: double.infinity,

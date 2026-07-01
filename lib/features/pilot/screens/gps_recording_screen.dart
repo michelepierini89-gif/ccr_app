@@ -14,6 +14,7 @@ import '../../../core/models/event_model.dart';
 import '../../../core/models/registration_model.dart';
 import '../../../core/models/waypoint_model.dart';
 import '../../../core/providers/track_appearance_provider.dart';
+import '../../../core/services/battery_service.dart';
 import '../../../core/services/gps_service.dart';
 import '../../../core/services/track_appearance_service.dart';
 import '../../../core/services/gpx_parser.dart';
@@ -67,6 +68,8 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   List<LatLng> _eventTrackPoints = [];
   bool _eventTrackLoaded = false;
   bool _headingMode = false;
+
+  bool _batteryOptOk = true;
 
   StreamSubscription<String>? _recoverySub;
   String? _recoveryMessage;
@@ -132,7 +135,11 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         ),
       );
     });
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadEventTrack());
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      _loadEventTrack();
+      final ok = await BatteryOptimizationService.isIgnoring();
+      if (mounted) setState(() => _batteryOptOk = ok);
+    });
   }
 
   void _startElapsedTimer() {
@@ -209,6 +216,73 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         ],
       ),
     );
+  }
+
+  Future<void> _confirmSkipSpecial(GpsService gps) async {
+    final confirm1 = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: const Text(
+          '⏭ Salta speciale',
+          style: TextStyle(color: Colors.orange, fontSize: 17),
+        ),
+        content: const Text(
+          'Stai per saltare la prossima speciale non completata.\n\n'
+          'Verrà applicata una penalità pari al tempo peggiore '
+          'registrato dagli altri piloti su quella PS + 30 minuti.',
+          style: TextStyle(color: AppColors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('ANNULLA',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.orange.shade700),
+            child: const Text('CONTINUA',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+    if (confirm1 != true || !mounted) return;
+
+    final confirm2 = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: const Text(
+          'Conferma definitiva',
+          style: TextStyle(color: AppColors.error, fontSize: 17),
+        ),
+        content: const Text(
+          'Sei sicuro? La penalità non può essere rimossa '
+          'dopo la conferma.',
+          style: TextStyle(color: AppColors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('ANNULLA',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.error),
+            child: const Text('SALTA E PENALIZZA',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+    if (confirm2 != true || !mounted) return;
+
+    await gps.skipCurrentSpecial();
   }
 
   Future<void> _triggerTimeoutWithdrawal() async {
@@ -713,6 +787,14 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         // sempre attivo a prescindere dal segnale GPS, questo è solo un
         // avviso che il chip sta ancora acquisendo.
         if (pos == null) const _GpsAcquiringBanner(),
+        if (!_batteryOptOk)
+          _BatteryOptBanner(
+            onTap: () async {
+              await BatteryOptimizationService.requestIgnore();
+              final ok = await BatteryOptimizationService.isIgnoring();
+              if (mounted) setState(() => _batteryOptOk = ok);
+            },
+          ),
         Expanded(
           child: Center(
             child: Column(
@@ -975,13 +1057,17 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     return StreamBuilder<Position>(
       stream: _gpsStream,
       builder: (context, snap) {
-        // Live position from stream; fall back to last known from GpsService
+        // Live position from stream; fall back to last known from GpsService.
+        // If no fix yet, center on first GPX track point so the pilot can see
+        // the route immediately (grey-screen fix for offline use).
         final liveData = snap.data;
         final rawPos = liveData != null
             ? LatLng(liveData.latitude, liveData.longitude)
             : pos != null
                 ? LatLng(pos.latitude, pos.longitude)
-                : const LatLng(44.0, 11.0);
+                : _eventTrackPoints.isNotEmpty
+                    ? _eventTrackPoints.first
+                    : const LatLng(44.0, 11.0);
 
         // Start interpolation toward the Kalman-filtered GPS position.
         // Falls back to raw coords only if no valid fix has been accepted yet.
@@ -1611,88 +1697,122 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         Container(
           padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
           color: AppColors.cardBackground,
-          child: Row(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              // FINE GARA button — abilitato quando tutte le speciali sono
-              // completate, OPPURE tutte avviate e il pilota è tornato
-              // vicino al punto di partenza (FIX 6, vedi _canFinishNearStart)
-              Expanded(
-                flex: 3,
-                child: SizedBox(
-                  height: 56,
-                  child: Tooltip(
-                    message: _isTimeExpired
-                        ? 'Tempo scaduto — ritiro automatico in corso'
-                        : canFinish
-                            ? (allSpecialsDone
-                                ? ''
-                                : 'PS non chiuse correttamente: '
-                                    'verranno segnalate all\'admin')
-                            : 'Completa tutte le speciali prima di terminare',
-                    child: ElevatedButton.icon(
-                      onPressed: !_isTimeExpired && canFinish
-                          ? _toggleRecording
-                          : null,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.cardBackground,
-                        foregroundColor: canFinish
-                            ? AppColors.textPrimary
-                            : AppColors.textSecondary,
-                        side: BorderSide(
-                          color: canFinish
-                              ? AppColors.border
-                              : AppColors.border.withValues(alpha: 0.3),
+              Row(
+                children: [
+                  // FINE GARA button — abilitato quando tutte le speciali sono
+                  // completate, OPPURE tutte avviate e il pilota è tornato
+                  // vicino al punto di partenza (FIX 6, vedi _canFinishNearStart)
+                  Expanded(
+                    flex: 3,
+                    child: SizedBox(
+                      height: 56,
+                      child: Tooltip(
+                        message: _isTimeExpired
+                            ? 'Tempo scaduto — ritiro automatico in corso'
+                            : canFinish
+                                ? (allSpecialsDone
+                                    ? ''
+                                    : 'PS non chiuse correttamente: '
+                                        'verranno segnalate all\'admin')
+                                : 'Completa tutte le speciali prima di terminare',
+                        child: ElevatedButton.icon(
+                          onPressed: !_isTimeExpired && canFinish
+                              ? _toggleRecording
+                              : null,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.cardBackground,
+                            foregroundColor: canFinish
+                                ? AppColors.textPrimary
+                                : AppColors.textSecondary,
+                            side: BorderSide(
+                              color: canFinish
+                                  ? AppColors.border
+                                  : AppColors.border.withValues(alpha: 0.3),
+                            ),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12)),
+                          ),
+                          icon: const Icon(Icons.flag_circle_outlined, size: 20),
+                          label: const Text(
+                            'FINE GARA',
+                            style: TextStyle(
+                                fontWeight: FontWeight.bold, letterSpacing: 1),
+                            softWrap: false,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12)),
-                      ),
-                      icon: const Icon(Icons.flag_circle_outlined, size: 20),
-                      label: const Text(
-                        'FINE GARA',
-                        style: TextStyle(
-                            fontWeight: FontWeight.bold, letterSpacing: 1),
-                        softWrap: false,
-                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              // RITIRO button — flex:2 garantisce ≥126dp su 360dp (minWidth 110 soddisfatto)
-              Expanded(
-                flex: 2,
-                child: AnimatedBuilder(
-                  animation: _pulseAnimation,
-                  builder: (ctx, child) => Transform.scale(
-                    scale: _pulseAnimation.value,
-                    child: child,
-                  ),
-                  child: SizedBox(
-                    height: 56,
-                    child: ElevatedButton.icon(
-                      onPressed: _isTimeExpired ? null : _confirmWithdrawal,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.error,
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12)),
+                  const SizedBox(width: 12),
+                  // RITIRO button — flex:2 garantisce ≥126dp su 360dp (minWidth 110 soddisfatto)
+                  Expanded(
+                    flex: 2,
+                    child: AnimatedBuilder(
+                      animation: _pulseAnimation,
+                      builder: (ctx, child) => Transform.scale(
+                        scale: _pulseAnimation.value,
+                        child: child,
                       ),
-                      icon: const Icon(Icons.flag, size: 20),
-                      label: const Text(
-                        'RITIRO',
-                        style: TextStyle(
-                          fontSize: 13,
+                      child: SizedBox(
+                        height: 56,
+                        child: ElevatedButton.icon(
+                          onPressed: _isTimeExpired ? null : _confirmWithdrawal,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.error,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12)),
+                          ),
+                          icon: const Icon(Icons.flag, size: 20),
+                          label: const Text(
+                            'RITIRO',
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 1.0,
+                            ),
+                            softWrap: false,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              // SALTA PS — visibile solo se ci sono speciali non ancora saltate/completate
+              if (event != null &&
+                  event.speciali.any((s) => !s.annullata) &&
+                  !allSpecialsDone) ...[
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  height: 38,
+                  child: OutlinedButton.icon(
+                    onPressed: () => _confirmSkipSpecial(gps),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.orange.shade300,
+                      side: BorderSide(color: Colors.orange.shade700),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                    ),
+                    icon: const Icon(Icons.skip_next, size: 18),
+                    label: const Text(
+                      'SALTA SPECIALE',
+                      style: TextStyle(
+                          fontSize: 12,
                           fontWeight: FontWeight.bold,
-                          letterSpacing: 1.0,
-                        ),
-                        softWrap: false,
-                        overflow: TextOverflow.ellipsis,
-                      ),
+                          letterSpacing: 0.8),
+                      softWrap: false,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
                 ),
-              ),
+              ],
             ],
           ),
         ),
@@ -2138,6 +2258,40 @@ class _GpsAcquiringBanner extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _BatteryOptBanner extends StatelessWidget {
+  const _BatteryOptBanner({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        color: Colors.orange.shade800.withValues(alpha: 0.88),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        child: const Row(
+          children: [
+            Icon(Icons.battery_alert, color: Colors.white, size: 18),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '⚡ GPS può essere bloccato in background — tocca per disabilitare '
+                'l\'ottimizzazione batteria',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 12),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
