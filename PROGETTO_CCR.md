@@ -1429,6 +1429,55 @@ id/nome arbitrario.
 
 ---
 
+### Step 34 — 10 interventi post-test moto: GPS background, IMU anti-shake, nomi squadra unici, mappe offline, salta PS con penalità forfettaria, GPS stale fix, mappa interattiva, ZUPT (1 luglio 2026) ✅
+
+**1 — GPS in background (BLOCCANTE):**
+- `android/app/src/main/AndroidManifest.xml`: aggiunto `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`
+- `MainActivity.kt`: riscritta con MethodChannel `ccr/battery` — due metodi: `isIgnoringBatteryOptimizations` e `requestIgnoreBatteryOptimization` (intent `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`)
+- `lib/core/services/battery_service.dart` (nuovo): `BatteryOptimizationService` con guard `kIsWeb`/`TargetPlatform.android`
+- `gps_recording_screen.dart`: `_batteryOptOk` state + check in `initState`, `_BatteryOptBanner` (arancio, cliccabile) in `_buildPreStart`
+
+**2 — IMU anti-shake moto:**
+- `imu_fusion_service.dart`: `_displayAlpha()` adattivo per velocità (0.12 fermi → 0.20 lento → 0.28 veloce), `kMaxHeadingDeltaPerSample = 8.0°/sample`, `_updateDisplayHeading()` con diff clamp
+
+**3 — Nomi squadra unici:**
+- `firestore_service.dart` `createTeam()`: fetch tutti i team dell'evento, check case-insensitive, throw `'team_name_exists'` se duplicato
+- `event_detail_screen.dart` `_doRegister()`: catch dedicato con SnackBar esplicativa (5s, colore error)
+
+**4/5 — Offline tile (grey-screen + traccia sempre visibile):**
+- `gps_recording_screen.dart`: `rawPos` usa `_eventTrackPoints.first` come fallback quando nessun fix GPS — la mappa si centra sulla traccia al primo avvio anche offline; la `PolylineLayer` GPX era già separata dal `TileLayer`, traccia sempre visibile indipendentemente dalla connettività
+
+**6 — Download mappe offline per area evento:**
+- `lib/core/services/offline_tile_service.dart` (nuovo): singleton `OfflineTileService`, calcolo slippy-map tile box, download `https://tile.openstreetmap.org/`, progress callback
+- `lib/core/services/offline_tile_service_io.dart` (nuovo): implementazione `dart:io` (cache in `ApplicationDocuments/osm_tiles/`)
+- `lib/core/services/offline_tile_service_web.dart` (nuovo): stub no-op per web
+- `lib/features/map/screens/offline_maps_screen.dart` (nuovo): lista eventi con pulsante download (zoom 10–16), barra progresso, info dimensione cache, pulsante svuota cache
+- `app.dart`: rotta `/pilot/offline-maps`, import `OfflineMapsScreen`
+- `pilot_home_screen.dart`: pulsante "Mappe offline" → `/pilot/offline-maps`
+
+**7 — Salta PS con penalità forfettaria:**
+- `gps_service.dart` `skipCurrentSpecial()`: trova la prossima PS non saltata, marca tutti i waypoint come passati (WaypointPassageRecord con `timingError: 'speciale_saltata'`), crea/chiude `SpecialEntry`, scrive su Firestore con retry offline
+- `gps_recording_screen.dart`: bottone `SALTA SPECIALE` (OutlinedButton arancio) sotto FINE GARA/RITIRO, visibile quando ci sono speciali non completate; doppia dialog di conferma; `_confirmSkipSpecial()`
+- `classifica_model.dart`: `SpecialTempo.skipped` (default false), `copyWith(tempo, penaltySeconds)`
+- `classifica_engine.dart` `_computeSpeciali()`: check anticipato `end.timingError == 'speciale_saltata'` → `SpecialTempo(skipped: true, tempo: zero)`; `compute()` passo 2: raccoglie `worstBySp` (miglior tempo peggiore tra tutti i piloti per quella PS), applica forfeit = worst+30min alle speciali saltate, ricalcola `tempoTotale`
+
+**8 — GPS stale fix (no falso allarme da fermo):**
+- `gps_service.dart` `isGpsStale`: return false se `_geometricSpeedKmh < 2.0` — il pilota fermo non riceve aggiornamenti per design (distanceFilter), quindi lo stale non è un errore GPS ma comportamento atteso
+
+**9 — Mappa pilota interattiva:**
+- `event_detail_screen.dart`: rimosso `interactive: false` dalla chiamata `TrackMapScreen` (il default è `true`)
+
+**10 — ZUPT (Zero Velocity Update) + latenza IMU:**
+- `imu_fusion_service.dart`: reset `_speedMs = 0.0` quando velocità < 0.3 m/s e accel filtrata < 0.1 m/s² su entrambi gli assi — previene deriva dell'integrale da fermo
+
+**Deploy:**
+- `flutter analyze`: 0 issues
+- commit: `e9b62e8` — "Step 32 — 10 interventi post-test moto: ..."
+- `firebase deploy --only hosting` ✅ → https://ccr-enduro.web.app
+- `git push origin main` ✅
+
+---
+
 ## Prossimi Step
 
 **Azione manuale richiesta dallo Step 33:**
