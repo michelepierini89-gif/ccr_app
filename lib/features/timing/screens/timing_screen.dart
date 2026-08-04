@@ -1,15 +1,381 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
+import 'package:latlong2/latlong.dart';
 import '../../../core/models/classifica_model.dart';
 import '../../../core/models/cp_dispute_model.dart';
+import '../../../core/models/event_model.dart';
+import '../../../core/models/registration_model.dart';
+import '../../../core/models/waypoint_model.dart';
+import '../../../core/services/gpx_parser.dart';
+import '../../../core/services/storage_service.dart';
+import '../../../core/services/track_smoother.dart';
+import '../../../core/services/waypoint_detector.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/csv_export.dart';
 import '../../admin/providers/admin_provider.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../classifica/providers/classifica_provider.dart';
 import '../../pilot/providers/pilot_provider.dart';
+
+// ── Ricalcolo tempi ufficiali (Blocco B) ─────────────────────────────────────
+
+/// Ordine di precisione dal migliore al peggiore: porta > raggio > recovery.
+const _timingMethodRank = {'gate': 0, 'radius': 1, 'recovery': 2};
+
+String _worstTimingMethod(String a, String b) {
+  final ra = _timingMethodRank[a] ?? 1;
+  final rb = _timingMethodRank[b] ?? 1;
+  return ra >= rb ? a : b;
+}
+
+class _OfficialRecalcResult {
+  final String pilotName;
+  final String specialeNome;
+  final int? liveDurationMs;
+  final int officialDurationMs;
+  final String timingMethod;
+
+  const _OfficialRecalcResult({
+    required this.pilotName,
+    required this.specialeNome,
+    required this.liveDurationMs,
+    required this.officialDurationMs,
+    required this.timingMethod,
+  });
+
+  int? get diffMs =>
+      liveDurationMs == null ? null : officialDurationMs - liveDurationMs!;
+}
+
+/// Carica la traccia GPX/KML di riferimento dell'evento (stessa polyline
+/// usata in gara per costruire le porte virtuali — vedi WaypointDetector).
+Future<List<LatLng>> _loadEventReferenceTrack(EventModel event) async {
+  if (event.trackUrl == null) return [];
+  try {
+    final bytes = await StorageService().downloadTrack(event.trackUrl!);
+    final content = utf8.decode(bytes);
+    return event.trackUrl!.contains('.kml')
+        ? GpxParser.parseKml(content).points
+        : GpxParser.parseGpx(content).points;
+  } catch (_) {
+    return [];
+  }
+}
+
+/// Riesegue il rilevamento porta virtuale/raggio (Blocco A) sulla traccia
+/// [smoothed] di un singolo pilota, per inizio e fine di ogni speciale in
+/// [gatedBySpecial]. Ritorna, per ogni speciale con inizio E fine trovati,
+/// la durata ufficiale in ms e il metodo di timing peggiore tra i due.
+Map<String, ({int durationMs, String method})> _rerunDetectionOnSmoothedTrack(
+  List<SmoothedTrackPoint> smoothed,
+  Map<String, (WaypointModel, WaypointModel)> gatedBySpecial,
+) {
+  final result = <String, ({int durationMs, String method})>{};
+  if (smoothed.length < 2) return result;
+
+  for (final entry in gatedBySpecial.entries) {
+    final (inizio, fine) = entry.value;
+    final waypoints = [inizio, fine];
+    final detector = WaypointDetector();
+    final passed = <String>{};
+    DateTime? startTs, endTs;
+    var startMethod = 'radius';
+    var endMethod = 'radius';
+
+    for (var i = 1; i < smoothed.length && (startTs == null || endTs == null); i++) {
+      final prev = smoothed[i - 1];
+      final curr = smoothed[i];
+      var method = 'gate';
+      var hit = detector.detectGateCrossing(prev.position, curr.position,
+          prev.timestamp, curr.timestamp, waypoints, passed);
+      if (hit == null) {
+        method = 'radius';
+        hit = detector.detectPassage(curr.position, curr.timestamp, waypoints, passed);
+      }
+      if (hit == null) continue;
+      passed.add(hit.waypoint.id);
+      if (hit.waypoint.id == inizio.id) {
+        startTs = hit.timestamp;
+        startMethod = method;
+      } else if (hit.waypoint.id == fine.id) {
+        endTs = hit.timestamp;
+        endMethod = method;
+      }
+    }
+
+    if (startTs != null && endTs != null && endTs.isAfter(startTs)) {
+      result[entry.key] = (
+        durationMs: endTs.difference(startTs).inMilliseconds,
+        method: _worstTimingMethod(startMethod, endMethod),
+      );
+    }
+  }
+  return result;
+}
+
+/// Orchestrazione completa del ricalcolo (Blocco B2): per ogni pilota
+/// approvato dell'evento, carica la traccia grezza completa, la smussa
+/// con [TrackSmoother], riesegue il rilevamento porte virtuali e salva i
+/// tempi ufficiali risultanti — separati dai tempi live, mai sovrascritti.
+/// Ritorna la lista dei confronti live/ufficiale per la UI di riepilogo.
+Future<List<_OfficialRecalcResult>> _recalculateOfficialTimes(
+    WidgetRef ref, EventModel event) async {
+  final svc = ref.read(firestoreServiceProvider);
+  final referenceTrack = await _loadEventReferenceTrack(event);
+  final specials = event.speciali.where((s) => !s.annullata).toList();
+
+  final gatedBySpecial = <String, (WaypointModel, WaypointModel)>{};
+  for (final s in specials) {
+    final gIni = WaypointDetector.buildGate(s.waypointInizio, referenceTrack);
+    final gFin = WaypointDetector.buildGate(s.waypointFine, referenceTrack);
+    gatedBySpecial[s.id] = (
+      gIni == null ? s.waypointInizio : s.waypointInizio.copyWithGate(gIni),
+      gFin == null ? s.waypointFine : s.waypointFine.copyWithGate(gFin),
+    );
+  }
+
+  final regs = await svc.getRegistrationsOnce(event.id);
+  final approved =
+      regs.where((r) => r.stato == RegistrationStatus.approvato).toList();
+  final livePassages = await svc.getPassagesOnce(event.id);
+
+  final results = <_OfficialRecalcResult>[];
+
+  for (final reg in approved) {
+    final samples = await svc.getFullPilotTrack(event.id, reg.userId);
+    if (samples.length < 2) continue;
+    final smoothed = TrackSmoother.smooth(samples);
+    final officialBySpecial = _rerunDetectionOnSmoothedTrack(smoothed, gatedBySpecial);
+    if (officialBySpecial.isEmpty) continue;
+
+    await svc.saveOfficialTimes(
+      event.id,
+      reg.userId,
+      {
+        for (final e in officialBySpecial.entries)
+          e.key: OfficialSpecialTime(
+              durationMs: e.value.durationMs, timingMethod: e.value.method),
+      },
+    );
+
+    for (final special in specials) {
+      final official = officialBySpecial[special.id];
+      if (official == null) continue;
+
+      final iniP = livePassages
+          .where((p) =>
+              p.userId == reg.userId && p.waypointId == special.waypointInizio.id)
+          .toList()
+        ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+      final finP = livePassages
+          .where((p) =>
+              p.userId == reg.userId && p.waypointId == special.waypointFine.id)
+          .toList()
+        ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+      int? liveDurationMs;
+      if (iniP.isNotEmpty && finP.isNotEmpty) {
+        final ls = iniP.first.timestamp;
+        final le = finP
+            .firstWhere((p) => p.timestamp.isAfter(ls), orElse: () => finP.first)
+            .timestamp;
+        if (le.isAfter(ls)) liveDurationMs = le.difference(ls).inMilliseconds;
+      }
+
+      results.add(_OfficialRecalcResult(
+        pilotName: reg.nomeCompleto,
+        specialeNome: special.nome,
+        liveDurationMs: liveDurationMs,
+        officialDurationMs: official.durationMs,
+        timingMethod: official.method,
+      ));
+    }
+  }
+
+  return results;
+}
+
+class _RecalculateOfficialTimesButton extends ConsumerStatefulWidget {
+  final String eventId;
+  const _RecalculateOfficialTimesButton({required this.eventId});
+
+  @override
+  ConsumerState<_RecalculateOfficialTimesButton> createState() =>
+      _RecalculateOfficialTimesButtonState();
+}
+
+class _RecalculateOfficialTimesButtonState
+    extends ConsumerState<_RecalculateOfficialTimesButton> {
+  bool _running = false;
+
+  Future<void> _run() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: const Text('Ricalcola tempi ufficiali',
+            style: TextStyle(color: AppColors.textPrimary)),
+        content: const Text(
+          'Ricalcola i tempi di tutti i piloti applicando lo smoother RTS e '
+          'le porte virtuali sulla traccia GPS completa registrata. I tempi '
+          'live restano visibili e non vengono sovrascritti; la classifica '
+          'userà i tempi ufficiali quando disponibili. Continuare?',
+          style: TextStyle(color: AppColors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annulla',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
+            child: const Text('Ricalcola'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _running = true);
+    try {
+      final event = await ref.read(eventProvider(widget.eventId).future);
+      if (event == null) return;
+      final results = await _recalculateOfficialTimes(ref, event);
+      if (!mounted) return;
+      ref.invalidate(classificaProvider(widget.eventId));
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => _OfficialRecalcResultsDialog(results: results),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Errore ricalcolo: $e'),
+          backgroundColor: AppColors.error,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _running = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return TextButton.icon(
+      onPressed: _running ? null : _run,
+      icon: _running
+          ? const SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                  strokeWidth: 2, color: AppColors.accent),
+            )
+          : const Icon(Icons.timer_outlined, size: 16, color: AppColors.accent),
+      label: Text(_running ? 'Ricalcolo…' : 'Tempi ufficiali',
+          style: const TextStyle(color: AppColors.accent, fontSize: 13)),
+    );
+  }
+}
+
+class _OfficialRecalcResultsDialog extends StatelessWidget {
+  final List<_OfficialRecalcResult> results;
+  const _OfficialRecalcResultsDialog({required this.results});
+
+  String _fmtMs(int ms) {
+    final sign = ms < 0 ? '-' : '+';
+    final abs = ms.abs();
+    return '$sign${(abs / 1000).toStringAsFixed(2)}s';
+  }
+
+  String _fmtDuration(int ms) {
+    final d = Duration(milliseconds: ms);
+    final m = d.inMinutes;
+    final s = d.inSeconds % 60;
+    final cs = (d.inMilliseconds % 1000) ~/ 10;
+    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}.${cs.toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: AppColors.cardBackground,
+      title: Text('Ricalcolo completato — ${results.length} tempi',
+          style: const TextStyle(color: AppColors.textPrimary, fontSize: 16)),
+      content: SizedBox(
+        width: 480,
+        child: results.isEmpty
+            ? const Text(
+                'Nessun tempo ricalcolato: nessuna traccia GPS completa '
+                'disponibile per i piloti di questo evento.',
+                style: TextStyle(color: AppColors.textSecondary))
+            : SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: results
+                      .map((r) => Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  flex: 3,
+                                  child: Text('${r.pilotName} · ${r.specialeNome}',
+                                      style: const TextStyle(
+                                          color: AppColors.textPrimary, fontSize: 12)),
+                                ),
+                                Expanded(
+                                  flex: 2,
+                                  child: Text(
+                                    r.liveDurationMs != null
+                                        ? _fmtDuration(r.liveDurationMs!)
+                                        : '--',
+                                    style: const TextStyle(
+                                        color: AppColors.textSecondary,
+                                        fontSize: 12,
+                                        fontFamily: 'monospace'),
+                                  ),
+                                ),
+                                Expanded(
+                                  flex: 2,
+                                  child: Text(_fmtDuration(r.officialDurationMs),
+                                      style: const TextStyle(
+                                          color: AppColors.accent,
+                                          fontSize: 12,
+                                          fontFamily: 'monospace')),
+                                ),
+                                Expanded(
+                                  flex: 2,
+                                  child: Text(
+                                    r.diffMs != null ? _fmtMs(r.diffMs!) : '--',
+                                    style: TextStyle(
+                                        color: r.diffMs == null
+                                            ? AppColors.textSecondary
+                                            : (r.diffMs!.abs() > 500
+                                                ? AppColors.warning
+                                                : AppColors.success),
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ))
+                      .toList(),
+                ),
+              ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Chiudi', style: TextStyle(color: AppColors.accent)),
+        ),
+      ],
+    );
+  }
+}
 
 class TimingScreen extends ConsumerStatefulWidget {
   final String eventId;
@@ -141,6 +507,7 @@ class _AdminTimingView extends ConsumerWidget {
                     color: AppColors.textSecondary, fontSize: 13),
               ),
               const Spacer(),
+              _RecalculateOfficialTimesButton(eventId: eventId),
               TextButton.icon(
                 onPressed: () => _exportCsv(context),
                 icon: const Icon(Icons.download, size: 16,
@@ -705,6 +1072,34 @@ class _SpecialTimingRow extends StatelessWidget {
     );
   }
 
+  Widget _timingMethodBadge() {
+    final worst = _worstTimingMethod(
+        special.startTimingMethod, special.endTimingMethod);
+    final (label, color) = switch (worst) {
+      'gate' => ('PORTA', AppColors.success),
+      'recovery' => ('RECOVERY', Colors.orange),
+      _ => ('RAGGIO', AppColors.textSecondary),
+    };
+    return Tooltip(
+      message: 'Inizio: ${special.startTimingMethod} · '
+          'Fine: ${special.endTimingMethod}',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+        margin: const EdgeInsets.only(left: 6),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(5),
+          border: Border.all(color: color.withValues(alpha: 0.4)),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+              color: color, fontSize: 8, fontWeight: FontWeight.bold),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isInvalid = special.isInvalidTiming;
@@ -764,6 +1159,7 @@ class _SpecialTimingRow extends StatelessWidget {
                 fontFamily: 'monospace',
               ),
             ),
+          if (showAdminDetails && !isInvalid) _timingMethodBadge(),
           if (hasWarning) ...[
             const SizedBox(width: 8),
             Container(

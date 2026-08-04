@@ -127,6 +127,28 @@ class SpeedZoneModel {
       );
 }
 
+/// Porta virtuale associata a un waypoint di inizio/fine PS (o zona
+/// velocità): un segmento perpendicolare alla direzione locale della
+/// traccia, usato per un timing di attraversamento più preciso del solo
+/// raggio (vedi [WaypointModel.gate] e `WaypointDetector.buildGate`).
+/// Non viene mai serializzato su Firestore: è dato derivato, ricalcolato
+/// da traccia GPX ogni volta che i waypoint vengono caricati.
+class WaypointGate {
+  final LatLng gateA;
+  final LatLng gateB;
+
+  /// Bearing (0-360°, 0=Nord) della direzione di attraversamento attesa —
+  /// usato per scartare attraversamenti nel verso opposto (pilota che
+  /// torna indietro).
+  final double bearingDeg;
+
+  const WaypointGate({
+    required this.gateA,
+    required this.gateB,
+    required this.bearingDeg,
+  });
+}
+
 class WaypointModel {
   final String id;
   final String nome;
@@ -134,15 +156,29 @@ class WaypointModel {
   final double lng;
   final WaypointType type;
 
+  /// Porta virtuale per timing di precisione — transiente, mai persistita
+  /// (vedi [WaypointGate]). Null finché non attaccata con [copyWithGate].
+  final WaypointGate? gate;
+
   const WaypointModel({
     required this.id,
     required this.nome,
     required this.lat,
     required this.lng,
     required this.type,
+    this.gate,
   });
 
   LatLng get latLng => LatLng(lat, lng);
+
+  WaypointModel copyWithGate(WaypointGate gate) => WaypointModel(
+        id: id,
+        nome: nome,
+        lat: lat,
+        lng: lng,
+        type: type,
+        gate: gate,
+      );
 
   factory WaypointModel.fromMap(Map<String, dynamic> m) => WaypointModel(
         id: m['id'] ?? '',

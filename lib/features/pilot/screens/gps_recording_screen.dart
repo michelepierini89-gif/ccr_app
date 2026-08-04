@@ -15,7 +15,10 @@ import '../../../core/models/registration_model.dart';
 import '../../../core/models/waypoint_model.dart';
 import '../../../core/providers/track_appearance_provider.dart';
 import '../../../core/services/battery_service.dart';
+import '../../../core/services/gnss_status_service.dart';
 import '../../../core/services/gps_service.dart';
+import '../../../core/services/imu_fusion_service.dart';
+import '../../../core/services/voice_alert_service.dart';
 import '../../../core/services/track_appearance_service.dart';
 import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
@@ -85,11 +88,23 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   bool _isTimeExpired = false;
   bool _showingTimeoutDialog = false;
 
+  // Catturato in initState — MAI leggere provider via `ref` dentro
+  // dispose(): in questa versione di Riverpod il ConsumerStatefulElement
+  // marca `ref` invalido prima che State.dispose() giri, e un ref.read()
+  // lì dentro lancia "Cannot use ref after the widget was disposed"
+  // interrompendo il resto di dispose() (AnimationController mai fermati).
+  late final ImuFusionService _imuService;
+
   @override
   void initState() {
     super.initState();
+    _imuService = ref.read(imuFusionServiceProvider);
     _mapController = MapController();
     _gpsStream = ref.read(gpsServiceProvider).positionStream;
+    // Blocco C: l'avvio/stop del monitoraggio GNSS è gestito da GpsService
+    // in startRecording()/stopRecording() — GnssStatus non riceve comunque
+    // aggiornamenti satellite senza una richiesta di posizione attiva, che
+    // in questa app parte solo con la registrazione GPS.
     _pulseController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 800),
@@ -123,7 +138,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         if (mounted) setState(() => _fuelPointMessage = null);
       });
     });
-    ref.read(imuFusionServiceProvider).addListener(_onImuUpdate);
+    _imuService.addListener(_onImuUpdate);
     _dangerPassedSub =
         ref.read(gpsServiceProvider).dangerPassedStream.listen((msg) {
       if (!mounted) return;
@@ -290,6 +305,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     final user = ref.read(authStateProvider).valueOrNull;
     final eid = widget.eventId ?? gps.activeEventId;
     final partialTrack = List.of(gps.localTrack);
+    final fullSamples = gps.fullTrackSamples;
     gps.blockFurtherWrites();
     await gps.stopRecording();
     if (mounted) setState(() => _elapsed = Duration.zero);
@@ -307,6 +323,11 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
               .read(firestoreServiceProvider)
               .savePilotTrack(eid, user.uid, partialTrack);
         }
+        if (fullSamples.isNotEmpty) {
+          await ref
+              .read(firestoreServiceProvider)
+              .saveFullPilotTrack(eid, user.uid, fullSamples);
+        }
       } catch (_) {}
     }
     if (mounted) {
@@ -320,22 +341,21 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   }
 
   void _onImuUpdate() {
-    final imu = ref.read(imuFusionServiceProvider);
-    if (imu.fusedPosition == null || !mounted) return;
+    if (_imuService.fusedPosition == null || !mounted) return;
     setState(() {
-      _imuPosition = imu.fusedPosition;
+      _imuPosition = _imuService.fusedPosition;
       // displayHeadingDeg: bussola grezza + low-pass leggero, per la
       // rotazione mappa/freccia — fusedHeadingDeg (filtro complementare)
       // resta usato solo internamente da ImuFusionService per il dead
       // reckoning della posizione.
-      _imuHeading = imu.displayHeadingDeg;
+      _imuHeading = _imuService.displayHeadingDeg;
     });
   }
 
   @override
   void dispose() {
     WakelockPlus.disable().ignore();
-    ref.read(imuFusionServiceProvider).removeListener(_onImuUpdate);
+    _imuService.removeListener(_onImuUpdate);
     _elapsedTimer?.cancel();
     _recoverySub?.cancel();
     _recoveryTimer?.cancel();
@@ -483,6 +503,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
       await gps.closeAllOpenSpecialsForFineGara();
       if (!mounted) return;
       final finTrack = List.of(gps.localTrack); // capture before stop clears it
+      final finFullSamples = gps.fullTrackSamples;
       gps.blockFurtherWrites();
       if (finEventId != null && finUserId != null) {
         try {
@@ -494,6 +515,11 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
             await ref
                 .read(firestoreServiceProvider)
                 .savePilotTrack(finEventId, finUserId, finTrack);
+          }
+          if (finFullSamples.isNotEmpty) {
+            await ref
+                .read(firestoreServiceProvider)
+                .saveFullPilotTrack(finEventId, finUserId, finFullSamples);
           }
         } catch (_) {}
       }
@@ -539,6 +565,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         fuelPoints: event?.fuelPoint != null ? [event!.fuelPoint!] : [],
         dangerPoints: event?.dangerPoints ?? [],
         speedZones: event?.speedZones ?? [],
+        referenceTrack: _eventTrackPoints,
       );
       setState(() => _followMode = true);
     } catch (e) {
@@ -608,6 +635,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     final user = ref.read(authStateProvider).valueOrNull;
     final eventId = widget.eventId;
     final partialTrack = List.of(gps.localTrack);
+    final fullSamples = gps.fullTrackSamples;
     gps.blockFurtherWrites();
     await gps.stopRecording();
     setState(() => _elapsed = Duration.zero);
@@ -624,6 +652,11 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           await ref
               .read(firestoreServiceProvider)
               .savePilotTrack(eventId, user.uid, partialTrack);
+        }
+        if (fullSamples.isNotEmpty) {
+          await ref
+              .read(firestoreServiceProvider)
+              .saveFullPilotTrack(eventId, user.uid, fullSamples);
         }
       } catch (_) {}
     }
@@ -775,6 +808,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           eventId: effectiveEventId,
           elapsed: null,
           isRecording: false,
+          onSettingsTap: _showTrackAppearanceSheet,
         ),
         if (!canStart)
           _WaitingBanner(),
@@ -787,6 +821,9 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         // sempre attivo a prescindere dal segnale GPS, questo è solo un
         // avviso che il chip sta ancora acquisendo.
         if (pos == null) const _GpsAcquiringBanner(),
+        // Blocco C3: qualità GNSS reale (satelliti usati/visibili), così il
+        // pilota sa se conviene attendere prima di partire.
+        const _GnssQualityBanner(),
         if (!_batteryOptOk)
           _BatteryOptBanner(
             onTap: () async {
@@ -1124,6 +1161,11 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         final allSpecialsDone = _allSpecialsCompleted(gps, event);
         final canFinish =
             allSpecialsDone || _canFinishNearStart(gps, curPos, event);
+        // Blocco D4: "Fine gara disponibile" — idempotente (dedupe interno
+        // a VoiceAlertService), sicuro da chiamare ad ogni rebuild.
+        if (allSpecialsDone) {
+          ref.read(voiceAlertServiceProvider).announceRaceEndAvailable();
+        }
 
     return Column(
       children: [
@@ -1526,12 +1568,33 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                   child: Container(
                     color: Colors.black54,
                     padding: const EdgeInsets.all(4),
-                    child: Text(
-                      'GY:${imu.fusedHeadingDeg.toStringAsFixed(0)}° '
-                      'GPS:${gps.bearingDeg.toStringAsFixed(0)}° '
-                      'M:${(_headingMode ? -displayHeadingDeg : 0.0).toStringAsFixed(0)}° '
-                      'V:${imu.fusedSpeedKmh.toStringAsFixed(0)}km/h',
-                      style: const TextStyle(color: Colors.white, fontSize: 11),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          'GY:${imu.fusedHeadingDeg.toStringAsFixed(0)}° '
+                          'GPS:${gps.bearingDeg.toStringAsFixed(0)}° '
+                          'M:${(_headingMode ? -displayHeadingDeg : 0.0).toStringAsFixed(0)}° '
+                          'V:${imu.fusedSpeedKmh.toStringAsFixed(0)}km/h',
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 11),
+                        ),
+                        StreamBuilder<GnssStatusSnapshot>(
+                          stream: ref.read(gnssStatusServiceProvider).stream,
+                          initialData:
+                              ref.read(gnssStatusServiceProvider).lastSnapshot,
+                          builder: (context, snap) {
+                            final s = snap.data;
+                            if (s == null) return const SizedBox.shrink();
+                            return Text(
+                              'SAT:${s.satCountLabel} ${s.quality.label}',
+                              style: const TextStyle(
+                                  color: Colors.white, fontSize: 11),
+                            );
+                          },
+                        ),
+                      ],
                     ),
                   ),
                 ),
@@ -1912,6 +1975,9 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     Color refTrackColor = current.refTrackColor;
     double refTrackWidth = current.refTrackWidth;
 
+    final voiceService = ref.read(voiceAlertServiceProvider);
+    var voiceSettings = voiceService.settings;
+
     await showModalBottomSheet(
       context: context,
       backgroundColor: AppColors.cardBackground,
@@ -2041,6 +2107,114 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                 _colorSwatchRow(_refTrackColorOptions, refTrackColor,
                     (c) => setSheetState(() => refTrackColor = c)),
 
+                const SizedBox(height: 24),
+                const Divider(color: AppColors.border),
+                const SizedBox(height: 8),
+                const Text('Avvisi vocali',
+                    style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  activeThumbColor: AppColors.accent,
+                  title: const Text('Attivi',
+                      style: TextStyle(color: AppColors.textPrimary)),
+                  value: voiceSettings.enabled,
+                  onChanged: (v) => setSheetState(
+                      () => voiceSettings = voiceSettings.copyWith(enabled: v)),
+                ),
+                if (voiceSettings.enabled) ...[
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    activeThumbColor: AppColors.accent,
+                    title: const Text('Pericoli',
+                        style: TextStyle(
+                            color: AppColors.textSecondary, fontSize: 13)),
+                    value: voiceSettings.dangerEnabled,
+                    onChanged: (v) => setSheetState(() =>
+                        voiceSettings = voiceSettings.copyWith(dangerEnabled: v)),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    activeThumbColor: AppColors.accent,
+                    title: const Text('Prove speciali',
+                        style: TextStyle(
+                            color: AppColors.textSecondary, fontSize: 13)),
+                    value: voiceSettings.specialsEnabled,
+                    onChanged: (v) => setSheetState(() => voiceSettings =
+                        voiceSettings.copyWith(specialsEnabled: v)),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    activeThumbColor: AppColors.accent,
+                    title: const Text('Zone velocità',
+                        style: TextStyle(
+                            color: AppColors.textSecondary, fontSize: 13)),
+                    value: voiceSettings.speedZonesEnabled,
+                    onChanged: (v) => setSheetState(() => voiceSettings =
+                        voiceSettings.copyWith(speedZonesEnabled: v)),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    activeThumbColor: AppColors.accent,
+                    title: const Text('Checkpoint',
+                        style: TextStyle(
+                            color: AppColors.textSecondary, fontSize: 13)),
+                    value: voiceSettings.checkpointsEnabled,
+                    onChanged: (v) => setSheetState(() => voiceSettings =
+                        voiceSettings.copyWith(checkpointsEnabled: v)),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    activeThumbColor: AppColors.accent,
+                    title: const Text('Punto ristoro',
+                        style: TextStyle(
+                            color: AppColors.textSecondary, fontSize: 13)),
+                    value: voiceSettings.fuelPointEnabled,
+                    onChanged: (v) => setSheetState(() => voiceSettings =
+                        voiceSettings.copyWith(fuelPointEnabled: v)),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                      'Velocità di lettura: ${voiceSettings.speechRate.toStringAsFixed(2)}',
+                      style: const TextStyle(color: AppColors.textSecondary)),
+                  Slider(
+                    value: voiceSettings.speechRate,
+                    min: VoiceAlertService.minSpeechRate,
+                    max: VoiceAlertService.maxSpeechRate,
+                    divisions: 12,
+                    activeColor: AppColors.accent,
+                    label: voiceSettings.speechRate.toStringAsFixed(2),
+                    onChanged: (v) => setSheetState(
+                        () => voiceSettings = voiceSettings.copyWith(speechRate: v)),
+                  ),
+                  const SizedBox(height: 4),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () async {
+                        // Applica subito la velocità corrente per un test
+                        // rappresentativo, senza attendere "Applica".
+                        await voiceService.updateSettings(voiceSettings);
+                        await voiceService.playTestAnnouncement();
+                      },
+                      icon: const Icon(Icons.volume_up, size: 16),
+                      label: const Text('Prova audio'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.accent,
+                        side: const BorderSide(color: AppColors.accent),
+                      ),
+                    ),
+                  ),
+                ],
+
                 const SizedBox(height: 20),
                 SizedBox(
                   width: double.infinity,
@@ -2054,6 +2228,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                       await notifier.setArrowSize(arrowSize);
                       await notifier.setRefTrackColor(refTrackColor);
                       await notifier.setRefTrackWidth(refTrackWidth);
+                      await voiceService.updateSettings(voiceSettings);
                       if (sheetCtx.mounted) Navigator.pop(sheetCtx);
                     },
                     style: ElevatedButton.styleFrom(
@@ -2259,6 +2434,51 @@ class _GpsAcquiringBanner extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Qualità GNSS reale (Blocco C3): satelliti usati/visibili + metrica
+/// sintetica, calcolati da GnssStatus nativo (non dal solo `accuracy`
+/// dichiarato dal chip, ottimistico su device economici). Nessun banner
+/// se il canale non ha ancora emesso nulla (es. iOS/web, o Android in
+/// attesa del primo aggiornamento satelliti).
+class _GnssQualityBanner extends ConsumerWidget {
+  const _GnssQualityBanner();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final service = ref.read(gnssStatusServiceProvider);
+    return StreamBuilder<GnssStatusSnapshot>(
+      stream: service.stream,
+      initialData: service.lastSnapshot,
+      builder: (context, snap) {
+        final s = snap.data;
+        if (s == null) return const SizedBox.shrink();
+        final color = switch (s.quality) {
+          GnssQuality.eccellente || GnssQuality.buona => AppColors.success,
+          GnssQuality.scarsa => Colors.orange,
+          GnssQuality.critica => AppColors.error,
+        };
+        return Container(
+          width: double.infinity,
+          color: color.withValues(alpha: 0.12),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            children: [
+              Icon(Icons.satellite_alt, color: color, size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'GNSS ${s.quality.label} — ${s.satCountLabel} satelliti',
+                  style: TextStyle(
+                      color: color, fontWeight: FontWeight.w600, fontSize: 13),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

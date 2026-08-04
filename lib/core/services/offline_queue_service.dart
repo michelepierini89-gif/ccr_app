@@ -53,6 +53,7 @@ class OfflineQueueService extends ChangeNotifier {
     required String waypointId,
     required String waypointNome,
     required DateTime timestamp,
+    String timingMethod = 'radius',
   }) async {
     final list = _getList(_kPassagesKey)
       ..add({
@@ -61,6 +62,7 @@ class OfflineQueueService extends ChangeNotifier {
         'waypointId': waypointId,
         'waypointNome': waypointNome,
         'timestamp': timestamp.toIso8601String(),
+        'timingMethod': timingMethod,
       });
     await _saveList(_kPassagesKey, list);
     debugPrint('OfflineQueue: passage queued (${list.length} pending)');
@@ -157,6 +159,7 @@ class OfflineQueueService extends ChangeNotifier {
           waypointId: p['waypointId'] as String,
           waypointNome: p['waypointNome'] as String,
           timestamp: DateTime.parse(p['timestamp'] as String),
+          timingMethod: p['timingMethod'] as String? ?? 'radius',
         ),
       );
 

@@ -1,9 +1,9 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 22 giugno 2026 (Step 32 completato)  
+**Data aggiornamento:** 05 agosto 2026 (Step 35 completato)  
 **Branch:** main  
-**Versione:** 1.0.0+1
+**Versione:** 1.0.2+3
 
 ---
 
@@ -1476,25 +1476,69 @@ id/nome arbitrario.
 - `firebase deploy --only hosting` ✅ → https://ccr-enduro.web.app
 - `git push origin main` ✅
 
+### Step 35 — Porte virtuali timing, smoother RTS post-gara, diagnostica GNSS, alert vocali (05 agosto 2026) ✅
+
+**Blocco 0 — chiusura gap:**
+- Deploy `functions:onCpDisputeResolved` (mancava dallo Step 33): causa root della difficoltà di deploy — `functions/functions.yaml` (cache locale ignorata da git, generata da un CLI più vecchio) veniva letta al posto di rianalizzare `index.js`, nascondendo la funzione nuova al comando di deploy filtrato. Rimossa la cache e usato `FUNCTIONS_DISCOVERY_TIMEOUT=60` (il progetto è su `/mnt/d`, filesystem 9p via WSL2, il discovery a freddo supera i 10s di default) — deploy riuscito, funzione confermata in `firebase functions:list`
+- Redeploy hosting di conferma incluso nel deploy finale di questo step
+
+**Blocco A — porte virtuali con interpolazione (precisione timing):**
+- `waypoint_model.dart`: nuovo `WaypointGate` (gateA/gateB/bearingDeg), campo transiente `WaypointModel.gate` (mai serializzato, ricalcolato ogni sessione)
+- `location_utils.dart`: `bearingDegrees`, `destinationPoint`, `toLocalMeters` (proiezione equirettangolare locale)
+- `waypoint_detector.dart`: `buildGate()` (bearing locale dai punti GPX adiacenti al waypoint, segmento perpendicolare ±25m), `attachGates()`, `detectGateCrossing()` (intersezione segmento traiettoria/porta in coordinate locali + verifica verso via prodotto scalare + interpolazione lineare del timestamp al ms)
+- `gps_service.dart`: `startRecording(referenceTrack:)` costruisce le porte per inizio/fine PS e ingresso/uscita zona velocità (non per i checkpoint, che restano a raggio); `_onPosition` prova prima la porta poi ricade sul raggio esistente (mai rimosso); precedenza salvata come `timingMethod: 'gate'|'radius'|'recovery'` su ogni passaggio Firestore
+- `timing_screen.dart`: badge discreto colorato (PORTA/RAGGIO/RECOVERY) su ogni tempo PS lato admin
+
+**Blocco B — ricalcolo post-gara con smoother RTS:**
+- `track_smoother.dart` (nuovo): forward Kalman 4D (stesso modello di `GpsKalmanFilter`, sigma adattivo alla velocità) + backward Rauch-Tung-Striebel; richiede traccia grezza con accuracy+timestamp per punto
+- `gps_service.dart`: `_recoveryAccuracies` (accuracy raw parallela a `_recoveryTrack`), getter `fullTrackSamples`; `firestore_service.dart`: `saveFullPilotTrack`/`getFullPilotTrack` (campo separato `pilotTrackFull`, non tocca il `pilotTrack` esistente)
+- `timing_screen.dart`: pulsante "Tempi ufficiali" (admin, con conferma) → smussa la traccia di ogni pilota, riesegue le porte virtuali, salva `officialTimes/{userId}` (separato dai tempi live), mostra confronto live/ufficiale con differenza in ms
+- `classifica_engine.dart`/`classifica_model.dart`: `ClassificaEngine.compute(officialTimesByUserId:)` — se presente un tempo ufficiale per un membro dell'entry, sostituisce il tempo netto live (penalità CP/zona velocità restano sempre quelle live)
+
+**Blocco C — diagnostica GNSS:**
+- `MainActivity.kt`: `EventChannel('ccr/gnss_status')` con `GnssStatus.Callback` → satelliti usati/visibili, C/N0 medio, costellazioni, dual-frequency (L5/E5a via `hasCarrierFrequencyHz`)
+- `gnss_status_service.dart` (nuovo): stream + qualità sintetica ECCELLENTE/BUONA/SCARSA/CRITICA; avviato/fermato da `GpsService` in startRecording/stopRecording (GnssStatus non riceve nulla senza una richiesta di posizione attiva, quindi non ha senso avviarlo prima)
+- `gps_recording_screen.dart`: overlay debug "SAT: N/M" + qualità; banner qualità GNSS in schermata pre-gara
+- `gps_service.dart`: fattore di diffidenza ×2 sull'accuracy effettiva (Kalman + filtri) quando la qualità è CRITICA, anche se il chip dichiara accuracy bassa
+- `kUseRawLocationManager = false`: provider attuale confermato **FusedLocationProviderClient** (Google Play Services) — costante pronta per test comparativo con `LocationManager` grezzo
+
+**Blocco D — alert vocali navigazione:**
+- `flutter_tts` aggiunto; `AndroidManifest.xml` con `<queries>` per `TTS_SERVICE` (richiesto Android 11+)
+- `voice_alert_service.dart` (nuovo): coda a 3 priorità (ALTA interrompe MEDIA/BASSA in corso, BASSA più vecchia scartata oltre 3 in coda), soglie fisse 1000/500/100m con Set dedupe per elemento+soglia (azzerato solo in `start()`), `setAudioAttributesForNavigation()` per instradamento corretto su interfono Bluetooth, impostazioni per categoria + velocità lettura persistite in SharedPreferences
+- `gps_service.dart`: hook di tutti gli annunci (pericoli, inizio/fine PS con tempo, zona velocità, checkpoint, punto ristoro) nei punti dove GpsService già calcola le distanze/rileva i passaggi
+- `gps_recording_screen.dart`: sezione "Avvisi vocali" nel BottomSheet impostazioni navigazione (toggle per categoria, slider velocità 0.4–1.0 default 0.55, pulsante "Prova audio" utilizzabile anche pre-gara)
+
+**Fix collaterale:**
+- `gps_recording_screen.dart`: `dispose()` chiamava `ref.read(imuFusionServiceProvider)` — non supportato dalla versione di Riverpod in uso (`ref` già invalidato quando `State.dispose()` gira), causava "Timer is still pending"/animazioni mai fermate nei test `GpsRecordingScreen`. Fix: `ImuFusionService` catturato in un campo durante `initState`, mai più letto da `ref` dentro `dispose()`. Risolve 2 dei 5 test falliti pre-esistenti (vedi "Prossimi Step" sotto per i 3 rimanenti, indipendenti da questo step)
+
+**Note tecniche riportate all'utente:**
+- Location provider: **FusedLocationProviderClient** (default geolocator su Android, `forceLocationManager` mai impostato finora)
+- Errore di timing stimato: a 60 km/h (~16.7 m/s) con GPS a 250ms i punti distano ~4.2m — il metodo a raggio (15m) può introdurre fino a ~0.9s di errore sistematico (il punto può essere ovunque nel raggio prima della linea reale); a 30 km/h (~8.3 m/s) l'errore scende a ~1.8m/campione, quindi fino a ~0.45s. La porta virtuale con interpolazione riduce l'errore alla sola risoluzione del fix GPS (interpolato linearmente tra due campioni, quindi tipicamente <50ms se il segmento attraversa pulitamente la porta)
+- Il metodo a raggio resta necessario come fallback quando: il gap GPS cade esattamente sulla porta (nessun segmento la attraversa), il pilota entra nella PS lateralmente fuori dai ±25m della porta, o `referenceTrack` non è disponibile (nessun GPX caricato) — in questi casi il waypoint non ottiene mai un `gate` e la detection ricade automaticamente sul raggio esistente
+
+**Deploy:**
+- `flutter analyze`: 0 issues
+- `firebase deploy --only functions:onCpDisputeResolved` ✅
+- `flutter build web --release` + `firebase deploy --only hosting` ✅ → https://ccr-enduro.web.app
+- `git push origin main` ✅
+
 ---
 
 ## Prossimi Step
 
-**Azione manuale richiesta dallo Step 33:**
-- Aggiungere i 4 secret GitHub (`KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`) — valori in `~/ccr_keystore/` — poi triggerare il workflow per verificare la build release firmata
-
-**Deploy in sospeso dallo Step 32:**
-- `firebase deploy --only firestore:rules` per attivare la nuova regola `cp_disputes`
-- `firebase deploy --only functions:onCpDisputeResolved` per attivare la notifica FCM al pilota sull'esito della segnalazione CP (da path Linux nativo su WSL2, vedi nota Step 17b)
-
 **Produzione / sicurezza:**
-- Ripristinare regole Firestore/Storage granulari per produzione (da git history commit `25ad689`)
+- Ripristinare regole Storage granulari per produzione (Firestore è già granulare dallo Step 16) — vedi `storage.rules`, TODO ancora aperto
 
-**Test su device reale:**
-- Verificare in un nuovo test su strada se i fix dello Step 32 (bussola diretta display heading, marker `rotate:true`, raggio uscita zona velocità 35m, icone PS più grandi) risolvono i problemi osservati; verificare anche se i fix dello Step 31 (alpha complementare velocità-dipendente, anchor GPS 3m, recovery PS 120m) hanno risolto il lag rotazione/posizione e il blocco FINE GARA da PS saltata; se la mappa ruota ancora nella direzione sbagliata, provare `kGyroZSign = -1.0` in `imu_fusion_service.dart`
+**Test su device reale (Blocco C/D dello Step 35 — mai testati su hardware):**
+- Verificare che `GnssStatus.Callback` riceva effettivamente dati sui device di test (in particolare il DOOGEE con chip MediaTek) e che le soglie qualità ECCELLENTE/BUONA/SCARSA/CRITICA siano tarate bene
+- Verificare l'instradamento audio degli alert vocali sull'interfono Bluetooth del casco (pulsante "Prova audio" nelle impostazioni navigazione) prima di un test su strada
+- Confrontare l'errore di timing porta-vs-raggio su un tracciato reale a 30 e 60 km/h con i log `timingMethod`
+- Testare il ricalcolo "Tempi ufficiali" su una gara reale con più piloti per validare lo smoother RTS
+
+**Test rimanenti (indipendenti dallo Step 35):**
 - Test end-to-end classifica campionato con più eventi
 - Test flusso iscrizione 2-step su web e Android
-- Risolvere i 5 test pre-esistenti falliti in `routes_test.dart`/`pilot_flow_test.dart` (timer pendente su `GpsRecordingScreen` pre-start, indipendenti dalle modifiche dello Step 31)
+- 3 test pre-esistenti ancora falliti in `routes_test.dart`/`pilot_flow_test.dart` (schermata pre-gara con evento e `startEnabled` di default `false` non mostra il testo "START" — bug pre-esistente indipendente dagli Step 31/35, da investigare separatamente)
 
 **Feature future:**
 - Trail percorso per ogni pilota nella mappa admin live (attualmente solo posizione istantanea)

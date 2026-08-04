@@ -32,6 +32,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   sensors_plus: ^6.0.0
   flutter_compass: ^0.8.0
+  flutter_tts: ^4.2.0
 
 dev_dependencies:
   flutter_test:

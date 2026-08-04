@@ -10,6 +10,7 @@ import '../models/registration_model.dart';
 import '../models/team_model.dart';
 import '../models/gps_point_model.dart';
 import '../models/classifica_model.dart';
+import 'track_smoother.dart';
 
 class FirestoreService {
   FirebaseFirestore get _db => FirebaseFirestore.instance;
@@ -249,6 +250,105 @@ class FirestoreService {
                 .map((p) => {'lat': p.latitude, 'lng': p.longitude})
                 .toList(),
           }, SetOptions(merge: true));
+
+  /// Persiste la traccia grezza completa (posizione + accuracy + timestamp
+  /// per ogni fix accettato), separata dal semplice `pilotTrack` (solo
+  /// lat/lng, usato per il replay della polyline): serve da input al
+  /// ricalcolo post-gara con [TrackSmoother] (Blocco B). Timestamp salvato
+  /// come millisecondi epoch (int), non Timestamp Firestore, per
+  /// semplicità di parsing lato client dentro un campo array.
+  Future<void> saveFullPilotTrack(
+          String eventId, String userId, List<RawTrackSample> samples) =>
+      _db
+          .collection(FirebaseConstants.tracking)
+          .doc(eventId)
+          .collection(FirebaseConstants.pilots)
+          .doc(userId)
+          .set({
+            'pilotTrackFull': samples
+                .map((s) => {
+                      'lat': s.lat,
+                      'lng': s.lng,
+                      'accuracy': s.accuracy,
+                      'ts': s.timestamp.millisecondsSinceEpoch,
+                    })
+                .toList(),
+          }, SetOptions(merge: true));
+
+  /// Legge la traccia grezza completa salvata da [saveFullPilotTrack] per
+  /// [userId] nell'evento [eventId], o lista vuota se assente (es. pilota
+  /// registrato prima dell'introduzione di questo campo, o mai concluso).
+  Future<List<RawTrackSample>> getFullPilotTrack(
+      String eventId, String userId) async {
+    final doc = await _db
+        .collection(FirebaseConstants.tracking)
+        .doc(eventId)
+        .collection(FirebaseConstants.pilots)
+        .doc(userId)
+        .get();
+    final raw = doc.data()?['pilotTrackFull'] as List<dynamic>?;
+    if (raw == null) return [];
+    return raw
+        .map((e) => RawTrackSample(
+              lat: (e['lat'] as num).toDouble(),
+              lng: (e['lng'] as num).toDouble(),
+              accuracy: (e['accuracy'] as num).toDouble(),
+              timestamp: DateTime.fromMillisecondsSinceEpoch(e['ts'] as int),
+            ))
+        .toList();
+  }
+
+  /// Salva i tempi ufficiali di [userId] ricalcolati post-gara (Blocco B),
+  /// uno per speciale, in campi separati dai tempi live — la classifica
+  /// (ClassificaEngine) li preferisce quando presenti.
+  Future<void> saveOfficialTimes(String eventId, String userId,
+          Map<String, OfficialSpecialTime> bySpecialId) =>
+      _db
+          .collection(FirebaseConstants.tracking)
+          .doc(eventId)
+          .collection('officialTimes')
+          .doc(userId)
+          .set({
+        'specials': {
+          for (final e in bySpecialId.entries) e.key: e.value.toMap(),
+        },
+      });
+
+  /// Stream dei tempi ufficiali di tutti i piloti dell'evento [eventId],
+  /// come userId -> specialeId -> [OfficialSpecialTime].
+  Stream<Map<String, Map<String, OfficialSpecialTime>>> officialTimesStream(
+          String eventId) =>
+      _db
+          .collection(FirebaseConstants.tracking)
+          .doc(eventId)
+          .collection('officialTimes')
+          .snapshots()
+          .map((s) => _parseOfficialTimes(s.docs));
+
+  Future<Map<String, Map<String, OfficialSpecialTime>>> getOfficialTimesOnce(
+      String eventId) async {
+    final snap = await _db
+        .collection(FirebaseConstants.tracking)
+        .doc(eventId)
+        .collection('officialTimes')
+        .get();
+    return _parseOfficialTimes(snap.docs);
+  }
+
+  Map<String, Map<String, OfficialSpecialTime>> _parseOfficialTimes(
+      List<QueryDocumentSnapshot> docs) {
+    final result = <String, Map<String, OfficialSpecialTime>>{};
+    for (final doc in docs) {
+      final specials =
+          (doc.data() as Map<String, dynamic>)['specials'] as Map<String, dynamic>? ??
+              {};
+      result[doc.id] = {
+        for (final e in specials.entries)
+          e.key: OfficialSpecialTime.fromMap(e.value as Map<String, dynamic>),
+      };
+    }
+    return result;
+  }
 
   /// Stream of the current pilot's tracking doc fields (lightweight, no GPS parsing).
   Stream<Map<String, dynamic>?> myPilotStatusStream(
@@ -497,6 +597,11 @@ class FirestoreService {
     bool recoveredStart = false,
     bool recoveredEnd = false,
     String? timingError,
+    // Precisione del timing di questo passaggio: 'gate' (porta virtuale +
+    // interpolazione), 'radius' (raggio) o 'recovery' (recovery
+    // retroattivo/forfeit) — vedi Blocco A del timing di precisione.
+    // Mostrato come badge discreto in TimingScreen (admin).
+    String timingMethod = 'radius',
   }) =>
       _db
           .collection(FirebaseConstants.tracking)
@@ -510,6 +615,7 @@ class FirestoreService {
         if (recoveredStart) 'recoveredStart': true,
         if (recoveredEnd) 'recoveredEnd': true,
         'timingError': ?timingError,
+        'timingMethod': timingMethod,
       });
 
   /// Salva una violazione di zona a velocità controllata. Best-effort: a

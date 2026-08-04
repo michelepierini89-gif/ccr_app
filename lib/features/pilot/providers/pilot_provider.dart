@@ -3,8 +3,10 @@ import '../../../core/models/cp_dispute_model.dart';
 import '../../../core/models/event_model.dart';
 import '../../../core/models/registration_model.dart';
 import '../../../core/providers/offline_provider.dart';
+import '../../../core/services/gnss_status_service.dart';
 import '../../../core/services/gps_service.dart';
 import '../../../core/services/imu_fusion_service.dart';
+import '../../../core/services/voice_alert_service.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../admin/providers/admin_provider.dart';
 
@@ -71,6 +73,23 @@ final imuFusionServiceProvider = ChangeNotifierProvider<ImuFusionService>((ref) 
   return ImuFusionService();
 });
 
+/// Diagnostica GNSS reale (Blocco C): satelliti usati/visibili, C/N0,
+/// dual-frequency — solo Android (vedi [GnssStatusService]).
+final gnssStatusServiceProvider = Provider<GnssStatusService>((ref) {
+  final service = GnssStatusService();
+  ref.onDispose(service.dispose);
+  return service;
+});
+
+/// Alert vocali di navigazione (Blocco D) — impostazioni persistite in
+/// SharedPreferences, TTS inizializzato/fermato da GpsService in
+/// startRecording()/stopRecording().
+final voiceAlertServiceProvider = Provider<VoiceAlertService>((ref) {
+  final service = VoiceAlertService(ref.watch(sharedPreferencesProvider));
+  ref.onDispose(service.dispose);
+  return service;
+});
+
 final gpsServiceProvider = ChangeNotifierProvider<GpsService>((ref) {
   // `ref.read`, non `ref.watch`: GpsService usa questi servizi come
   // dipendenze fisse, non deve essere ricreato ogni volta che
@@ -83,6 +102,8 @@ final gpsServiceProvider = ChangeNotifierProvider<GpsService>((ref) {
     ref.read(firestoreServiceProvider),
     ref.read(offlineQueueProvider),
     ref.read(imuFusionServiceProvider),
+    ref.read(gnssStatusServiceProvider),
+    ref.read(voiceAlertServiceProvider),
   );
 });
 

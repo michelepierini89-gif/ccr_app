@@ -35,6 +35,12 @@ final eventPenaltyOverrideProvider =
     StreamProvider.family<PenaltySettingsModel?, String>((ref, eventId) =>
         ref.watch(firestoreServiceProvider).eventPenaltySettingsStream(eventId));
 
+/// Tempi ufficiali ricalcolati post-gara (Blocco B), in tempo reale —
+/// la classifica li preferisce ai tempi live quando presenti per una PS.
+final officialTimesStreamProvider = StreamProvider.family<
+    Map<String, Map<String, OfficialSpecialTime>>, String>((ref, eventId) =>
+    ref.watch(firestoreServiceProvider).officialTimesStream(eventId));
+
 /// Computes the live ranking. Returns `AsyncValue<List<ClassificaEntry>>`.
 /// Re-runs whenever any underlying stream emits a new value.
 final classificaProvider =
@@ -64,6 +70,7 @@ final classificaProvider =
   // di UI in timing_screen.dart, non qui.
   final speedViolationsAv =
       ref.watch(speedZoneViolationsStreamProvider(eventId));
+  final officialTimesAv = ref.watch(officialTimesStreamProvider(eventId));
 
   if (eventAv.isLoading || passAv.isLoading || regsAv.isLoading) {
     return const AsyncValue.loading();
@@ -89,6 +96,7 @@ final classificaProvider =
         penaltyAv.valueOrNull ??
         const PenaltySettingsModel(),
     speedZoneViolations: speedViolationsAv.valueOrNull ?? [],
+    officialTimesByUserId: officialTimesAv.valueOrNull ?? {},
   ));
 });
 
@@ -118,6 +126,7 @@ final championshipStandingsProvider =
     final teams = await svc.getTeamsOnce(eventId);
     final withdrawals = await svc.getWithdrawalsOnce(eventId);
     final speedZoneViolations = await svc.getSpeedZoneViolationsOnce(eventId);
+    final officialTimes = await svc.getOfficialTimesOnce(eventId);
 
     final entries = ClassificaEngine.compute(
       event: event,
@@ -128,6 +137,7 @@ final championshipStandingsProvider =
       liveTracking: const <GpsPointModel>[],
       penalties: penalties,
       speedZoneViolations: speedZoneViolations,
+      officialTimesByUserId: officialTimes,
     );
 
     results.add(EventResults(eventId: eventId, entries: entries));

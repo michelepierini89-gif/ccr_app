@@ -11,7 +11,10 @@ import '../constants/app_constants.dart';
 import '../services/waypoint_detector.dart';
 import '../services/firestore_service.dart';
 import '../services/offline_queue_service.dart';
+import '../services/gnss_status_service.dart';
 import '../services/imu_fusion_service.dart';
+import '../services/track_smoother.dart';
+import '../services/voice_alert_service.dart';
 import '../utils/kalman_filter.dart';
 
 enum GpsMode { idle, transfer, inSpecial, nearWaypoint }
@@ -88,11 +91,37 @@ class GpsService extends ChangeNotifier {
   // scatter GPS come punto valido (pattern a ventaglio).
   static const int kDistanceFilterMeters = 2;
 
+  // Blocco C4: FusedLocationProviderClient (default, forceLocationManager:
+  // false) applica una propria fusione/smoothing di Google Play Services
+  // che si somma al nostro Kalman + IMU, potenzialmente aggiungendo lag.
+  // true forza il LocationManager grezzo di Android (nessuna fusione
+  // Google prima del nostro filtro) — da testare sul campo su entrambi i
+  // valori per confrontare la latenza percepita.
+  static const bool kUseRawLocationManager = false;
+
   final FirestoreService _firestoreService;
   final OfflineQueueService _offlineQueue;
   final ImuFusionService _imu;
+  final GnssStatusService? _gnssStatus;
+  final VoiceAlertService? _voiceAlerts;
 
-  GpsService(this._firestoreService, this._offlineQueue, this._imu);
+  GpsService(this._firestoreService, this._offlineQueue, this._imu,
+      [this._gnssStatus, this._voiceAlerts]);
+
+  // Blocco C3: quando GnssStatusService segnala qualità CRITICA (<5
+  // satelliti usati), il campo accuracy dichiarato dal chip resta
+  // ottimistico — questo fattore gonfia l'accuracy effettiva usata da
+  // filtri e Kalman, alzando la diffidenza anche verso fix che si
+  // dichiarano precisi. 1.0 = nessun effetto (piattaforme non Android, o
+  // GnssStatusService non ancora iniziato/quality non critica).
+  static const double _kCriticalGnssDistrustFactor = 2.0;
+
+  double _effectiveAccuracy(double declaredAccuracy) {
+    if (_gnssStatus?.lastSnapshot?.quality == GnssQuality.critica) {
+      return declaredAccuracy * _kCriticalGnssDistrustFactor;
+    }
+    return declaredAccuracy;
+  }
 
   /// Servizio di fusione IMU (giroscopio + accelerometro + bussola) usato
   /// SOLO per il display a 50Hz (freccia, polyline live, velocità UI).
@@ -171,6 +200,12 @@ class GpsService extends ChangeNotifier {
   // used only for the special-start retroactive lookback.
   final List<LatLng> _recoveryTrack = [];
   final List<DateTime> _recoveryTimestamps = [];
+  // Accuracy (metri) del fix raw corrispondente a ogni punto di
+  // _recoveryTrack — mantenuta in parallelo solo per alimentare
+  // TrackSmoother (Blocco B) col ricalcolo post-gara: il forward pass RTS
+  // ha bisogno del rumore di misura reale di ogni campione, non di un
+  // valore costante assunto a posteriori.
+  final List<double> _recoveryAccuracies = [];
 
   // Kalman 4D filter (kinematic: position + velocity) + accuracy filtering
   final GpsKalmanFilter _kalmanFilter =
@@ -254,6 +289,21 @@ class GpsService extends ChangeNotifier {
       : Duration.zero;
   List<WaypointModel> get remainingWaypoints =>
       _waypoints.where((w) => !_passedWaypoints.contains(w.id)).toList();
+
+  /// Traccia grezza completa (posizione Kalman-filtrata + accuracy raw +
+  /// timestamp) della sessione corrente, un campione per ogni fix
+  /// accettato — usata per il ricalcolo post-gara (Blocco B,
+  /// [TrackSmoother]). Va letta PRIMA di [stopRecording] (che azzera i
+  /// buffer sottostanti), come già fatto per [localTrack].
+  List<RawTrackSample> get fullTrackSamples => List.generate(
+        _recoveryTrack.length,
+        (i) => RawTrackSample(
+          lat: _recoveryTrack[i].latitude,
+          lng: _recoveryTrack[i].longitude,
+          accuracy: _recoveryAccuracies[i],
+          timestamp: _recoveryTimestamps[i],
+        ),
+      );
 
   /// Etichetta specifica del waypoint più vicino in modalità nearWaypoint
   /// (es. "Inizio PS1", "Fine PS3", "Checkpoint PS2"), o null se non
@@ -389,6 +439,16 @@ class GpsService extends ChangeNotifier {
   /// una PS con id/nome arbitrario: se la speciale non esiste più (es.
   /// cancellata lato admin dopo che i waypoint erano già stati caricati),
   /// non viene creato nulla e viene solo loggato un warning di debug.
+  /// Numero progressivo (1-based) di [specialId] tra le speciali non
+  /// annullate, ordinate per `ordine` — usato solo per comporre gli
+  /// annunci vocali ("prova speciale N", Blocco D4).
+  int _specialNumero(String specialId) {
+    final ordered = _specials.where((s) => !s.annullata).toList()
+      ..sort((a, b) => a.ordine.compareTo(b.ordine));
+    final idx = ordered.indexWhere((s) => s.id == specialId);
+    return idx >= 0 ? idx + 1 : 1;
+  }
+
   void _addSpecialEntry({
     required String specialeId,
     required DateTime entryTime,
@@ -503,6 +563,7 @@ class GpsService extends ChangeNotifier {
             waypointNome: special.waypointInizio.nome,
             timestamp: recoveredTime,
             recoveredStart: true,
+            timingMethod: 'recovery',
           );
         } catch (_) {
           await _offlineQueue.queuePassage(
@@ -511,6 +572,7 @@ class GpsService extends ChangeNotifier {
             waypointId: inizioId,
             waypointNome: special.waypointInizio.nome,
             timestamp: recoveredTime,
+            timingMethod: 'recovery',
           );
         }
       }
@@ -626,6 +688,7 @@ class GpsService extends ChangeNotifier {
             waypointNome: startWp.nome,
             timestamp: entryTime,
             recoveredStart: recoveredStart,
+            timingMethod: 'recovery',
           );
           await _firestoreService.recordWaypointPassage(
             eventId: _activeEventId!,
@@ -635,6 +698,7 @@ class GpsService extends ChangeNotifier {
             timestamp: exitTime,
             recoveredEnd: true,
             timingError: timingError,
+            timingMethod: 'recovery',
           );
         } catch (_) {
           await _offlineQueue.queuePassage(
@@ -643,6 +707,7 @@ class GpsService extends ChangeNotifier {
             waypointId: startWp.id,
             waypointNome: startWp.nome,
             timestamp: entryTime,
+            timingMethod: 'recovery',
           );
           await _offlineQueue.queuePassage(
             eventId: _activeEventId!,
@@ -650,6 +715,7 @@ class GpsService extends ChangeNotifier {
             waypointId: endWp.id,
             waypointNome: endWp.nome,
             timestamp: exitTime,
+            timingMethod: 'recovery',
           );
         }
       }
@@ -661,7 +727,10 @@ class GpsService extends ChangeNotifier {
   /// Firestore (con fallback su coda offline). Usata sia per i punti che
   /// superano il filtro accuracy display, sia per i punti scartati dal
   /// display ma ancora validi per la detection (STEP 1).
-  Future<void> _handleWaypointDetection(WaypointPassageResult detection) async {
+  Future<void> _handleWaypointDetection(
+    WaypointPassageResult detection, {
+    String timingMethod = 'radius',
+  }) async {
     final wp = detection.waypoint;
     final passageTs = detection.timestamp;
     _passedWaypoints.add(wp.id);
@@ -702,22 +771,36 @@ class GpsService extends ChangeNotifier {
           _currentSpecialId = specialId;
           _currentSpecialNome = special.nome;
           _addSpecialEntry(specialeId: specialId, entryTime: passageTs);
+          _voiceAlerts?.announceSpecialStartCrossed(
+              specialId, _specialNumero(specialId));
         }
       }
     } else if (_fineToSpecial.containsKey(wp.id) &&
         _currentSpecialId == _fineToSpecial[wp.id]) {
       final idx = _specialEntries.lastIndexWhere((e) => e.exitTime == null);
       if (idx >= 0) {
-        _specialEntries[idx] = _specialEntries[idx].withExit(passageTs);
+        final entry = _specialEntries[idx].withExit(passageTs);
+        _specialEntries[idx] = entry;
+        _voiceAlerts?.announceSpecialEndCrossed(entry.specialeId,
+            _specialNumero(entry.specialeId), entry.elapsed!);
       }
       _currentSpecialId = null;
       _currentSpecialNome = null;
     } else if (_zoneStartToZone.containsKey(wp.id)) {
-      _zoneEntryTimestamps[_zoneStartToZone[wp.id]!] = passageTs;
+      final zoneId = _zoneStartToZone[wp.id]!;
+      _zoneEntryTimestamps[zoneId] = passageTs;
+      final zone = _speedZones.where((z) => z.id == zoneId).firstOrNull;
+      if (zone != null) {
+        _voiceAlerts?.announceSpeedZoneEntry(zoneId, zone.maxSpeedKmh);
+      }
     } else if (_zoneEndToZone.containsKey(wp.id)) {
       final zoneId = _zoneEndToZone[wp.id]!;
       final entryTs = _zoneEntryTimestamps.remove(zoneId);
       _checkSpeedZoneViolation(zoneId, entryTs, passageTs);
+    } else {
+      // Nessuna delle mappe sopra: waypoint intermedio "puro", cioè un
+      // checkpoint obbligatorio (non zona velocità) — Blocco D4.
+      _voiceAlerts?.announceCheckpointPassed(wp.id);
     }
 
     if (_activeEventId != null && _activeUserId != null) {
@@ -728,6 +811,7 @@ class GpsService extends ChangeNotifier {
           waypointId: wp.id,
           waypointNome: wp.nome,
           timestamp: passage.timestamp,
+          timingMethod: timingMethod,
         );
       } catch (_) {
         await _offlineQueue.queuePassage(
@@ -736,6 +820,7 @@ class GpsService extends ChangeNotifier {
           waypointId: wp.id,
           waypointNome: wp.nome,
           timestamp: passage.timestamp,
+          timingMethod: timingMethod,
         );
       }
     }
@@ -812,6 +897,7 @@ class GpsService extends ChangeNotifier {
           timestamp: exitTime,
           recoveredEnd: true,
           timingError: timingError,
+          timingMethod: 'recovery',
         );
       } catch (_) {
         await _offlineQueue.queuePassage(
@@ -820,6 +906,7 @@ class GpsService extends ChangeNotifier {
           waypointId: endWp.id,
           waypointNome: endWp.nome,
           timestamp: exitTime,
+          timingMethod: 'recovery',
         );
       }
     }
@@ -964,6 +1051,7 @@ class GpsService extends ChangeNotifier {
             waypointNome: endWp.nome,
             timestamp: recoveredTime,
             recoveredEnd: true,
+            timingMethod: 'recovery',
           );
         } catch (_) {
           await _offlineQueue.queuePassage(
@@ -972,6 +1060,7 @@ class GpsService extends ChangeNotifier {
             waypointId: endWp.id,
             waypointNome: endWp.nome,
             timestamp: recoveredTime,
+            timingMethod: 'recovery',
           );
         }
       }
@@ -1041,6 +1130,7 @@ class GpsService extends ChangeNotifier {
           waypointNome: startWp.nome,
           timestamp: entryTime,
           timingError: 'speciale_saltata',
+          timingMethod: 'recovery',
         );
         await _firestoreService.recordWaypointPassage(
           eventId: _activeEventId!,
@@ -1049,6 +1139,7 @@ class GpsService extends ChangeNotifier {
           waypointNome: endWp.nome,
           timestamp: now,
           timingError: 'speciale_saltata',
+          timingMethod: 'recovery',
         );
       } catch (_) {
         await _offlineQueue.queuePassage(
@@ -1057,6 +1148,7 @@ class GpsService extends ChangeNotifier {
           waypointId: endWp.id,
           waypointNome: endWp.nome,
           timestamp: now,
+          timingMethod: 'recovery',
         );
       }
     }
@@ -1085,6 +1177,11 @@ class GpsService extends ChangeNotifier {
     List<WaypointModel> fuelPoints = const [],
     List<DangerPointModel> dangerPoints = const [],
     List<SpeedZoneModel> speedZones = const [],
+    // Polyline GPX di riferimento dell'evento, usata una sola volta qui per
+    // costruire le porte virtuali di inizio/fine PS e zone velocità (Blocco
+    // A — timing di precisione). Se vuota, tutti i waypoint restano senza
+    // porta e il rilevamento ricade sul metodo a raggio esistente.
+    List<LatLng> referenceTrack = const [],
   }) async {
     if (_isRecording) return;
     final hasPermission = await requestPermissions();
@@ -1136,7 +1233,18 @@ class GpsService extends ChangeNotifier {
         type: WaypointType.intermedio,
       ));
     }
-    _waypoints = [...waypoints, ...zoneWaypoints];
+    // Porte virtuali (Blocco A): attaccate solo a inizio/fine PS e a
+    // ingresso/uscita zona velocità — per i checkpoint intermedi resta il
+    // solo metodo a raggio (A5: lì conta solo il passaggio, non l'istante).
+    _waypoints = WaypointDetector.attachGates(
+      [...waypoints, ...zoneWaypoints],
+      referenceTrack,
+      shouldGate: (w) =>
+          w.type == WaypointType.inizio ||
+          w.type == WaypointType.fine ||
+          _zoneStartToZone.containsKey(w.id) ||
+          _zoneEndToZone.containsKey(w.id),
+    );
     _passedWaypoints.clear();
     _fuelPoints = fuelPoints;
     _passedFuelPoints.clear();
@@ -1154,6 +1262,7 @@ class GpsService extends ChangeNotifier {
     _displayAnchor = null;
     _recoveryTrack.clear();
     _recoveryTimestamps.clear();
+    _recoveryAccuracies.clear();
     _totalDistanceKm = 0.0;
     _currentSpecialId = null;
     _currentSpecialNome = null;
@@ -1177,6 +1286,8 @@ class GpsService extends ChangeNotifier {
     _lastRawPositionTs = null;
     _lastFirestoreUpdateTs = null;
     _isRestartingGps = false;
+    _gnssStatus?.start();
+    unawaited(_voiceAlerts?.start());
     // Notifica IMMEDIATA: la schermata di navigazione deve apparire subito,
     // indipendentemente da quanto impiega il GPS a fornire un fix. Tutto
     // quello che segue (IMU, stream posizione) avviene in background mentre
@@ -1208,6 +1319,7 @@ class GpsService extends ChangeNotifier {
         accuracy: LocationAccuracy.high,
         distanceFilter: kDistanceFilterMeters,
         intervalDuration: Duration(milliseconds: intervalMs),
+        forceLocationManager: kUseRawLocationManager,
         foregroundNotificationConfig: const ForegroundNotificationConfig(
           notificationText: 'CCR Rally — GPS attivo in background',
           notificationTitle: 'Registrazione GPS',
@@ -1322,10 +1434,11 @@ class GpsService extends ChangeNotifier {
     // (vedi _currentDisplayAccuracyThreshold): altrimenti la convergenza
     // normale del chip (30-60s) scarterebbe ogni punto e Kalman/IMU
     // resterebbero inizializzati a null per tutta quella finestra.
+    final effectiveAccuracy = _effectiveAccuracy(pos.accuracy);
     final displayThreshold = _currentDisplayAccuracyThreshold(now);
-    if (pos.accuracy > displayThreshold) {
+    if (effectiveAccuracy > displayThreshold) {
       _consecutiveDiscarded++;
-      if (pos.accuracy <= kMaxAccuracyDetectionMeters) {
+      if (effectiveAccuracy <= kMaxAccuracyDetectionMeters) {
         final detection = _waypointDetector.detectPassage(
             rawLatLng, now, _waypoints, _passedWaypoints,
             radiusOverrides: _zoneRadiusOverrides);
@@ -1365,8 +1478,8 @@ class GpsService extends ChangeNotifier {
     _lastAcceptedTs = now;
 
     // ── STEP 3: Kalman filter 4D cinematico ─────────────────────────────────
-    var filteredPos =
-        _kalmanFilter.filter(pos.latitude, pos.longitude, pos.accuracy, now);
+    var filteredPos = _kalmanFilter.filter(
+        pos.latitude, pos.longitude, effectiveAccuracy, now);
 
     // ── STEP 3b: sanity check post-Kalman ───────────────────────────────────
     // Se la stima Kalman implica una velocità anche più assurda della soglia
@@ -1381,7 +1494,7 @@ class GpsService extends ChangeNotifier {
         if (kalmanImpliedSpeed > kMaxSpeedFilterKmh * 1.2) {
           _kalmanFilter.reset();
           filteredPos = _kalmanFilter.filter(
-              pos.latitude, pos.longitude, pos.accuracy, now);
+              pos.latitude, pos.longitude, effectiveAccuracy, now);
           debugPrint('KALMAN RESET: stima impossibile '
               '${kalmanImpliedSpeed.toStringAsFixed(0)} km/h');
         }
@@ -1409,6 +1522,11 @@ class GpsService extends ChangeNotifier {
     }
 
     // ── STEP 5: velocità geometrica e bearing ───────────────────────────────
+    // Catturati PRIMA dell'overwrite sotto: servono al rilevamento porta
+    // virtuale (Blocco A2), che ha bisogno del segmento prev->curr esatto
+    // dei punti filtrati Kalman, non solo della velocità geometrica.
+    final previousFilteredPosForGate = _lastAcceptedFilteredPos;
+    final previousFilteredTsForGate = _lastFilteredTs;
     if (_lastAcceptedFilteredPos != null && _lastFilteredTs != null) {
       final dtMs = now.difference(_lastFilteredTs!).inMilliseconds;
       _geometricSpeedKmh = _computeGeometricSpeedKmh(
@@ -1451,6 +1569,7 @@ class GpsService extends ChangeNotifier {
     // Recovery track: ogni punto accettato, per il lookback inizio speciale
     _recoveryTrack.add(filteredPos);
     _recoveryTimestamps.add(now);
+    _recoveryAccuracies.add(pos.accuracy);
 
     // Nessuna waypoint detection né recovery nei primi 10s dall'avvio: il
     // buffer GPS si sta ancora inizializzando (fix qualità scarsa,
@@ -1462,15 +1581,37 @@ class GpsService extends ChangeNotifier {
         ? now.difference(_recordingStart!).inSeconds
         : 999;
     if (secondsSinceStart >= 10) {
-      // Detect waypoint passage — sempre sulla posizione filtrata Kalman,
-      // confermato solo dopo 2 rilevazioni consecutive (protezione ghost
-      // point); il timestamp usato è quello della PRIMA rilevazione, non
-      // della seconda.
-      final detection = _waypointDetector.detectPassage(
+      // Precedenza timing (Blocco A4): porta virtuale > raggio > recovery.
+      // La porta usa il segmento tra l'ultimo punto filtrato e quello
+      // corrente per un'interpolazione al millisecondo; se non attraversa
+      // nessuna porta (es. gap GPS proprio sulla linea, o ingresso
+      // laterale fuori porta), si ricade sul metodo a raggio esistente,
+      // che resta invariato e non rimosso.
+      WaypointPassageResult? detection;
+      var timingMethod = 'radius';
+      if (previousFilteredPosForGate != null &&
+          previousFilteredTsForGate != null) {
+        detection = _waypointDetector.detectGateCrossing(
+          previousFilteredPosForGate,
+          filteredPos,
+          previousFilteredTsForGate,
+          now,
+          _waypoints,
+          _passedWaypoints,
+        );
+        if (detection != null) timingMethod = 'gate';
+      }
+
+      // Detect waypoint passage a raggio — sempre sulla posizione filtrata
+      // Kalman, confermato solo dopo 2 rilevazioni consecutive (protezione
+      // ghost point); il timestamp usato è quello della PRIMA rilevazione,
+      // non della seconda. Provato solo se la porta non ha già rilevato un
+      // attraversamento in questo fix.
+      detection ??= _waypointDetector.detectPassage(
           filteredPos, now, _waypoints, _passedWaypoints,
           radiusOverrides: _zoneRadiusOverrides);
       if (detection != null) {
-        await _handleWaypointDetection(detection);
+        await _handleWaypointDetection(detection, timingMethod: timingMethod);
         if (_disposed) return;
       }
 
@@ -1479,6 +1620,43 @@ class GpsService extends ChangeNotifier {
       if (_disposed) return;
       await _trySpecialEndRecovery(filteredPos, now);
       if (_disposed) return;
+
+      // Blocco D4: avvisi vocali di avvicinamento a inizio/fine PS e zone
+      // a velocità controllata. Soglie/dedupe gestite interamente da
+      // VoiceAlertService (D3) — qui solo il calcolo della distanza.
+      if (_voiceAlerts != null) {
+        if (_currentSpecialId == null) {
+          final nextSpecial = _specials
+              .where((s) =>
+                  !s.annullata && !_passedWaypoints.contains(s.waypointInizio.id))
+              .toList()
+            ..sort((a, b) => a.ordine.compareTo(b.ordine));
+          if (nextSpecial.isNotEmpty) {
+            final next = nextSpecial.first;
+            final d = _haversineKm(filteredPos,
+                    LatLng(next.waypointInizio.lat, next.waypointInizio.lng)) *
+                1000.0;
+            _voiceAlerts.checkSpecialStartApproach(
+                next.id, _specialNumero(next.id), d);
+          }
+        } else {
+          final current =
+              _specials.where((s) => s.id == _currentSpecialId).firstOrNull;
+          if (current != null) {
+            final d = _haversineKm(filteredPos,
+                    LatLng(current.waypointFine.lat, current.waypointFine.lng)) *
+                1000.0;
+            _voiceAlerts.checkSpecialEndApproach(
+                current.id, _specialNumero(current.id), d);
+          }
+        }
+
+        for (final zone in _speedZones) {
+          if (_passedWaypoints.contains('${zone.id}_start')) continue;
+          final d = _haversineKm(filteredPos, zone.startLatLng) * 1000.0;
+          _voiceAlerts.checkSpeedZoneApproach(zone.id, d, zone.maxSpeedKmh);
+        }
+      }
     }
 
     // Fuel point passage: mark as passed once within radius, notify exactly once.
@@ -1487,6 +1665,7 @@ class GpsService extends ChangeNotifier {
     for (final fp in _fuelPoints) {
       if (_passedFuelPoints.contains(fp.id)) continue;
       final distM = _haversineKm(filteredPos, LatLng(fp.lat, fp.lng)) * 1000.0;
+      _voiceAlerts?.checkFuelPointApproach(fp.id, distM);
       if (distM <= AppConstants.fuelPointRadiusMeters) {
         _passedFuelPoints.add(fp.id);
         _fuelPointStreamCtrl.add('✅ Punto ristoro raggiunto');
@@ -1499,6 +1678,9 @@ class GpsService extends ChangeNotifier {
     double? warnDist;
     for (final dp in _dangerPoints) {
       final distM = WaypointDetector.dangerPointDistance(filteredPos, dp);
+      if (!_passedDangerPoints.contains(dp.id)) {
+        _voiceAlerts?.checkDangerApproach(dp.id, dp.comment, distM);
+      }
 
       // Superato (entro 15m): segna come passato permanentemente per la
       // sessione, notifica una sola volta e non mostrare più avvisi per
@@ -1652,6 +1834,7 @@ class GpsService extends ChangeNotifier {
   }
 
   Future<void> stopRecording() async {
+    unawaited(_voiceAlerts?.stop());
     _positionSub?.cancel();
     _positionSub = null;
     _isRecording = false;
@@ -1681,6 +1864,7 @@ class GpsService extends ChangeNotifier {
     _displayAnchor = null;
     _recoveryTrack.clear();
     _recoveryTimestamps.clear();
+    _recoveryAccuracies.clear();
     _alertedDangerPoints.clear();
     _warningDangerPoint = null;
     _warningDangerDistance = null;

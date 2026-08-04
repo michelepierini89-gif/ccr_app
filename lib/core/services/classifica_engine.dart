@@ -16,6 +16,13 @@ class ClassificaEngine {
     required List<GpsPointModel> liveTracking,
     PenaltySettingsModel penalties = const PenaltySettingsModel(),
     List<SpeedZoneViolation> speedZoneViolations = const [],
+    // Tempi ufficiali ricalcolati post-gara (Blocco B), userId -> specialeId
+    // -> tempo ufficiale. Se presente per almeno un membro dell'entry,
+    // sostituisce il tempo netto calcolato dai passaggi live per quella PS
+    // (le penalità CP/zona velocità restano invariate, calcolate sempre
+    // dai passaggi live).
+    Map<String, Map<String, OfficialSpecialTime>> officialTimesByUserId =
+        const {},
   }) {
     final approvedRegs =
         registrations.where((r) => r.stato == RegistrationStatus.approvato).toList();
@@ -84,6 +91,7 @@ class ClassificaEngine {
         pilotiMancanti: pilotiMancanti,
         isLive: isLive,
         retiredReason: teamRetiredReason,
+        memberIds: memberIds,
       ));
     }
 
@@ -105,13 +113,14 @@ class ClassificaEngine {
         pilotiMancanti: 0,
         isLive: liveUserIds.contains(reg.userId),
         retiredReason: retiredReasonMap[reg.userId],
+        memberIds: {reg.userId},
       ));
     }
 
     // PASSO 1: calcola i tempi reali per tutte le entry.
     var computed = rawEntries.map((e) {
-      final speciali =
-          _computeSpeciali(event, e.passages, e.speedZoneViolations, penalties);
+      final speciali = _computeSpeciali(event, e.passages,
+          e.speedZoneViolations, penalties, e.memberIds, officialTimesByUserId);
       final cpTotale = speciali.fold(Duration.zero, (acc, s) => acc + s.tempo);
       final ritiroPenaltySeconds =
           e.ritiroCompagno ? penalties.ritiroCompagno : 0;
@@ -177,7 +186,9 @@ class ClassificaEngine {
       EventModel event,
       List<WaypointPassageRecord> passages,
       List<SpeedZoneViolation> speedZoneViolations,
-      PenaltySettingsModel penalties) {
+      PenaltySettingsModel penalties,
+      Set<String> memberIds,
+      Map<String, Map<String, OfficialSpecialTime>> officialTimesByUserId) {
     final zoneById = {for (final z in event.speedZones) z.id: z};
     final result = <SpecialTempo>[];
     for (final special
@@ -232,6 +243,8 @@ class ClassificaEngine {
           timingError: 'rilevamento_non_valido',
           rawStartTime: start.timestamp,
           rawEndTime: end.timestamp,
+          startTimingMethod: start.timingMethod,
+          endTimingMethod: end.timingMethod,
         ));
         continue;
       }
@@ -268,7 +281,25 @@ class ClassificaEngine {
 
       final cpPenaltySeconds = _cpPenaltySeconds(missed.length, penalties);
       final penaltySeconds = cpPenaltySeconds + speedZonePenaltySeconds;
-      final tempo = cleanTempo + Duration(seconds: penaltySeconds);
+
+      // Tempo ufficiale (Blocco B, ricalcolo post-gara con TrackSmoother +
+      // porte virtuali): se un membro dell'entry ne ha uno per questa PS,
+      // sostituisce il tempo netto live. Le penalità CP/zona velocità
+      // restano sempre quelle calcolate sopra dai passaggi live — il
+      // ricalcolo riguarda solo la precisione del cronometraggio inizio/
+      // fine, non il rilevamento dei checkpoint (che resta a raggio, A5).
+      OfficialSpecialTime? official;
+      for (final uid in memberIds) {
+        final o = officialTimesByUserId[uid]?[special.id];
+        if (o != null) {
+          official = o;
+          break;
+        }
+      }
+      final effectiveCleanTempo = official != null
+          ? Duration(milliseconds: official.durationMs)
+          : cleanTempo;
+      final tempo = effectiveCleanTempo + Duration(seconds: penaltySeconds);
 
       result.add(SpecialTempo(
         specialeId: special.id,
@@ -287,6 +318,9 @@ class ClassificaEngine {
         timingError: end.timingError,
         rawStartTime: end.timingError != null ? start.timestamp : null,
         rawEndTime: end.timingError != null ? end.timestamp : null,
+        startTimingMethod: official?.timingMethod ?? start.timingMethod,
+        endTimingMethod: official?.timingMethod ?? end.timingMethod,
+        isOfficialTime: official != null,
       ));
     }
     return result;
@@ -554,6 +588,7 @@ class _RawEntry {
   final int pilotiMancanti;
   final bool isLive;
   final String? retiredReason;
+  final Set<String> memberIds;
 
   _RawEntry({
     required this.entryId,
@@ -566,5 +601,6 @@ class _RawEntry {
     required this.pilotiMancanti,
     required this.isLive,
     this.retiredReason,
+    required this.memberIds,
   });
 }

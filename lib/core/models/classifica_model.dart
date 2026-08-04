@@ -23,6 +23,11 @@ class WaypointPassageRecord {
   // 'chiusa_da_FINE_GARA'. Letto da ClassificaEngine per segnalarlo
   // all'admin nella stessa UI usata per 'rilevamento_non_valido'.
   final String? timingError;
+  // Precisione del rilevamento: 'gate' (porta virtuale + interpolazione),
+  // 'radius' (raggio) o 'recovery' (recovery retroattivo/forfeit). Vedi
+  // GpsService/WaypointDetector — usato solo per il badge discreto in
+  // TimingScreen (admin).
+  final String timingMethod;
 
   const WaypointPassageRecord({
     required this.id,
@@ -31,6 +36,7 @@ class WaypointPassageRecord {
     required this.waypointNome,
     required this.timestamp,
     this.timingError,
+    this.timingMethod = 'radius',
   });
 
   factory WaypointPassageRecord.fromFirestore(DocumentSnapshot doc) {
@@ -42,6 +48,7 @@ class WaypointPassageRecord {
       waypointNome: d['waypointNome'] ?? '',
       timestamp: (d['timestamp'] as Timestamp?)?.toDate() ?? DateTime.now(),
       timingError: d['timingError'] as String?,
+      timingMethod: d['timingMethod'] as String? ?? 'radius',
     );
   }
 }
@@ -79,6 +86,32 @@ class SpeedZoneViolation {
   }
 }
 
+/// Tempo ufficiale di una PS per un pilota, ricalcolato post-gara
+/// (Blocco B: TrackSmoother RTS + rilevamento porte virtuali sulla
+/// traccia smussata) — vedi `tracking/{eventId}/officialTimes/{userId}`.
+/// Separato dai tempi live: la classifica lo usa se presente, altrimenti
+/// ricade sul tempo netto calcolato dai passaggi live.
+class OfficialSpecialTime {
+  final int durationMs;
+  final String timingMethod; // peggiore tra inizio/fine ('gate'/'radius')
+
+  const OfficialSpecialTime({
+    required this.durationMs,
+    required this.timingMethod,
+  });
+
+  Map<String, dynamic> toMap() => {
+        'durationMs': durationMs,
+        'timingMethod': timingMethod,
+      };
+
+  factory OfficialSpecialTime.fromMap(Map<String, dynamic> m) =>
+      OfficialSpecialTime(
+        durationMs: (m['durationMs'] as num).toInt(),
+        timingMethod: m['timingMethod'] as String? ?? 'radius',
+      );
+}
+
 /// Dettaglio di una violazione zona velocità per il badge in classifica
 /// (nome zona + velocità media rilevata vs limite), usato solo lato admin.
 class SpeedZoneViolationInfo {
@@ -107,6 +140,14 @@ class SpecialTempo {
   final List<SpeedZoneViolationInfo> speedZoneViolations; // violazioni zona velocità, solo admin
   final int speedZonePenaltySeconds; // quota di penaltySeconds dovuta alle zone velocità
   final bool skipped; // pilota ha saltato volontariamente questa PS
+  // Precisione del rilevamento di inizio/fine ('gate'/'radius'/'recovery'),
+  // vedi WaypointPassageRecord.timingMethod — mostrato come badge discreto
+  // solo lato admin in TimingScreen.
+  final String startTimingMethod;
+  final String endTimingMethod;
+  // true se il tempo netto proviene dal ricalcolo ufficiale post-gara
+  // (Blocco B) invece che dai passaggi live.
+  final bool isOfficialTime;
 
   const SpecialTempo({
     required this.specialeId,
@@ -122,6 +163,9 @@ class SpecialTempo {
     this.skipped = false,
     this.speedZoneViolations = const [],
     this.speedZonePenaltySeconds = 0,
+    this.startTimingMethod = 'radius',
+    this.endTimingMethod = 'radius',
+    this.isOfficialTime = false,
   });
 
   SpecialTempo copyWith({Duration? tempo, int? penaltySeconds}) => SpecialTempo(
@@ -138,6 +182,9 @@ class SpecialTempo {
         speedZoneViolations: speedZoneViolations,
         speedZonePenaltySeconds: speedZonePenaltySeconds,
         skipped: skipped,
+        startTimingMethod: startTimingMethod,
+        endTimingMethod: endTimingMethod,
+        isOfficialTime: isOfficialTime,
       );
 
   String get tempoFormatted {
