@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
@@ -14,7 +15,8 @@ import '../../../core/models/event_model.dart';
 import '../../../core/models/registration_model.dart';
 import '../../../core/models/waypoint_model.dart';
 import '../../../core/providers/track_appearance_provider.dart';
-import '../../../core/services/battery_service.dart';
+import '../../../core/services/battery_setup_service.dart';
+import '../../../core/services/diagnostic_logger.dart';
 import '../../../core/services/gnss_status_service.dart';
 import '../../../core/services/gps_service.dart';
 import '../../../core/services/imu_fusion_service.dart';
@@ -45,9 +47,11 @@ class GpsRecordingScreen extends ConsumerStatefulWidget {
 }
 
 class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   Timer? _elapsedTimer;
   Duration _elapsed = Duration.zero;
+  int _notificationUpdateTicks = 0;
+  static const _foregroundNotificationChannel = MethodChannel('ccr/notification');
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
   late AnimationController _markerController;
@@ -73,6 +77,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   bool _headingMode = false;
 
   bool _batteryOptOk = true;
+  bool _locationAlwaysOk = true;
 
   StreamSubscription<String>? _recoverySub;
   String? _recoveryMessage;
@@ -94,11 +99,14 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   // lì dentro lancia "Cannot use ref after the widget was disposed"
   // interrompendo il resto di dispose() (AnimationController mai fermati).
   late final ImuFusionService _imuService;
+  late final DiagnosticLogger _diagLogger;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _imuService = ref.read(imuFusionServiceProvider);
+    _diagLogger = ref.read(diagnosticLoggerProvider);
     _mapController = MapController();
     _gpsStream = ref.read(gpsServiceProvider).positionStream;
     // Blocco C: l'avvio/stop del monitoraggio GNSS è gestito da GpsService
@@ -152,17 +160,40 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     });
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       _loadEventTrack();
-      final ok = await BatteryOptimizationService.isIgnoring();
-      if (mounted) setState(() => _batteryOptOk = ok);
+      await _refreshPrepChecklist();
+    });
+  }
+
+  /// Ricontrolla lo stato batteria/posizione (Parte 2A) — richiamato
+  /// all'avvio e ogni volta che l'app torna in foreground, così la
+  /// checklist "Preparazione gara" si aggiorna da sola dopo che il pilota
+  /// ha sistemato le impostazioni e torna indietro.
+  Future<void> _refreshPrepChecklist() async {
+    final batteryOk = await BatterySetupService.isIgnoringBatteryOptimizations();
+    final permission = await Geolocator.checkPermission();
+    if (!mounted) return;
+    setState(() {
+      _batteryOptOk = batteryOk;
+      _locationAlwaysOk = permission == LocationPermission.always;
     });
   }
 
   void _startElapsedTimer() {
     _elapsedTimer?.cancel();
+    _notificationUpdateTicks = 0;
     _elapsedTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
       final gps = ref.read(gpsServiceProvider);
       if (!gps.isRecording) return;
+
+      // Parte 5: aggiorna il testo della notifica persistente ogni 30s —
+      // il pilota può verificare dalla lock screen che la registrazione è
+      // viva senza aprire l'app.
+      _notificationUpdateTicks++;
+      if (_notificationUpdateTicks >= 30) {
+        _notificationUpdateTicks = 0;
+        unawaited(_updateForegroundNotification(gps));
+      }
 
       if (gps.recordingStart != null) {
         // Timeout check before setState so flag is visible in next build
@@ -186,6 +217,24 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         });
       }
     });
+  }
+
+  /// Parte 5: "CCR — registrazione attiva · N punti · HH:MM:SS", N = fix
+  /// GPS accettati in questa sessione, orario = ultimo fix accettato.
+  /// No-op silenzioso su web/iOS o se il canale nativo non risponde — mai
+  /// deve interrompere la registrazione.
+  Future<void> _updateForegroundNotification(GpsService gps) async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+    final count = gps.fullTrackSamples.length;
+    final lastFix = gps.lastAcceptedFixTime;
+    final timeStr =
+        lastFix != null ? DateFormat('HH:mm:ss').format(lastFix) : '--:--:--';
+    try {
+      await _foregroundNotificationChannel.invokeMethod(
+        'updateForegroundNotification',
+        {'text': 'CCR — registrazione attiva · $count punti · $timeStr'},
+      );
+    } catch (_) {}
   }
 
   void _computeDeadlineIfNeeded(EventModel event, RegistrationModel? reg) {
@@ -342,6 +391,8 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
 
   void _onImuUpdate() {
     if (_imuService.fusedPosition == null || !mounted) return;
+    _diagLogger.logImuHeading(
+        _imuService.displayHeadingDeg, ref.read(gpsServiceProvider).bearingDeg);
     setState(() {
       _imuPosition = _imuService.fusedPosition;
       // displayHeadingDeg: bussola grezza + low-pass leggero, per la
@@ -354,6 +405,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     WakelockPlus.disable().ignore();
     _imuService.removeListener(_onImuUpdate);
     _elapsedTimer?.cancel();
@@ -367,6 +419,18 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     _dangerBlinkController.dispose();
     _mapController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Log diagnostico di sessione (Parte 4): il ciclo di vita dell'app è
+    // il segnale più utile per diagnosticare un GPS che si ferma in
+    // background. `paused` è anche l'approssimazione più vicina a "schermo
+    // spento" disponibile senza hook nativi dedicati.
+    _diagLogger.logLifecycle(state.name);
+    if (state == AppLifecycleState.resumed) {
+      _refreshPrepChecklist();
+    }
   }
 
   void _onMarkerAnimTick() {
@@ -824,35 +888,169 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         // Blocco C3: qualità GNSS reale (satelliti usati/visibili), così il
         // pilota sa se conviene attendere prima di partire.
         const _GnssQualityBanner(),
-        if (!_batteryOptOk)
-          _BatteryOptBanner(
-            onTap: () async {
-              await BatteryOptimizationService.requestIgnore();
-              final ok = await BatteryOptimizationService.isIgnoring();
-              if (mounted) setState(() => _batteryOptOk = ok);
-            },
-          ),
+        _PrepChecklistCard(
+          locationAlwaysOk: _locationAlwaysOk,
+          batteryOptOk: _batteryOptOk,
+          gpsSignalOk: pos != null,
+          onFixLocation: _fixLocationPermission,
+          onFixBattery: _fixBatteryOptimization,
+          onGpsSignalTap: _showGpsSignalTip,
+          onVoiceTest: _playVoiceTest,
+        ),
         Expanded(
-          child: Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                _ModeBadge(
-                    color: _modeColor(gps.mode),
-                    label: _modeLabel(gps.mode, gps)),
-                const SizedBox(height: 48),
-                GestureDetector(
-                  onTap: canStart ? _toggleRecording : null,
-                  child: _BigButton(isRecording: false, enabled: canStart),
+          child: SingleChildScrollView(
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 24),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    _ModeBadge(
+                        color: _modeColor(gps.mode),
+                        label: _modeLabel(gps.mode, gps)),
+                    const SizedBox(height: 48),
+                    GestureDetector(
+                      onTap: canStart ? () => _onStartTapped(gps) : null,
+                      child: _BigButton(isRecording: false, enabled: canStart),
+                    ),
+                    const SizedBox(height: 48),
+                    if (pos != null) _GpsInfoRow(pos: pos),
+                  ],
                 ),
-                const SizedBox(height: 48),
-                if (pos != null) _GpsInfoRow(pos: pos),
-              ],
+              ),
             ),
           ),
         ),
       ],
     );
+  }
+
+  // ── Preparazione gara (Parte 2) ──────────────────────────────────────────
+
+  Future<void> _fixLocationPermission() async {
+    await Geolocator.openAppSettings();
+    // Il pilota torna dalle impostazioni con l'app in resumed:
+    // didChangeAppLifecycleState richiama già _refreshPrepChecklist().
+  }
+
+  Future<void> _fixBatteryOptimization() async {
+    await BatterySetupService.requestIgnoreBatteryOptimizations();
+    await _refreshPrepChecklist();
+    if (!mounted) return;
+    final manufacturer = await BatterySetupService.manufacturer();
+    final instructions = BatterySetupService.instructionsFor(manufacturer);
+    // Sui produttori con risparmio energetico proprietario l'esenzione
+    // standard non basta: mostra sempre le istruzioni specifiche, anche se
+    // il dialog di sistema è stato accettato.
+    if (instructions == null || !mounted) return;
+    await showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.cardBackground,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('$manufacturer: passaggi extra necessari',
+                style: const TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 17,
+                    fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            const Text(
+              'Su questo produttore l\'esenzione standard da sola spesso '
+              'non basta: il sistema ha comunque un risparmio energetico '
+              'proprietario che può fermare il GPS.',
+              style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            Text(instructions,
+                style: const TextStyle(
+                    color: AppColors.textPrimary, height: 1.4)),
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: ElevatedButton(
+                onPressed: () async {
+                  await BatterySetupService.openManufacturerBatterySettings();
+                  if (ctx.mounted) Navigator.pop(ctx);
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.accent,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                ),
+                child: const Text('Apri impostazioni produttore',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showGpsSignalTip() {
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text('Vai all\'aperto, lontano da edifici, per un segnale '
+          'GPS migliore'),
+      duration: Duration(seconds: 3),
+    ));
+  }
+
+  Future<void> _playVoiceTest() async {
+    final voiceService = ref.read(voiceAlertServiceProvider);
+    await voiceService.playTestAnnouncement();
+  }
+
+  /// Non blocca mai la partenza: se un requisito non è soddisfatto mostra
+  /// un avviso esplicito con conferma, ma il pilota resta sempre libero di
+  /// partire comunque.
+  Future<void> _onStartTapped(GpsService gps) async {
+    final warnings = <String>[];
+    if (!_batteryOptOk) {
+      warnings.add('L\'ottimizzazione batteria è attiva: la registrazione '
+          'potrebbe interrompersi con lo schermo spento.');
+    }
+    if (!_locationAlwaysOk) {
+      warnings.add('Il permesso posizione non è impostato su "Consenti '
+          'sempre": il GPS potrebbe fermarsi con l\'app in background.');
+    }
+    if (warnings.isEmpty) {
+      _toggleRecording();
+      return;
+    }
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: const Text('⚠ Attenzione',
+            style: TextStyle(color: AppColors.warning, fontSize: 17)),
+        content: Text(
+          '${warnings.join('\n\n')}\n\nVuoi partire lo stesso?',
+          style: const TextStyle(color: AppColors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('ANNULLA',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.warning),
+            child: const Text('PARTI LO STESSO',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+    if (proceed == true) _toggleRecording();
   }
 
   // ── Race-done view (finished or retired) ────────────────────────────────────
@@ -1978,6 +2176,9 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     final voiceService = ref.read(voiceAlertServiceProvider);
     var voiceSettings = voiceService.settings;
 
+    final gps = ref.read(gpsServiceProvider);
+    var useRawGps = gps.useRawLocationManager;
+
     await showModalBottomSheet(
       context: context,
       backgroundColor: AppColors.cardBackground,
@@ -2214,6 +2415,34 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                     ),
                   ),
                 ],
+
+                const SizedBox(height: 24),
+                const Divider(color: AppColors.border),
+                const SizedBox(height: 8),
+                const Text('Avanzate',
+                    style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold)),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  activeThumbColor: AppColors.accent,
+                  title: const Text('Provider GPS grezzo (sperimentale)',
+                      style: TextStyle(color: AppColors.textPrimary)),
+                  subtitle: const Text(
+                      'Bypassa la fusione di Google. Può ridurre il '
+                      'ritardo della posizione.',
+                      style: TextStyle(
+                          color: AppColors.textSecondary, fontSize: 12)),
+                  value: useRawGps,
+                  onChanged: (v) {
+                    setSheetState(() => useRawGps = v);
+                    // Parte 3: applica subito riavviando lo stream se la
+                    // registrazione è attiva, altrimenti si applica al
+                    // prossimo avvio (già persistito da setUseRawLocationManager).
+                    unawaited(gps.setUseRawLocationManager(v));
+                  },
+                ),
 
                 const SizedBox(height: 20),
                 SizedBox(
@@ -2483,32 +2712,101 @@ class _GnssQualityBanner extends ConsumerWidget {
   }
 }
 
-class _BatteryOptBanner extends StatelessWidget {
-  const _BatteryOptBanner({required this.onTap});
+/// Checklist "Preparazione gara" (Parte 2D): mostrata sopra il pulsante
+/// START, ogni riga in stato ⚠ è toccabile e porta direttamente all'azione
+/// che la risolve. Non blocca mai la partenza — solo informa.
+class _PrepChecklistCard extends StatelessWidget {
+  final bool locationAlwaysOk;
+  final bool batteryOptOk;
+  final bool gpsSignalOk;
+  final VoidCallback onFixLocation;
+  final VoidCallback onFixBattery;
+  final VoidCallback onGpsSignalTap;
+  final VoidCallback onVoiceTest;
 
-  final VoidCallback onTap;
+  const _PrepChecklistCard({
+    required this.locationAlwaysOk,
+    required this.batteryOptOk,
+    required this.gpsSignalOk,
+    required this.onFixLocation,
+    required this.onFixBattery,
+    required this.onGpsSignalTap,
+    required this.onVoiceTest,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.cardBackground,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Preparazione gara',
+              style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold)),
+          const SizedBox(height: 6),
+          _PrepRow(
+            label: 'Permesso posizione sempre attiva',
+            ok: locationAlwaysOk,
+            onTap: locationAlwaysOk ? null : onFixLocation,
+          ),
+          _PrepRow(
+            label: 'Ottimizzazione batteria disattivata',
+            ok: batteryOptOk,
+            onTap: batteryOptOk ? null : onFixBattery,
+          ),
+          _PrepRow(
+            label: 'Segnale GPS',
+            ok: gpsSignalOk,
+            onTap: gpsSignalOk ? null : onGpsSignalTap,
+          ),
+          _PrepRow(
+            label: 'Avvisi vocali (prova audio)',
+            ok: null,
+            onTap: onVoiceTest,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PrepRow extends StatelessWidget {
+  /// null = riga solo azione (nessuno stato ok/⚠), es. "prova audio".
+  final bool? ok;
+  final String label;
+  final VoidCallback? onTap;
+
+  const _PrepRow({required this.label, required this.ok, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final Widget icon = ok == null
+        ? const Icon(Icons.play_circle_outline,
+            color: AppColors.accent, size: 18)
+        : Icon(ok! ? Icons.check_circle : Icons.warning_amber_rounded,
+            color: ok! ? AppColors.success : AppColors.warning, size: 18);
+    return InkWell(
       onTap: onTap,
-      child: Container(
-        width: double.infinity,
-        color: Colors.orange.shade800.withValues(alpha: 0.88),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        child: const Row(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Row(
           children: [
-            Icon(Icons.battery_alert, color: Colors.white, size: 18),
-            SizedBox(width: 8),
+            icon,
+            const SizedBox(width: 10),
             Expanded(
-              child: Text(
-                '⚡ GPS può essere bloccato in background — tocca per disabilitare '
-                'l\'ottimizzazione batteria',
-                style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 12),
-              ),
+              child: Text(label,
+                  style: const TextStyle(
+                      color: AppColors.textSecondary, fontSize: 13)),
             ),
           ],
         ),

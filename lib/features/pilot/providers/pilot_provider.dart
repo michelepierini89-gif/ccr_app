@@ -3,6 +3,7 @@ import '../../../core/models/cp_dispute_model.dart';
 import '../../../core/models/event_model.dart';
 import '../../../core/models/registration_model.dart';
 import '../../../core/providers/offline_provider.dart';
+import '../../../core/services/diagnostic_logger.dart';
 import '../../../core/services/gnss_status_service.dart';
 import '../../../core/services/gps_service.dart';
 import '../../../core/services/imu_fusion_service.dart';
@@ -85,9 +86,18 @@ final gnssStatusServiceProvider = Provider<GnssStatusService>((ref) {
 /// SharedPreferences, TTS inizializzato/fermato da GpsService in
 /// startRecording()/stopRecording().
 final voiceAlertServiceProvider = Provider<VoiceAlertService>((ref) {
-  final service = VoiceAlertService(ref.watch(sharedPreferencesProvider));
+  final service = VoiceAlertService(
+      ref.watch(sharedPreferencesProvider), ref.read(diagnosticLoggerProvider));
   ref.onDispose(service.dispose);
   return service;
+});
+
+/// Log tecnico di sessione (Parte 4) — singleton per la durata dell'app,
+/// così sopravvive a rebuild della schermata GPS senza perdere il buffer.
+final diagnosticLoggerProvider = Provider<DiagnosticLogger>((ref) {
+  final logger = DiagnosticLogger();
+  ref.onDispose(logger.dispose);
+  return logger;
 });
 
 final gpsServiceProvider = ChangeNotifierProvider<GpsService>((ref) {
@@ -104,6 +114,8 @@ final gpsServiceProvider = ChangeNotifierProvider<GpsService>((ref) {
     ref.read(imuFusionServiceProvider),
     ref.read(gnssStatusServiceProvider),
     ref.read(voiceAlertServiceProvider),
+    ref.read(diagnosticLoggerProvider),
+    ref.read(sharedPreferencesProvider),
   );
 });
 
@@ -113,7 +125,12 @@ final myPilotStatusProvider =
     StreamProvider.autoDispose.family<Map<String, dynamic>?, String>(
         (ref, eventId) {
   final user = ref.watch(authStateProvider).valueOrNull;
-  if (user == null) return const Stream.empty();
+  // Stream.empty() non emette mai: senza utente il provider restava
+  // bloccato in AsyncLoading per sempre, mostrando uno spinner permanente
+  // nella schermata pre-gara invece del pulsante START. Stream.value(null)
+  // risolve subito a "nessuno stato" (comportamento equivalente a doc
+  // inesistente), lasciando che l'UI proceda normalmente.
+  if (user == null) return Stream.value(null);
   return ref
       .watch(firestoreServiceProvider)
       .myPilotStatusStream(eventId, user.uid);

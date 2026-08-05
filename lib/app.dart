@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'core/models/user_model.dart';
+import 'core/providers/offline_provider.dart';
 import 'core/services/fcm_service.dart';
 import 'core/theme/app_theme.dart';
 import 'core/widgets/notification_listener_widget.dart';
@@ -9,6 +10,7 @@ import 'features/admin/providers/admin_provider.dart';
 import 'features/auth/providers/auth_provider.dart';
 import 'features/auth/screens/login_screen.dart';
 import 'features/auth/screens/register_screen.dart';
+import 'features/onboarding/screens/onboarding_screen.dart';
 import 'features/admin/screens/admin_home_screen.dart';
 import 'features/admin/screens/championship_screen.dart';
 import 'features/admin/screens/create_event_screen.dart';
@@ -40,6 +42,13 @@ final _routerProvider = Provider<GoRouter>((ref) {
       if (isLoggedIn && isAuthRoute) {
         final userModel = await ref.read(currentUserModelProvider.future);
         if (userModel?.role == UserRole.admin) return '/admin';
+        // Promemoria permessi GPS background (Parte 2E): mostrato una sola
+        // volta al primo accesso di un pilota, mai agli admin (non
+        // registrano GPS).
+        final prefs = ref.read(sharedPreferencesProvider);
+        final onboarded =
+            prefs.getBool(OnboardingScreen.completedKey) ?? false;
+        if (!onboarded) return '/onboarding';
         return '/pilot';
       }
       return null;
@@ -52,6 +61,10 @@ final _routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/register',
         builder: (context, state) => const RegisterScreen(),
+      ),
+      GoRoute(
+        path: '/onboarding',
+        builder: (context, state) => const OnboardingScreen(),
       ),
       // Admin routes
       GoRoute(

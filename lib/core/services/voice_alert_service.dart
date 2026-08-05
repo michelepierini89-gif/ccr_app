@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'diagnostic_logger.dart';
 
 /// Livello di priorità di un annuncio vocale (Blocco D2).
 enum VoiceAlertPriority { alta, media, bassa }
@@ -106,7 +107,10 @@ class VoiceAlertService {
   /// [start] (D3/D6).
   final Set<String> _announcedKeys = {};
 
-  VoiceAlertService(this._prefs) : _settings = _loadSettings(_prefs);
+  final DiagnosticLogger? _diagLogger;
+
+  VoiceAlertService(this._prefs, [this._diagLogger])
+      : _settings = _loadSettings(_prefs);
 
   VoiceAlertSettings get settings => _settings;
 
@@ -220,6 +224,7 @@ class VoiceAlertService {
     while (_queue.isNotEmpty && !_disposed) {
       final next = _queue.removeAt(0);
       _currentPriority = next.priority;
+      _diagLogger?.logVoiceAnnouncement(next.priority.name, next.text);
       try {
         await _tts.speak(next.text);
       } catch (_) {}

@@ -264,6 +264,10 @@ void main() {
           home: GpsRecordingScreen(eventId: _evId),
         ),
       ));
+      // Un pump extra: myPilotStatusProvider dipende da authStateProvider
+      // (2 hop async, doc inesistente → nessun raceStatus), il primo pump
+      // risolve solo authStateProvider.
+      await tester.pump();
       await tester.pump();
       expect(find.text('START'), findsOneWidget);
     });
@@ -280,6 +284,7 @@ void main() {
           home: GpsRecordingScreen(eventId: _evId),
         ),
       ));
+      await tester.pump();
       await tester.pump();
       // Banner "In attesa del via" deve essere visibile
       expect(

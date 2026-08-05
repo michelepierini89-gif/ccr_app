@@ -8,8 +8,18 @@ import '../utils/location_utils.dart';
 class WaypointPassageResult {
   final WaypointModel waypoint;
   final DateTime timestamp;
-  const WaypointPassageResult(
-      {required this.waypoint, required this.timestamp});
+  // Solo per passaggi rilevati via porta virtuale (Parte 4 — log
+  // diagnostico): frazione lungo il segmento prev->curr a cui avviene
+  // l'attraversamento (0..1) e distanza tra il punto interpolato e il
+  // waypoint. Null per i passaggi rilevati a raggio.
+  final double? fractionT;
+  final double? distanceMeters;
+  const WaypointPassageResult({
+    required this.waypoint,
+    required this.timestamp,
+    this.fractionT,
+    this.distanceMeters,
+  });
 }
 
 class WaypointDetector {
@@ -118,9 +128,15 @@ class WaypointDetector {
       final dtMs = currTs.difference(prevTs).inMilliseconds;
       final crossMs =
           prevTs.millisecondsSinceEpoch + (t * dtMs).round();
+      final crossLat = prev.latitude + (curr.latitude - prev.latitude) * t;
+      final crossLng = prev.longitude + (curr.longitude - prev.longitude) * t;
+      final distanceMeters =
+          LocationUtils.haversineDistance(crossLat, crossLng, wp.lat, wp.lng);
       return WaypointPassageResult(
         waypoint: wp,
         timestamp: DateTime.fromMillisecondsSinceEpoch(crossMs),
+        fractionT: t,
+        distanceMeters: distanceMeters,
       );
     }
     return null;

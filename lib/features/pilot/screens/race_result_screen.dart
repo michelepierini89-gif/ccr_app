@@ -6,6 +6,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:share_plus/share_plus.dart';
 import '../../../core/models/classifica_model.dart';
 import '../../../core/models/cp_dispute_model.dart';
 import '../../../core/models/event_model.dart';
@@ -127,6 +128,13 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
           overflow: TextOverflow.ellipsis,
         ),
         iconTheme: const IconThemeData(color: AppColors.textPrimary),
+        actions: [
+          IconButton(
+            tooltip: 'Esporta log tecnico',
+            icon: const Icon(Icons.bug_report_outlined, size: 20),
+            onPressed: _exportDiagnosticLog,
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -148,6 +156,25 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
         ],
       ),
     );
+  }
+
+  /// Parte 4C — condivide il CSV diagnostico dell'ultima sessione tramite
+  /// il sistema di condivisione Android (email/WhatsApp/ecc.).
+  Future<void> _exportDiagnosticLog() async {
+    final path = ref.read(diagnosticLoggerProvider).currentFilePath;
+    if (path == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Nessun log tecnico disponibile per questa sessione'),
+        ));
+      }
+      return;
+    }
+    await ref.read(diagnosticLoggerProvider).flush();
+    await SharePlus.instance.share(ShareParams(
+      files: [XFile(path)],
+      subject: 'CCR — log tecnico gara',
+    ));
   }
 
   // ── Data helpers ─────────────────────────────────────────────────────────────

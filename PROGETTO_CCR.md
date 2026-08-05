@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 05 agosto 2026 (Step 35 completato)  
+**Data aggiornamento:** 05 agosto 2026 (Step 36 completato)  
 **Branch:** main  
 **Versione:** 1.0.2+3
 
@@ -1524,10 +1524,57 @@ id/nome arbitrario.
 
 ---
 
+### Step 36 — Fix 3 test pre-gara, setup guidato batteria, provider GPS configurabile, log diagnostico, notifica con contatore (05 agosto 2026) ✅
+
+**Blocco 0 — fix dei 3 test pre-esistenti (`pilot_provider.dart`):**
+- Causa reale: **bug nel codice**, non nel test. `myPilotStatusProvider` ritornava `const Stream.empty()` quando l'utente non è loggato (`user == null`) — uno `Stream` vuoto non emette mai un valore, quindi il `StreamProvider` restava bloccato in `AsyncLoading` per sempre. `gps_recording_screen.dart` interpreta `myStatusAsync?.isLoading == true` come "ancora in caricamento" e mostra uno spinner permanente al posto della schermata pre-gara con START — in produzione il bug si "auto-ripara" non appena `authStateProvider` risolve a un utente reale (il provider osserva anche quello e si ricostruisce), ma resta un vero difetto di robustezza per l'edge-case "nessun utente".
+- Fix: `Stream.value(null)` al posto di `Stream.empty()` — risolve subito a "nessuno stato" invece di restare bloccato.
+- Sistemata anche la causa concomitante nei test: `myPilotStatusProvider` dipende da `authStateProvider` (2 hop asincroni in catena), un solo `tester.pump()` risolve solo il primo hop — aggiunto un secondo `pump()` nei 3 test in `routes_test.dart`/`pilot_flow_test.dart`.
+- Suite: 43/43 verdi.
+
+**Parte 2 — Setup guidato ottimizzazione batteria:**
+- `MainActivity.kt`: nuovi metodi sul canale `ccr/battery` — `getManufacturer`/`getDeviceModel` (Build.MANUFACTURER/MODEL), `isForegroundServiceActive` (via `ActivityManager.getRunningServices`, consentito per il proprio processo anche su API 26+), `openBatterySettings` (fallback `ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS`), `openManufacturerBatterySettings` (tenta componenti noti Xiaomi/Oppo/Realme/Vivo/Huawei/OnePlus/Samsung, fallback `ACTION_APPLICATION_DETAILS_SETTINGS` se nessuno esiste su quella ROM — ogni tentativo in try/catch, questi intent non sono standard)
+- `lib/core/services/battery_setup_service.dart` (nuovo, sostituisce `battery_service.dart`): API completa + lista produttori aggressivi + testi guida specifici per produttore (percorso esatto nelle impostazioni)
+- `gps_recording_screen.dart`: nuova card "Preparazione gara" (`_PrepChecklistCard`) sopra il pulsante START — righe permesso posizione/batteria/segnale GPS (✅/⚠, tappabili) + riga "Avvisi vocali" (▶, prova audio); tap su batteria non ok mostra anche il bottom sheet con istruzioni produttore se aggressivo. START non è mai bloccato: se batteria o permesso posizione non sono ok, un dialog di conferma avvisa e lascia partire comunque su "PARTI LO STESSO"
+- `lib/features/onboarding/screens/onboarding_screen.dart` (nuovo): mostrata una sola volta al primo accesso di un pilota (flag `onboarding_completed_v1` in SharedPreferences, admin esclusi), richiede posizione "sempre" e disattivazione ottimizzazione batteria in sequenza; `app.dart` redirige a `/onboarding` dopo il login se il flag non è impostato
+
+**Parte 3 — Provider GPS grezzo configurabile (`gps_service.dart`):**
+- `kUseRawLocationManager` (costante di compilazione) → `_useRawLocationManager` (campo istanza, caricato da SharedPreferences chiave `gps_use_raw_location_manager`, default `false`)
+- `GpsService.setUseRawLocationManager(bool)`: persiste e, se la registrazione è attiva, riavvia subito `_startPositionStream` con le nuove `AndroidSettings(forceLocationManager:)`; altrimenti si applica al prossimo `startRecording()`
+- BottomSheet impostazioni navigazione, nuova sezione "Avanzate": switch "Provider GPS grezzo (sperimentale)" con sottotitolo esplicativo, applica al volo
+- Il valore (`fused`/`raw`) è scritto anche nel log diagnostico ad ogni avvio sessione
+
+**Parte 4 — Log diagnostico di sessione (`lib/core/services/diagnostic_logger.dart`, nuovo):**
+- CSV colonne fisse (`timestamp_ms,categoria,evento,campo1..campo12`), buffer in memoria + flush asincrono ogni 30s su file locale (`path_provider`), cap 20MB con rotazione (scarta la metà più vecchia delle righe, header sempre mantenuto) — mai sul percorso critico
+- Registra: ciclo di vita app (`didChangeAppLifecycleState` in `gps_recording_screen.dart`, `paused` come proxy di "schermo spento" — nessun hook nativo dedicato), avvio/stop foreground service, riavvii manuali GPS, stato batteria e provider GPS a inizio sessione, modello/produttore device; fix GPS con esito filtro (accettato/scartato-accuracy/scartato-jump + valore), posizione Kalman, velocità, satelliti/C-N0 (campionati 1 su 4 in trasferimento, tutti in speciale); gap GPS >5s; eventi di timing (porta con frazione t e distanza, fallback a raggio con motivo, recovery con metodo, ingresso/uscita PS con `timingMethod`); heading IMU vs GPS ogni 5s; annunci vocali con priorità e testo
+- `WaypointPassageResult` esteso con `fractionT`/`distanceMeters` (popolati solo da `detectGateCrossing`) per loggare la porta virtuale con precisione
+- `VoiceAlertService`/`GpsService` accettano un `DiagnosticLogger?` opzionale (stesso pattern di `GnssStatusService`/`VoiceAlertService`); provider singleton `diagnosticLoggerProvider`
+- `kDiagnosticLoggingEnabled = true` (costante su `DiagnosticLogger`, da portare a `false` a sistema validato)
+- Pulsante "Esporta log tecnico" in `race_result_screen.dart` (AppBar) → condivide il CSV via `share_plus` (nuova dipendenza)
+
+**Parte 5 — Notifica background con contatore (`gps_recording_screen.dart`, `MainActivity.kt`):**
+- `MainActivity.kt`: canale `ccr/notification` → `updateForegroundNotification`, aggiorna testo/notifica riusando lo stesso notification ID (75415) e channel ID (`geolocator_channel_01`) del foreground service di geolocator_android (valori hardcoded nel plugin, nessuna API pubblica per farlo) — `notify()` con lo stesso ID sostituisce solo il contenuto, non tocca il ciclo di vita del service
+- `gps_recording_screen.dart`: ogni 30s (riusa il timer esistente `_elapsedTimer`, nessun nuovo Timer) invia "CCR — registrazione attiva · N punti · HH:MM:SS" (N = `gps.fullTrackSamples.length`, orario = `gps.lastAcceptedFixTime`, nuovo getter)
+
+**Fix collaterale (overflow):** la nuova card "Preparazione gara" faceva traboccare la Column di `_buildPreStart` su schermi/finestre di test più piccoli — contenuto centrale (badge modalità + pulsante START + info GPS) avvolto in `SingleChildScrollView`.
+
+**Deploy:**
+- `flutter analyze`: 0 issues
+- `flutter test`: 43/43 verdi
+- `flutter build web --release` + `firebase deploy --only hosting` ✅ → https://ccr-enduro.web.app
+- `git push origin main` ✅
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**
 - Ripristinare regole Storage granulari per produzione (Firestore è già granulare dallo Step 16) — vedi `storage.rules`, TODO ancora aperto
+
+**Test su device reale (Step 36 — mai testati su hardware):**
+- Verificare `isForegroundServiceActive`/`openManufacturerBatterySettings`/aggiornamento notifica con contatore su almeno un device Xiaomi/Oppo/Samsung reale — i componenti nativi dei produttori sono percorsi non ufficiali, potrebbero non esistere su tutte le ROM
+- Confrontare provider GPS `fused` vs `raw` sullo stesso device/percorso usando lo switch "Avanzate" e i log diagnostici (campo `gpsProvider` in testa a ogni sessione)
+- Validare il volume del CSV diagnostico su una gara reale di 4-5 ore (dimensionato a stima, mai verificato con dati reali)
 
 **Test su device reale (Blocco C/D dello Step 35 — mai testati su hardware):**
 - Verificare che `GnssStatus.Callback` riceva effettivamente dati sui device di test (in particolare il DOOGEE con chip MediaTek) e che le soglie qualità ECCELLENTE/BUONA/SCARSA/CRITICA siano tarate bene
@@ -1535,10 +1582,9 @@ id/nome arbitrario.
 - Confrontare l'errore di timing porta-vs-raggio su un tracciato reale a 30 e 60 km/h con i log `timingMethod`
 - Testare il ricalcolo "Tempi ufficiali" su una gara reale con più piloti per validare lo smoother RTS
 
-**Test rimanenti (indipendenti dallo Step 35):**
+**Test rimanenti:**
 - Test end-to-end classifica campionato con più eventi
 - Test flusso iscrizione 2-step su web e Android
-- 3 test pre-esistenti ancora falliti in `routes_test.dart`/`pilot_flow_test.dart` (schermata pre-gara con evento e `startEnabled` di default `false` non mostra il testo "START" — bug pre-esistente indipendente dagli Step 31/35, da investigare separatamente)
 
 **Feature future:**
 - Trail percorso per ogni pilota nella mappa admin live (attualmente solo posizione istantanea)

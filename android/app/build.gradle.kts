@@ -50,3 +50,9 @@ kotlin {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // NotificationCompat.Builder — usato per aggiornare il testo della
+    // notifica persistente del foreground service GPS (contatore punti).
+    implementation("androidx.core:core-ktx:1.13.1")
+}

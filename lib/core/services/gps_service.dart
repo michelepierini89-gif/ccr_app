@@ -3,12 +3,15 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../models/waypoint_model.dart';
 import '../models/gps_point_model.dart';
 import '../models/special_model.dart';
 import '../constants/app_constants.dart';
 import '../services/waypoint_detector.dart';
+import '../services/battery_setup_service.dart';
+import '../services/diagnostic_logger.dart';
 import '../services/firestore_service.dart';
 import '../services/offline_queue_service.dart';
 import '../services/gnss_status_service.dart';
@@ -91,22 +94,46 @@ class GpsService extends ChangeNotifier {
   // scatter GPS come punto valido (pattern a ventaglio).
   static const int kDistanceFilterMeters = 2;
 
-  // Blocco C4: FusedLocationProviderClient (default, forceLocationManager:
-  // false) applica una propria fusione/smoothing di Google Play Services
-  // che si somma al nostro Kalman + IMU, potenzialmente aggiungendo lag.
-  // true forza il LocationManager grezzo di Android (nessuna fusione
-  // Google prima del nostro filtro) — da testare sul campo su entrambi i
-  // valori per confrontare la latenza percepita.
-  static const bool kUseRawLocationManager = false;
+  // Blocco C4 (Parte 3 — ora impostazione utente invece di costante di
+  // compilazione): FusedLocationProviderClient (default, forceLocationManager
+  // false) applica una propria fusione/smoothing di Google Play Services che
+  // si somma al nostro Kalman + IMU, potenzialmente aggiungendo lag. true
+  // forza il LocationManager grezzo di Android (nessuna fusione Google prima
+  // del nostro filtro) — persistito in SharedPreferences, così si può
+  // confrontare sul campo senza ricompilare.
+  static const String kUseRawLocationManagerPrefsKey =
+      'gps_use_raw_location_manager';
 
   final FirestoreService _firestoreService;
   final OfflineQueueService _offlineQueue;
   final ImuFusionService _imu;
   final GnssStatusService? _gnssStatus;
   final VoiceAlertService? _voiceAlerts;
+  final DiagnosticLogger? _diagLogger;
+  final SharedPreferences? _prefs;
+
+  bool _useRawLocationManager;
+  bool get useRawLocationManager => _useRawLocationManager;
 
   GpsService(this._firestoreService, this._offlineQueue, this._imu,
-      [this._gnssStatus, this._voiceAlerts]);
+      [this._gnssStatus, this._voiceAlerts, this._diagLogger, this._prefs])
+      : _useRawLocationManager =
+            _prefs?.getBool(kUseRawLocationManagerPrefsKey) ?? false;
+
+  /// Cambia il provider GPS grezzo/fuso (Parte 3). Se la registrazione è
+  /// attiva riavvia subito lo stream con le nuove impostazioni; altrimenti
+  /// il valore persistito si applica al prossimo `startRecording()`.
+  Future<void> setUseRawLocationManager(bool value) async {
+    if (_useRawLocationManager == value) return;
+    _useRawLocationManager = value;
+    await _prefs?.setBool(kUseRawLocationManagerPrefsKey, value);
+    if (_isRecording) {
+      _diagLogger?.logLifecycle(
+          'gps_provider_changed', [value ? 'raw' : 'fused']);
+      _startPositionStream(_currentIntervalMs);
+    }
+    _safeNotify();
+  }
 
   // Blocco C3: quando GnssStatusService segnala qualità CRITICA (<5
   // satelliti usati), il campo accuracy dichiarato dal chip resta
@@ -331,6 +358,11 @@ class GpsService extends ChangeNotifier {
   /// interval — `position.speed` is never used for logic decisions.
   double get geometricSpeedKmh => _geometricSpeedKmh;
 
+  /// Timestamp dell'ultimo fix GPS accettato (passato accuracy + jump
+  /// filter) — usato per il contatore nella notifica persistente (Parte 5)
+  /// e per [isGpsStale].
+  DateTime? get lastAcceptedFixTime => _lastAcceptedTs;
+
   /// Emits a localised message string each time a missed special start is
   /// retroactively recovered. Subscribers should display a timed banner.
   Stream<String> get recoveryStream => _recoveryStreamCtrl.stream;
@@ -552,6 +584,7 @@ class GpsService extends ChangeNotifier {
 
       // Notify the UI
       _recoveryStreamCtrl.add('⚡ Inizio ${special.nome} recuperato');
+      _diagLogger?.logRecovery(special.id, 'inizio_speciale');
 
       // Persist in Firestore with recoveredStart flag so admins can review it
       if (_activeEventId != null && _activeUserId != null) {
@@ -678,6 +711,7 @@ class GpsService extends ChangeNotifier {
       _recoveryStreamCtrl.add(timingError == null
           ? '⚡ ${prev.nome} recuperata (non rilevata in tempo reale)'
           : '⚠ ${prev.nome} non rilevata — penalità automatica');
+      _diagLogger?.logRecovery(prev.id, 'speciale_saltata');
 
       if (_activeEventId != null && _activeUserId != null) {
         try {
@@ -737,6 +771,16 @@ class GpsService extends ChangeNotifier {
     final passage = WaypointPassage(waypoint: wp, timestamp: passageTs);
     _passages.add(passage);
 
+    if (timingMethod == 'gate' &&
+        detection.fractionT != null &&
+        detection.distanceMeters != null) {
+      _diagLogger?.logGateCrossing(wp.id, passageTs, detection.fractionT!,
+          detection.distanceMeters!);
+    } else if (timingMethod == 'radius') {
+      _diagLogger?.logRadiusFallback(
+          wp.id, wp.gate != null ? 'nessuna_intersezione' : 'porta_assente');
+    }
+
     // Special entry/exit detection
     if (_inizioToSpecial.containsKey(wp.id)) {
       final specialId = _inizioToSpecial[wp.id]!;
@@ -771,6 +815,7 @@ class GpsService extends ChangeNotifier {
           _currentSpecialId = specialId;
           _currentSpecialNome = special.nome;
           _addSpecialEntry(specialeId: specialId, entryTime: passageTs);
+          _diagLogger?.logSpecialEntry(specialId, timingMethod);
           _voiceAlerts?.announceSpecialStartCrossed(
               specialId, _specialNumero(specialId));
         }
@@ -781,6 +826,7 @@ class GpsService extends ChangeNotifier {
       if (idx >= 0) {
         final entry = _specialEntries[idx].withExit(passageTs);
         _specialEntries[idx] = entry;
+        _diagLogger?.logSpecialExit(entry.specialeId, timingMethod);
         _voiceAlerts?.announceSpecialEndCrossed(entry.specialeId,
             _specialNumero(entry.specialeId), entry.elapsed!);
       }
@@ -868,12 +914,14 @@ class GpsService extends ChangeNotifier {
       debugPrint('RECOVERY END (finestra ampia) speciale ${special.id}: '
           'fine retroattiva a $exitTime (dist: ${bestDistM.toStringAsFixed(1)}m)');
       _recoveryStreamCtrl.add('⚡ Fine ${special.nome} recuperata');
+      _diagLogger?.logRecovery(special.id, 'chiusura_speciale_precisa');
     } else {
       exitTime = fallbackTime;
       timingError = fallbackTimingError;
       debugPrint('RECOVERY END (finestra ampia) speciale ${special.id}: '
           'nessun punto entro ${kSpecialEndRecoveryRadiusMeters}m, '
           'chiusa con stima ($fallbackTimingError)');
+      _diagLogger?.logRecovery(special.id, 'chiusura_speciale_stimata:$fallbackTimingError');
       _recoveryStreamCtrl
           .add('⚠ Fine ${special.nome} stimata — verifica admin');
     }
@@ -1041,6 +1089,7 @@ class GpsService extends ChangeNotifier {
           '(dist: ${bestDistM.toStringAsFixed(1)}m)');
 
       _recoveryStreamCtrl.add('⚡ Fine ${special.nome} recuperata');
+      _diagLogger?.logRecovery(special.id, 'fine_speciale_retroattiva');
 
       if (_activeEventId != null && _activeUserId != null) {
         try {
@@ -1154,6 +1203,7 @@ class GpsService extends ChangeNotifier {
     }
 
     _recoveryStreamCtrl.add('⏭ ${toSkip.nome} saltata — penalità applicata');
+    _diagLogger?.logRecovery(toSkip.id, 'salto_manuale');
     _safeNotify();
   }
 
@@ -1288,6 +1338,21 @@ class GpsService extends ChangeNotifier {
     _isRestartingGps = false;
     _gnssStatus?.start();
     unawaited(_voiceAlerts?.start());
+    if (_diagLogger?.isActive == true) {
+      unawaited(() async {
+        final batteryOk =
+            await BatterySetupService.isIgnoringBatteryOptimizations();
+        final manufacturer = await BatterySetupService.manufacturer();
+        final model = await BatterySetupService.deviceModel();
+        await _diagLogger!.startSession(
+          batteryOptimizationIgnored: batteryOk,
+          gpsProvider: _useRawLocationManager ? 'raw' : 'fused',
+          deviceManufacturer: manufacturer,
+          deviceModel: model,
+        );
+        _diagLogger.logLifecycle('foreground_service_start');
+      }());
+    }
     // Notifica IMMEDIATA: la schermata di navigazione deve apparire subito,
     // indipendentemente da quanto impiega il GPS a fornire un fix. Tutto
     // quello che segue (IMU, stream posizione) avviene in background mentre
@@ -1319,7 +1384,7 @@ class GpsService extends ChangeNotifier {
         accuracy: LocationAccuracy.high,
         distanceFilter: kDistanceFilterMeters,
         intervalDuration: Duration(milliseconds: intervalMs),
-        forceLocationManager: kUseRawLocationManager,
+        forceLocationManager: _useRawLocationManager,
         foregroundNotificationConfig: const ForegroundNotificationConfig(
           notificationText: 'CCR Rally — GPS attivo in background',
           notificationTitle: 'Registrazione GPS',
@@ -1438,6 +1503,14 @@ class GpsService extends ChangeNotifier {
     final displayThreshold = _currentDisplayAccuracyThreshold(now);
     if (effectiveAccuracy > displayThreshold) {
       _consecutiveDiscarded++;
+      _diagLogger?.logGpsFix(
+        inSpecial: _currentSpecialId != null,
+        outcome: 'scartato-accuracy',
+        latRaw: pos.latitude,
+        lngRaw: pos.longitude,
+        accuracy: pos.accuracy,
+        discardValue: effectiveAccuracy,
+      );
       if (effectiveAccuracy <= kMaxAccuracyDetectionMeters) {
         final detection = _waypointDetector.detectPassage(
             rawLatLng, now, _waypoints, _passedWaypoints,
@@ -1469,6 +1542,14 @@ class GpsService extends ChangeNotifier {
         if (impliedSpeedKmh > kMaxSpeedFilterKmh) {
           debugPrint(
               'GPS JUMP scartato: ${impliedSpeedKmh.toStringAsFixed(0)} km/h');
+          _diagLogger?.logGpsFix(
+            inSpecial: _currentSpecialId != null,
+            outcome: 'scartato-jump',
+            latRaw: pos.latitude,
+            lngRaw: pos.longitude,
+            accuracy: pos.accuracy,
+            discardValue: impliedSpeedKmh,
+          );
           _safeNotify();
           return;
         }
@@ -1565,6 +1646,21 @@ class GpsService extends ChangeNotifier {
         'Bearing: ${_bearingDeg.toStringAsFixed(1)}°, '
         'Speed: ${_geometricSpeedKmh.toStringAsFixed(1)} km/h, '
         'Mode: $mode');
+
+    final gnssSnapshot = _gnssStatus?.lastSnapshot;
+    _diagLogger?.logGpsFix(
+      inSpecial: _currentSpecialId != null,
+      outcome: 'accettato',
+      latRaw: pos.latitude,
+      lngRaw: pos.longitude,
+      accuracy: pos.accuracy,
+      latKalman: filteredPos.latitude,
+      lngKalman: filteredPos.longitude,
+      speedKmh: _geometricSpeedKmh,
+      satUsed: gnssSnapshot?.satellitesUsed,
+      satVisible: gnssSnapshot?.satellitesVisible,
+      avgCn0: gnssSnapshot?.avgCn0,
+    );
 
     // Recovery track: ogni punto accettato, per il lookback inizio speciale
     _recoveryTrack.add(filteredPos);
@@ -1815,6 +1911,7 @@ class GpsService extends ChangeNotifier {
   Future<void> restartGps() async {
     if (_isRestartingGps) return;
     debugPrint('GPS RESTART manuale...');
+    _diagLogger?.logLifecycle('gps_manual_restart');
     _isRestartingGps = true;
     _safeNotify();
 
@@ -1876,6 +1973,8 @@ class GpsService extends ChangeNotifier {
     _lastFirestoreUpdateTs = null;
     _imu.stop();
     WakelockPlus.disable().ignore();
+    _diagLogger?.logLifecycle('foreground_service_stop');
+    unawaited(_diagLogger?.stopSession());
     _safeNotify();
   }
 
