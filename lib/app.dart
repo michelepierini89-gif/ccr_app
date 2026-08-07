@@ -26,6 +26,8 @@ import 'features/pilot/screens/starting_order_pilot_screen.dart';
 import 'features/pilot/screens/race_result_screen.dart';
 import 'features/pilot/screens/pilot_stats_screen.dart';
 import 'features/admin/screens/penalty_settings_screen.dart';
+import 'features/admin/screens/track_replay_screen.dart';
+import 'features/admin/screens/diagnostic_log_analyzer_screen.dart';
 import 'features/classifica/screens/classifica_screen.dart';
 import 'features/map/screens/offline_maps_screen.dart';
 
@@ -74,6 +76,14 @@ final _routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: 'create-event',
             builder: (context, state) => const CreateEventScreen(),
+          ),
+          GoRoute(
+            path: 'track-replay',
+            builder: (context, state) => const TrackReplayScreen(),
+          ),
+          GoRoute(
+            path: 'diagnostic-log-analyzer',
+            builder: (context, state) => const DiagnosticLogAnalyzerScreen(),
           ),
           GoRoute(
             path: 'championships',

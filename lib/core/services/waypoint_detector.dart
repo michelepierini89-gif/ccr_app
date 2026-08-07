@@ -3,6 +3,49 @@ import 'package:latlong2/latlong.dart';
 import '../constants/app_constants.dart';
 import '../models/waypoint_model.dart';
 import '../utils/location_utils.dart';
+import 'track_smoother.dart';
+
+/// Ordine di precisione dal migliore al peggiore: porta > raggio > recovery.
+/// Pubblico per essere condiviso tra il ricalcolo "Tempi ufficiali"
+/// (`timing_screen.dart`, Blocco B) e il banco di replay (Parte 1,
+/// `track_replay_service.dart`) — nessuna duplicazione della logica.
+const timingMethodRank = {'gate': 0, 'radius': 1, 'recovery': 2};
+
+String worstTimingMethod(String a, String b) {
+  final ra = timingMethodRank[a] ?? 1;
+  final rb = timingMethodRank[b] ?? 1;
+  return ra >= rb ? a : b;
+}
+
+/// Risultato del ricalcolo porta/raggio per una singola speciale su una
+/// traccia già "pulita" (senza filtro accuracy/jump/Kalman — pensata per
+/// tracce smussate con [TrackSmoother]), vedi
+/// [WaypointDetector.rerunGateRadiusDetection].
+class GateRadiusRerunResult {
+  final DateTime startTimestamp;
+  final DateTime endTimestamp;
+  final String startMethod;
+  final String endMethod;
+  final double? startFractionT;
+  final double? startDistanceMeters;
+  final double? endFractionT;
+  final double? endDistanceMeters;
+
+  const GateRadiusRerunResult({
+    required this.startTimestamp,
+    required this.endTimestamp,
+    required this.startMethod,
+    required this.endMethod,
+    this.startFractionT,
+    this.startDistanceMeters,
+    this.endFractionT,
+    this.endDistanceMeters,
+  });
+
+  int get durationMs =>
+      endTimestamp.difference(startTimestamp).inMilliseconds;
+  String get method => worstTimingMethod(startMethod, endMethod);
+}
 
 /// Risultato di un passaggio waypoint confermato da [WaypointDetector].
 class WaypointPassageResult {
@@ -286,6 +329,70 @@ class WaypointDetector {
       }
     }
     return nearest;
+  }
+
+  /// Riesegue SOLO il rilevamento porta virtuale/raggio (senza Kalman né
+  /// filtri accuracy/jump — pensato per tracce già pulite, tipicamente
+  /// smussate con [TrackSmoother]) su [track], per l'inizio/fine di ogni
+  /// voce di [gatedBySpecial]. Estratto da `timing_screen.dart` (Blocco B,
+  /// "Tempi ufficiali") per essere condiviso anche dal banco di replay
+  /// (Parte 1C, confronto "porte virtuali su traccia RTS").
+  static Map<String, GateRadiusRerunResult> rerunGateRadiusDetection(
+    List<SmoothedTrackPoint> track,
+    Map<String, (WaypointModel, WaypointModel)> gatedBySpecial,
+  ) {
+    final result = <String, GateRadiusRerunResult>{};
+    if (track.length < 2) return result;
+
+    for (final entry in gatedBySpecial.entries) {
+      final (inizio, fine) = entry.value;
+      final waypoints = [inizio, fine];
+      final detector = WaypointDetector();
+      final passed = <String>{};
+      WaypointPassageResult? startHit, endHit;
+      var startMethod = 'radius';
+      var endMethod = 'radius';
+
+      for (var i = 1;
+          i < track.length && (startHit == null || endHit == null);
+          i++) {
+        final prev = track[i - 1];
+        final curr = track[i];
+        var method = 'gate';
+        var hit = detector.detectGateCrossing(prev.position, curr.position,
+            prev.timestamp, curr.timestamp, waypoints, passed);
+        if (hit == null) {
+          method = 'radius';
+          hit = detector.detectPassage(
+              curr.position, curr.timestamp, waypoints, passed);
+        }
+        if (hit == null) continue;
+        passed.add(hit.waypoint.id);
+        if (hit.waypoint.id == inizio.id) {
+          startHit = hit;
+          startMethod = method;
+        } else if (hit.waypoint.id == fine.id) {
+          endHit = hit;
+          endMethod = method;
+        }
+      }
+
+      if (startHit != null &&
+          endHit != null &&
+          endHit.timestamp.isAfter(startHit.timestamp)) {
+        result[entry.key] = GateRadiusRerunResult(
+          startTimestamp: startHit.timestamp,
+          endTimestamp: endHit.timestamp,
+          startMethod: startMethod,
+          endMethod: endMethod,
+          startFractionT: startHit.fractionT,
+          startDistanceMeters: startHit.distanceMeters,
+          endFractionT: endHit.fractionT,
+          endDistanceMeters: endHit.distanceMeters,
+        );
+      }
+    }
+    return result;
   }
 
   static int adaptiveInterval(double? nearestDistance, bool inSpecial) {

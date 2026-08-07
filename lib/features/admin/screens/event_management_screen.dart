@@ -16,6 +16,7 @@ import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/firebase_error_handler.dart';
 import '../../../core/utils/gpx_utils.dart';
+import '../../auth/providers/auth_provider.dart';
 import '../../map/screens/track_map_screen.dart';
 import '../providers/admin_provider.dart';
 import '../widgets/special_tile.dart';
@@ -172,6 +173,148 @@ class _EventManagementScreenState
           backgroundColor: AppColors.error,
         ));
       }
+    }
+  }
+
+  /// Parte 3 — Duplica evento: copia tracciato, speciali (con checkpoint),
+  /// punti pericolo, punto ristoro, zone velocità, dimensione squadra,
+  /// tipologia punteggio e tempo massimo gara. NON copia iscrizioni,
+  /// ordine di partenza, tracce GPS piloti, tempi o classifiche — sono
+  /// tutte legate all'id del vecchio evento, mai toccate perché il nuovo
+  /// evento nasce con un id proprio. Il nuovo evento nasce in bozza.
+  Future<void> _duplicateEvent(BuildContext context, EventModel event) async {
+    var pickedDate = DateTime.now();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setDialogState) {
+        return AlertDialog(
+          backgroundColor: AppColors.cardBackground,
+          title: const Text('Duplica evento',
+              style: TextStyle(color: AppColors.textPrimary)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Verrà creato "${event.nome} (copia)" in stato bozza, con '
+                'tracciato, speciali, checkpoint, punti pericolo, punto '
+                'ristoro, zone velocità, dimensione squadra, tipologia '
+                'punteggio e tempo massimo gara copiati. Iscrizioni, ordine '
+                'di partenza, tracce GPS e classifiche non vengono copiate.',
+                style: const TextStyle(color: AppColors.textSecondary),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  const Text('Data nuovo evento: ',
+                      style: TextStyle(color: AppColors.textSecondary)),
+                  TextButton(
+                    onPressed: () async {
+                      final picked = await showDatePicker(
+                        context: ctx,
+                        initialDate: pickedDate,
+                        firstDate: DateTime.now().subtract(const Duration(days: 1)),
+                        lastDate: DateTime.now().add(const Duration(days: 730)),
+                      );
+                      if (picked != null) {
+                        setDialogState(() => pickedDate = picked);
+                      }
+                    },
+                    child: Text(
+                        '${pickedDate.day.toString().padLeft(2, '0')}/'
+                        '${pickedDate.month.toString().padLeft(2, '0')}/'
+                        '${pickedDate.year}'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Annulla',
+                  style: TextStyle(color: AppColors.textSecondary)),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
+              child: const Text('Duplica'),
+            ),
+          ],
+        );
+      }),
+    );
+    if (confirmed != true || !context.mounted) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final uid = ref.read(authStateProvider).valueOrNull?.uid ?? event.createdBy;
+      final svc = ref.read(firestoreServiceProvider);
+
+      final newEvent = EventModel(
+        id: '',
+        nome: '${event.nome} (copia)',
+        luogo: event.luogo,
+        data: pickedDate,
+        descrizione: event.descrizione,
+        speciali: event.speciali,
+        stato: EventStatus.bozza,
+        createdBy: uid,
+        createdAt: DateTime.now(),
+        minSquadra: event.minSquadra,
+        maxSquadra: event.maxSquadra,
+        tipologiaClassifica: event.tipologiaClassifica,
+        fuelPoint: event.fuelPoint,
+        maxRaceTimeMinutes: event.maxRaceTimeMinutes,
+        dangerPoints: event.dangerPoints,
+        speedZones: event.speedZones,
+      );
+      final newId = await svc.createEvent(newEvent);
+
+      // Il tracciato è un file su Storage: si copia il contenuto sotto il
+      // nuovo eventId invece di riusare lo stesso URL, così il nuovo
+      // evento resta indipendente (regole Storage granulari future,
+      // cancellazione dell'originale, ecc.).
+      if (event.trackUrl != null) {
+        final bytes = await StorageService().downloadTrack(event.trackUrl!);
+        final ext = event.trackUrl!.contains('.kml') ? 'kml' : 'gpx';
+        final newUrl = await StorageService().uploadTrack(newId, bytes, ext);
+        // `newEvent.copyWith` non permette di cambiare l'id (resta quello
+        // vuoto passato a createEvent): si ricostruisce l'entità con l'id
+        // reale assegnato da Firestore.
+        await svc.updateEvent(EventModel(
+          id: newId,
+          nome: newEvent.nome,
+          luogo: newEvent.luogo,
+          data: newEvent.data,
+          descrizione: newEvent.descrizione,
+          trackUrl: newUrl,
+          speciali: newEvent.speciali,
+          stato: newEvent.stato,
+          createdBy: newEvent.createdBy,
+          createdAt: newEvent.createdAt,
+          minSquadra: newEvent.minSquadra,
+          maxSquadra: newEvent.maxSquadra,
+          tipologiaClassifica: newEvent.tipologiaClassifica,
+          fuelPoint: newEvent.fuelPoint,
+          maxRaceTimeMinutes: newEvent.maxRaceTimeMinutes,
+          dangerPoints: newEvent.dangerPoints,
+          speedZones: newEvent.speedZones,
+        ));
+      }
+
+      if (context.mounted) {
+        messenger.showSnackBar(SnackBar(
+          content: Text('"${newEvent.nome}" creato in bozza'),
+          backgroundColor: AppColors.success,
+        ));
+        context.push('/admin/event/$newId');
+      }
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(
+        content: Text(FirebaseErrorHandler.getMessage(e)),
+        backgroundColor: AppColors.error,
+      ));
     }
   }
 
@@ -342,6 +485,11 @@ class _EventManagementScreenState
                 tooltip: 'Penalità evento',
                 onPressed: () =>
                     context.push('/admin/event/${event.id}/penalty-settings'),
+              ),
+              IconButton(
+                icon: const Icon(Icons.copy_outlined),
+                tooltip: 'Duplica evento',
+                onPressed: () => _duplicateEvent(context, event),
               ),
               IconButton(
                 icon: const Icon(Icons.delete_outline, color: AppColors.error),

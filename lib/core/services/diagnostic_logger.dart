@@ -3,6 +3,19 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
+/// Una riga catturata in memoria da [DiagnosticLogger] in modalità
+/// [DiagnosticLogger.captureOnly] — stessa struttura di una riga CSV, senza
+/// passare da file. Usata dal banco di replay (Parte 1) per leggere gli
+/// eventi di timing (porta/raggio/recovery) emessi dalla pipeline durante
+/// un replay, riusando gli stessi hook già cablati in `GpsService` per il
+/// log diagnostico live (Parte 4) — nessuna nuova strumentazione.
+class CapturedLogEntry {
+  final String categoria;
+  final String evento;
+  final List<Object?> campi;
+  const CapturedLogEntry(this.categoria, this.evento, this.campi);
+}
+
 /// Log tecnico di sessione per la diagnostica sul campo: registra in
 /// memoria con flush periodico su file locale CSV (colonne fisse,
 /// apribile in Excel), esportabile a fine gara. Mai sul percorso critico:
@@ -28,9 +41,20 @@ class DiagnosticLogger {
   static const int _gapThresholdSeconds = 5;
   static const int _imuHeadingLogIntervalSeconds = 5;
 
-  bool get isActive => kDiagnosticLoggingEnabled && !kIsWeb;
+  /// true: nessun file, nessun flush — ogni riga finisce solo in [captured].
+  /// Usato dal banco di replay (Parte 1), dove non esiste un file locale da
+  /// scrivere e dove serve leggere gli eventi appena emessi, anche su web
+  /// (normalmente escluso da [kDiagnosticLoggingEnabled]/`!kIsWeb`, un
+  /// vincolo che riguarda solo il logging di sessioni live su device).
+  final bool captureOnly;
+
+  DiagnosticLogger({this.captureOnly = false});
+
+  bool get isActive =>
+      captureOnly || (kDiagnosticLoggingEnabled && !kIsWeb);
 
   final List<String> _buffer = [];
+  final List<CapturedLogEntry> _captured = [];
   Timer? _flushTimer;
   File? _file;
   int _transferGpsCounter = 0;
@@ -39,6 +63,15 @@ class DiagnosticLogger {
   bool _disposed = false;
 
   String? get currentFilePath => _file?.path;
+
+  /// Righe catturate finora in modalità [captureOnly] (vedi
+  /// [CapturedLogEntry]). Sempre vuota se [captureOnly] è false.
+  List<CapturedLogEntry> get captured => List.unmodifiable(_captured);
+
+  /// Svuota [captured] — richiamato dal banco di replay tra una
+  /// configurazione e l'altra dello stesso confronto (Parte 1C), così ogni
+  /// run riparte con una cattura pulita.
+  void clearCaptured() => _captured.clear();
 
   /// Avvia una nuova sessione: azzera il buffer/contatori e apre un nuovo
   /// file CSV con l'header. `context` raccoglie lo stato di sessione
@@ -52,9 +85,20 @@ class DiagnosticLogger {
   }) async {
     if (!isActive) return;
     _buffer.clear();
+    _captured.clear();
     _transferGpsCounter = 0;
     _lastAnyGpsTs = null;
     _lastImuHeadingLogTs = null;
+    if (captureOnly) {
+      logLifecycle('session_start');
+      log('device', 'info', [
+        deviceManufacturer,
+        deviceModel,
+        batteryOptimizationIgnored ? 'battery_ok' : 'battery_optimized',
+        gpsProvider,
+      ]);
+      return;
+    }
     try {
       final dir = await getApplicationDocumentsDirectory();
       final sessionId = DateTime.now().millisecondsSinceEpoch;
@@ -97,6 +141,10 @@ class DiagnosticLogger {
 
   void log(String categoria, String evento, [List<Object?> fields = const []]) {
     if (!isActive || _disposed) return;
+    if (captureOnly) {
+      _captured.add(CapturedLogEntry(categoria, evento, fields));
+      return;
+    }
     final row = StringBuffer()
       ..write(DateTime.now().millisecondsSinceEpoch)
       ..write(',')

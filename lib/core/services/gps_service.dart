@@ -161,6 +161,11 @@ class GpsService extends ChangeNotifier {
   Stream<Position> get positionStream => _posStreamCtrl.stream;
 
   bool _isRecording = false;
+  // Parte 1 — banco di replay: true SOLO durante una sessione avviata da
+  // [startReplaySession], mai durante una registrazione live. Guarda
+  // [_startPositionStream] per evitare di toccare il Geolocator reale
+  // quando la pipeline sta rigiocando campioni forniti esplicitamente.
+  bool _replayMode = false;
   bool _writesBlocked = false;
   bool _disposed = false;
   GpsMode _mode = GpsMode.idle;
@@ -966,8 +971,13 @@ class GpsService extends ChangeNotifier {
   /// concluse normalmente. Va chiamato PRIMA di [blockFurtherWrites]/
   /// [stopRecording], perché usa [_recoveryTrack] e l'accesso a Firestore
   /// ancora attivi.
-  Future<void> closeAllOpenSpecialsForFineGara() async {
-    final now = DateTime.now();
+  Future<void> closeAllOpenSpecialsForFineGara() =>
+      closeAllOpenSpecialsAt(DateTime.now());
+
+  /// Stessa logica di [closeAllOpenSpecialsForFineGara], con [now] esplicito
+  /// invece di `DateTime.now()` — usato anche a fine replay (Parte 1) per
+  /// chiudere PS ancora aperte al timestamp dell'ultimo campione rigiocato.
+  Future<void> closeAllOpenSpecialsAt(DateTime now) async {
     for (int i = 0; i < _specialEntries.length; i++) {
       if (_disposed) return;
       if (_specialEntries[i].exitTime != null) continue;
@@ -1219,31 +1229,20 @@ class GpsService extends ChangeNotifier {
     return true;
   }
 
-  Future<void> startRecording({
-    required String eventId,
-    required String userId,
+  /// Reset dello stato di sessione (specials/waypoints/porte virtuali,
+  /// punti pericolo/ristoro/zone velocità, buffer Kalman/recovery/display) —
+  /// condiviso da [startRecording] (sessione live) e [startReplaySession]
+  /// (Parte 1, banco di replay): stessa identica logica, nessuna
+  /// duplicazione. Non tocca `_activeEventId`/`_activeUserId`/`_writesBlocked`
+  /// (identità di sessione, solo live) né alcun side-effect esterno.
+  void _resetSessionState({
     required List<WaypointModel> waypoints,
     List<SpecialModel> specials = const [],
     List<WaypointModel> fuelPoints = const [],
     List<DangerPointModel> dangerPoints = const [],
     List<SpeedZoneModel> speedZones = const [],
-    // Polyline GPX di riferimento dell'evento, usata una sola volta qui per
-    // costruire le porte virtuali di inizio/fine PS e zone velocità (Blocco
-    // A — timing di precisione). Se vuota, tutti i waypoint restano senza
-    // porta e il rilevamento ricade sul metodo a raggio esistente.
     List<LatLng> referenceTrack = const [],
-  }) async {
-    if (_isRecording) return;
-    final hasPermission = await requestPermissions();
-    if (!hasPermission) throw Exception('Permesso GPS negato');
-    // Try to flush any data queued during previous offline sessions
-    if (_offlineQueue.hasPending) {
-      _offlineQueue.syncPending(_firestoreService).ignore();
-    }
-
-    _writesBlocked = false;
-    _activeEventId = eventId;
-    _activeUserId = userId;
+  }) {
     _specials = specials;
     _inizioToSpecial.clear();
     _fineToSpecial.clear();
@@ -1330,12 +1329,48 @@ class GpsService extends ChangeNotifier {
     _endRecoveryAttempted.clear();
     _waypointDetector.reset();
     _nearestWaypointLabel = null;
-    _isRecording = true;
-    _mode = GpsMode.transfer;
-    _recordingStart = DateTime.now();
     _lastRawPositionTs = null;
     _lastFirestoreUpdateTs = null;
     _isRestartingGps = false;
+  }
+
+  Future<void> startRecording({
+    required String eventId,
+    required String userId,
+    required List<WaypointModel> waypoints,
+    List<SpecialModel> specials = const [],
+    List<WaypointModel> fuelPoints = const [],
+    List<DangerPointModel> dangerPoints = const [],
+    List<SpeedZoneModel> speedZones = const [],
+    // Polyline GPX di riferimento dell'evento, usata una sola volta qui per
+    // costruire le porte virtuali di inizio/fine PS e zone velocità (Blocco
+    // A — timing di precisione). Se vuota, tutti i waypoint restano senza
+    // porta e il rilevamento ricade sul metodo a raggio esistente.
+    List<LatLng> referenceTrack = const [],
+  }) async {
+    if (_isRecording) return;
+    final hasPermission = await requestPermissions();
+    if (!hasPermission) throw Exception('Permesso GPS negato');
+    // Try to flush any data queued during previous offline sessions
+    if (_offlineQueue.hasPending) {
+      _offlineQueue.syncPending(_firestoreService).ignore();
+    }
+
+    _writesBlocked = false;
+    _activeEventId = eventId;
+    _activeUserId = userId;
+    _resetSessionState(
+      waypoints: waypoints,
+      specials: specials,
+      fuelPoints: fuelPoints,
+      dangerPoints: dangerPoints,
+      speedZones: speedZones,
+      referenceTrack: referenceTrack,
+    );
+    _isRecording = true;
+    _mode = GpsMode.transfer;
+    _recordingStart = DateTime.now();
+    _replayMode = false;
     _gnssStatus?.start();
     unawaited(_voiceAlerts?.start());
     if (_diagLogger?.isActive == true) {
@@ -1366,8 +1401,81 @@ class GpsService extends ChangeNotifier {
     _startPositionStream(AppConstants.gpsIntervalTransferMs);
   }
 
+  // ── Parte 1 — Banco di replay ───────────────────────────────────────────
+  //
+  // Rigioca una sequenza di campioni attraverso ESATTAMENTE la stessa
+  // pipeline della registrazione live (STEP 1-6 di [_onPosition]: filtro
+  // accuracy, filtro jump, Kalman 4D, filtro anchor, porte virtuali,
+  // fallback a raggio, recovery) — nessuna riscrittura della logica.
+  // `_activeEventId`/`_activeUserId` restano SEMPRE null durante il replay:
+  // ogni scrittura Firestore/offline-queue nella pipeline è già condizionata
+  // su questi due campi (vedi `_handleWaypointDetection`,
+  // `_checkSpeedZoneViolation`, il tracking live in `_onPosition`), quindi
+  // restano automaticamente no-op senza bisogno di altri guard. Wakelock,
+  // IMU, GNSS, TTS e permessi non vengono mai toccati: l'istanza va creata
+  // apposta per il replay (mai la stessa del pilota in gara).
+  //
+  // Un'istanza di GpsService dedicata al replay va costruita con
+  // `_gnssStatus`/`_voiceAlerts` a null e con un [DiagnosticLogger] in
+  // modalità `captureOnly` per raccogliere metodo/frazione/distanza di ogni
+  // attraversamento porta — vedi `track_replay_service.dart`.
+
+  /// Inizializza una sessione di replay con la stessa identica logica di
+  /// [startRecording] (vedi [_resetSessionState]) ma senza alcun
+  /// side-effect live: nessun permesso richiesto, nessuna scrittura
+  /// Firestore, nessuno stream GPS reale. [sessionStart] sostituisce
+  /// `DateTime.now()` come riferimento per la soglia di accuracy
+  /// progressiva e la finestra di grazia iniziale (10s) — di norma il
+  /// timestamp del primo campione della traccia.
+  void startReplaySession({
+    required List<WaypointModel> waypoints,
+    required DateTime sessionStart,
+    List<SpecialModel> specials = const [],
+    List<WaypointModel> fuelPoints = const [],
+    List<DangerPointModel> dangerPoints = const [],
+    List<SpeedZoneModel> speedZones = const [],
+    List<LatLng> referenceTrack = const [],
+  }) {
+    _resetSessionState(
+      waypoints: waypoints,
+      specials: specials,
+      fuelPoints: fuelPoints,
+      dangerPoints: dangerPoints,
+      speedZones: speedZones,
+      referenceTrack: referenceTrack,
+    );
+    _replayMode = true;
+    _isRecording = true;
+    _mode = GpsMode.transfer;
+    _recordingStart = sessionStart;
+  }
+
+  /// Fa avanzare la pipeline di un campione — stesso codice esatto di
+  /// [_onPosition] usato in diretta, con [sampleTimestamp] al posto di
+  /// `DateTime.now()` per rispettare la timeline originale della traccia
+  /// rigiocata. Va atteso (await) in ordine, un campione alla volta: il
+  /// Kalman e i filtri jump/anchor dipendono dallo stato del campione
+  /// precedente esattamente come in diretta.
+  Future<void> ingestReplaySample(Position pos, DateTime sampleTimestamp) =>
+      _onPosition(pos, nowOverride: sampleTimestamp);
+
+  /// Termina la sessione di replay: solo stato locale (a differenza di
+  /// [stopRecording], nessun side-effect live da fermare perché nessuno è
+  /// mai stato avviato).
+  void endReplaySession() {
+    _isRecording = false;
+    _mode = GpsMode.idle;
+    _replayMode = false;
+  }
+
   void _startPositionStream(int intervalMs) {
     _currentIntervalMs = intervalMs;
+    // Parte 1 — banco di replay: nessuno stream GPS reale, i campioni
+    // arrivano da [ingestReplaySample]. Il cambio di modalità durante il
+    // replay aggiorna comunque _currentIntervalMs sopra per coerenza, ma
+    // non deve mai toccare Geolocator (niente hardware/permessi in un
+    // contesto di replay, anche su piattaforme diverse da Android).
+    if (_replayMode) return;
     _positionSub?.cancel();
     // distanceFilter fisso a kDistanceFilterMeters per tutte le modalità:
     // 0 causava l'accettazione di ogni scatter GPS come punto valido
@@ -1477,12 +1585,17 @@ class GpsService extends ChangeNotifier {
     return R * 2 * atan2(sqrt(aVal), sqrt(1 - aVal));
   }
 
-  void _onPosition(Position pos) async {
+  // Parte 1 — banco di replay: [nowOverride] sostituisce `DateTime.now()`
+  // per rispettare la timeline originale di una traccia rigiocata (vedi
+  // [ingestReplaySample]). Sempre null nel percorso live (stream reale
+  // via .listen(_onPosition, ...)), quindi il comportamento in diretta è
+  // identico a prima — nessuna logica cambiata, solo l'origine di `now`.
+  Future<void> _onPosition(Position pos, {DateTime? nowOverride}) async {
     // Always store raw position and emit stream — UI uses it for accuracy display.
     _lastPosition = pos;
     _posStreamCtrl.add(pos);
 
-    final now = DateTime.now();
+    final now = nowOverride ?? DateTime.now();
     final rawLatLng = LatLng(pos.latitude, pos.longitude);
 
     // Aggiornato ad OGNI posizione ricevuta, valida o no, PRIMA di

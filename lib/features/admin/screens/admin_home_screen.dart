@@ -36,6 +36,38 @@ class AdminHomeScreen extends ConsumerWidget {
             tooltip: 'Campionati',
             onPressed: () => context.push('/admin/championships'),
           ),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.build_outlined),
+            tooltip: 'Strumenti diagnostici',
+            color: AppColors.cardBackground,
+            onSelected: (route) => context.push(route),
+            itemBuilder: (context) => const [
+              PopupMenuItem(
+                value: '/admin/track-replay',
+                child: Row(
+                  children: [
+                    Icon(Icons.replay_circle_filled_outlined,
+                        color: AppColors.textPrimary, size: 18),
+                    SizedBox(width: 10),
+                    Text('Replay traccia',
+                        style: TextStyle(color: AppColors.textPrimary)),
+                  ],
+                ),
+              ),
+              PopupMenuItem(
+                value: '/admin/diagnostic-log-analyzer',
+                child: Row(
+                  children: [
+                    Icon(Icons.analytics_outlined,
+                        color: AppColors.textPrimary, size: 18),
+                    SizedBox(width: 10),
+                    Text('Analizza log diagnostico',
+                        style: TextStyle(color: AppColors.textPrimary)),
+                  ],
+                ),
+              ),
+            ],
+          ),
           IconButton(
             icon: const Icon(Icons.logout),
             tooltip: 'Logout',

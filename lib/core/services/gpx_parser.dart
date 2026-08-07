@@ -1,6 +1,7 @@
 import 'package:gpx/gpx.dart' as gpx_pkg;
 import 'package:latlong2/latlong.dart';
 import '../models/waypoint_model.dart';
+import 'track_smoother.dart';
 
 class ParsedTrack {
   final List<LatLng> points;
@@ -38,6 +39,36 @@ class GpxParser {
       }
     }
     return ParsedTrack(points: points, waypoints: waypoints);
+  }
+
+  /// Parte 1A (banco di replay) — GPX registrato con timestamp per punto
+  /// (a differenza di [parseGpx], che scarta `<time>` perché serve solo la
+  /// polyline di riferimento). Il GPX non porta mai l'accuracy dichiarata
+  /// dal chip: [defaultAccuracyMeters] la sostituisce per ogni punto,
+  /// dichiarato anche nel report del replay. Punti senza `<time>` vengono
+  /// scartati (nessuna posizione plausibile su cui inventare un timestamp).
+  static List<RawTrackSample> parseGpxSamples(
+    String content, {
+    double defaultAccuracyMeters = 5.0,
+  }) {
+    final reader = gpx_pkg.GpxReader();
+    final gpxData = reader.fromString(content);
+    final samples = <RawTrackSample>[];
+    for (final trk in gpxData.trks) {
+      for (final seg in trk.trksegs) {
+        for (final pt in seg.trkpts) {
+          if (pt.lat == null || pt.lon == null || pt.time == null) continue;
+          samples.add(RawTrackSample(
+            lat: pt.lat!,
+            lng: pt.lon!,
+            accuracy: defaultAccuracyMeters,
+            timestamp: pt.time!,
+          ));
+        }
+      }
+    }
+    samples.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+    return samples;
   }
 
   static ParsedTrack parseKml(String content) {

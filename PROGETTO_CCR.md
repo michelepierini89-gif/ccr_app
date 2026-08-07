@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 05 agosto 2026 (Step 36 completato)  
+**Data aggiornamento:** 07 agosto 2026 (Step 37 completato)  
 **Branch:** main  
 **Versione:** 1.0.2+3
 
@@ -1566,6 +1566,38 @@ id/nome arbitrario.
 
 ---
 
+### Step 37 — Banco di replay tracce, analizzatore log diagnostici, duplicazione evento (07 agosto 2026) ✅
+
+**Obiettivo:** strumenti per validare la logica GPS/timing senza uscire sul campo, riusando le tracce già registrate. Nessuna modifica alla logica di gara esistente — solo estrazione/riuso.
+
+**Parte 1 — Banco di replay (`gps_service.dart`, `waypoint_detector.dart`, `track_replay_service.dart` nuovo, `track_replay_screen.dart` nuovo):**
+- Estrazione minimale e comportamentalmente neutra da `GpsService`: `_onPosition` accetta ora un `nowOverride` opzionale (`null` in diretta → `DateTime.now()` come sempre, identico comportamento live); reset di sessione estratto in `_resetSessionState()` condiviso da `startRecording()` e dal nuovo `startReplaySession()`; nuovo flag `_replayMode` che disattiva SOLO la chiamata reale a `Geolocator.getPositionStream` dentro `_startPositionStream` (mai toccata durante il replay). Nuova API pubblica `startReplaySession()`/`ingestReplaySample()`/`closeAllOpenSpecialsAt()`/`endReplaySession()` — stesso identico codice STEP 1-6 di `_onPosition` (filtro accuracy, jump, Kalman 4D, anchor, porte virtuali, fallback a raggio, recovery), nessuna duplicazione. `_activeEventId`/`_activeUserId` restano sempre null durante il replay: ogni scrittura Firestore nella pipeline era già condizionata su questi due campi (verificato uno per uno), quindi tutte no-op automaticamente senza guardie aggiuntive.
+- `DiagnosticLogger`: nuova modalità `captureOnly` (in-memory, nessun file, attiva anche su web) — riusa esattamente gli hook di log già cablati in `GpsService` per il log diagnostico (Parte 4 dello Step 36) per catturare metodo/frazione/distanza di ogni attraversamento durante il replay, senza nessuna nuova strumentazione nel codice di gara.
+- `WaypointDetector.rerunGateRadiusDetection()` (nuovo, pubblico): estratto da `timing_screen.dart` (era `_rerunDetectionOnSmoothedTrack`, privato) — riesegue solo porta/raggio su una traccia già pulita (es. smussata RTS), usato sia da "Tempi ufficiali" sia dal replay, un solo posto per la logica.
+- `GpxParser.parseGpxSamples()` (nuovo): GPX con timestamp per punto (a differenza di `parseGpx`, che li scarta perché serve solo alla polyline di riferimento).
+- `TrackReplayService`: 3 sorgenti (Firestore `pilotTrackFull`, CSV diagnostico via nuovo `diagnostic_log_parser.dart`, GPX), esecuzione fast/2×/5×/10×, 3 configurazioni minime (solo raggio: `referenceTrack` vuota forza fallback raggio ovunque; porta+raggio: comportamento attuale; porta+RTS: `TrackSmoother.smooth` + `rerunGateRadiusDetection`), export CSV.
+- Schermata admin "Replay traccia" (menu Strumenti diagnostici in `AdminHomeScreen`): selezione sorgente/evento/pilota, velocità, mappa con traccia+porte+marker di attraversamento, tabella risultati con Δ ms, export.
+
+**Parte 1E — Validazione su dati reali:** nessun evento pre-esistente ha `pilotTrackFull` (esiste solo dallo Step 35, mai popolato prima). Validato su "Enduro test 01" (il test in moto, 6022 punti GPS reali) con timestamp sintetici 1s costanti — geometria reale, tempistica sintetica. Risultato: **raggio da solo 0/5 PS agganciate** (a velocità reali un raggio di 10m è troppo stretto per 2 rilevazioni consecutive a 1s di cadenza), **porta+raggio 3/5 complete** (PS1/PS5 intere, mai raggiunte dal solo raggio), **porta+RTS 3/5** con differenze di poche centinaia di ms ma perdita di 2 PS recuperate parzialmente da porta+raggio. Confronto qualitativo valido, valori assoluti di durata da validare su una gara futura con `pilotTrackFull` reale.
+
+**Parte 2 — Analizzatore log diagnostici (`diagnostic_log_analyzer_service.dart`, `diagnostic_log_parser.dart`, `diagnostic_log_analyzer_screen.dart`, tutti nuovi):**
+- Parser CSV condiviso con la Parte 1 (`diagnostic_log_parser.dart`, quote-aware per i testi degli annunci vocali).
+- Report: qualità segnale (durata, fix totali/accettati/scartati per motivo con %, accuracy min/mediana/max, satelliti min/mediano/max, distribuzione qualità GNSS riusando le soglie di `GnssStatusSnapshot.quality`), continuità (gap >5s con correlazione all'evento di ciclo vita app più vicino entro 5s — la verifica chiave per il GPS in background), timing (metodo/distanza/frazione per PS, recovery con motivo), configurazione device.
+- Schermata admin con import CSV, report a schermo, export testo/CSV.
+
+**Parte 3 — Duplica evento (`event_management_screen.dart`):**
+- Pulsante in AppBar → dialog con selezione data (obbligatoria, non c'è altro editor data/luogo nell'app) → copia tracciato (ri-caricato su Storage sotto il nuovo eventId, non lo stesso URL — resta indipendente da regole Storage future o cancellazione dell'originale), speciali con checkpoint, punti pericolo, punto ristoro, zone velocità, dimensione squadra, tipologia punteggio, tempo massimo gara. Nome "[originale] (copia)", stato bozza. NON copia iscrizioni/ordine di partenza/tracce GPS/tempi/classifiche — automaticamente, perché tutte legate all'id del vecchio evento e il nuovo nasce con un id proprio.
+
+**Nota metodologica sessione:** per la Parte 1E, senza credenziali admin lato client per leggere `tracking/{eventId}/pilots` (lettura riservata ad admin via Firestore rules) e senza ADC locali per `firebase-admin`, sono state deployate temporaneamente 2 Cloud Functions di sola lettura protette da secret per esportare i dati necessari, poi rimosse (codice e deploy) prima del commit — non fanno parte dell'app.
+
+**Deploy:**
+- `flutter analyze`: 0 issues
+- `flutter test`: 43/43 verdi
+- `flutter build web --release` + `firebase deploy --only hosting` ✅ → https://ccr-enduro.web.app
+- `git push origin main` ✅
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**
@@ -1581,6 +1613,10 @@ id/nome arbitrario.
 - Verificare l'instradamento audio degli alert vocali sull'interfono Bluetooth del casco (pulsante "Prova audio" nelle impostazioni navigazione) prima di un test su strada
 - Confrontare l'errore di timing porta-vs-raggio su un tracciato reale a 30 e 60 km/h con i log `timingMethod`
 - Testare il ricalcolo "Tempi ufficiali" su una gara reale con più piloti per validare lo smoother RTS
+
+**Validazione banco di replay (Step 37 — Parte 1E, dati sintetici finora):**
+- Rieseguire il confronto raggio/porta/RTS su una gara futura con `pilotTrackFull` reale (timestamp + accuracy veri, non sintetici) per validare i valori assoluti di durata, non solo il confronto qualitativo tra metodi
+- Verificare se la perdita di 2 PS su 5 passando da porta+raggio a porta+RTS (vista nella validazione sintetica) si ripete su dati con cadenza di campionamento reale (250ms in speciale) invece del 1s sintetico usato
 
 **Test rimanenti:**
 - Test end-to-end classifica campionato con più eventi

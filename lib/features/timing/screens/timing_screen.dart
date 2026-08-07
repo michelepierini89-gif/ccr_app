@@ -22,15 +22,6 @@ import '../../pilot/providers/pilot_provider.dart';
 
 // ── Ricalcolo tempi ufficiali (Blocco B) ─────────────────────────────────────
 
-/// Ordine di precisione dal migliore al peggiore: porta > raggio > recovery.
-const _timingMethodRank = {'gate': 0, 'radius': 1, 'recovery': 2};
-
-String _worstTimingMethod(String a, String b) {
-  final ra = _timingMethodRank[a] ?? 1;
-  final rb = _timingMethodRank[b] ?? 1;
-  return ra >= rb ? a : b;
-}
-
 class _OfficialRecalcResult {
   final String pilotName;
   final String specialeNome;
@@ -65,57 +56,6 @@ Future<List<LatLng>> _loadEventReferenceTrack(EventModel event) async {
   }
 }
 
-/// Riesegue il rilevamento porta virtuale/raggio (Blocco A) sulla traccia
-/// [smoothed] di un singolo pilota, per inizio e fine di ogni speciale in
-/// [gatedBySpecial]. Ritorna, per ogni speciale con inizio E fine trovati,
-/// la durata ufficiale in ms e il metodo di timing peggiore tra i due.
-Map<String, ({int durationMs, String method})> _rerunDetectionOnSmoothedTrack(
-  List<SmoothedTrackPoint> smoothed,
-  Map<String, (WaypointModel, WaypointModel)> gatedBySpecial,
-) {
-  final result = <String, ({int durationMs, String method})>{};
-  if (smoothed.length < 2) return result;
-
-  for (final entry in gatedBySpecial.entries) {
-    final (inizio, fine) = entry.value;
-    final waypoints = [inizio, fine];
-    final detector = WaypointDetector();
-    final passed = <String>{};
-    DateTime? startTs, endTs;
-    var startMethod = 'radius';
-    var endMethod = 'radius';
-
-    for (var i = 1; i < smoothed.length && (startTs == null || endTs == null); i++) {
-      final prev = smoothed[i - 1];
-      final curr = smoothed[i];
-      var method = 'gate';
-      var hit = detector.detectGateCrossing(prev.position, curr.position,
-          prev.timestamp, curr.timestamp, waypoints, passed);
-      if (hit == null) {
-        method = 'radius';
-        hit = detector.detectPassage(curr.position, curr.timestamp, waypoints, passed);
-      }
-      if (hit == null) continue;
-      passed.add(hit.waypoint.id);
-      if (hit.waypoint.id == inizio.id) {
-        startTs = hit.timestamp;
-        startMethod = method;
-      } else if (hit.waypoint.id == fine.id) {
-        endTs = hit.timestamp;
-        endMethod = method;
-      }
-    }
-
-    if (startTs != null && endTs != null && endTs.isAfter(startTs)) {
-      result[entry.key] = (
-        durationMs: endTs.difference(startTs).inMilliseconds,
-        method: _worstTimingMethod(startMethod, endMethod),
-      );
-    }
-  }
-  return result;
-}
-
 /// Orchestrazione completa del ricalcolo (Blocco B2): per ogni pilota
 /// approvato dell'evento, carica la traccia grezza completa, la smussa
 /// con [TrackSmoother], riesegue il rilevamento porte virtuali e salva i
@@ -148,7 +88,8 @@ Future<List<_OfficialRecalcResult>> _recalculateOfficialTimes(
     final samples = await svc.getFullPilotTrack(event.id, reg.userId);
     if (samples.length < 2) continue;
     final smoothed = TrackSmoother.smooth(samples);
-    final officialBySpecial = _rerunDetectionOnSmoothedTrack(smoothed, gatedBySpecial);
+    final officialBySpecial =
+        WaypointDetector.rerunGateRadiusDetection(smoothed, gatedBySpecial);
     if (officialBySpecial.isEmpty) continue;
 
     await svc.saveOfficialTimes(
@@ -1073,7 +1014,7 @@ class _SpecialTimingRow extends StatelessWidget {
   }
 
   Widget _timingMethodBadge() {
-    final worst = _worstTimingMethod(
+    final worst = worstTimingMethod(
         special.startTimingMethod, special.endTimingMethod);
     final (label, color) = switch (worst) {
       'gate' => ('PORTA', AppColors.success),
