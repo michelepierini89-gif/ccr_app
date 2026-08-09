@@ -22,6 +22,18 @@ import '../utils/kalman_filter.dart';
 
 enum GpsMode { idle, transfer, inSpecial, nearWaypoint }
 
+/// Fix 1 — Esito della regola di precedenza esplicita tra metodi di timing
+/// (vedi `timingMethodRank` in waypoint_detector.dart): [timestamp] e
+/// [timingMethod] sono il valore da usare per il waypoint, [usedExisting] è
+/// true quando un passaggio già noto (di precedenza pari o superiore) ha
+/// prevalso sul candidato proposto in questa chiamata — segnale di "porta
+/// orfana" (Fix 2) quando chi chiama è una recovery.
+typedef PassageResolution = ({
+  DateTime timestamp,
+  String timingMethod,
+  bool usedExisting,
+});
+
 class WaypointPassage {
   final WaypointModel waypoint;
   final DateTime timestamp;
@@ -83,6 +95,13 @@ class GpsService extends ChangeNotifier {
   // multipath, non velocità reali: nessuna eccezione di "jump accettato"
   // (causava il pattern a ventaglio e i tempi PS impossibili).
   static const double kMaxSpeedFilterKmh = 120.0;
+
+  // Fix 4 — oltre questo intervallo tra i due fix filtrati che delimitano
+  // un attraversamento porta, il segmento è "a cavallo di un gap": la
+  // porta viene comunque registrata (l'interpolazione lineare resta il
+  // miglior dato disponibile), ma con timingMethod 'gate_gap' invece di
+  // 'gate', per segnalare all'admin che il tempo è meno affidabile.
+  static const int kGateGapThresholdMs = 2000;
 
   // Bearing: sotto questa velocità geometrica il bearing resta congelato
   // (evita jitter della freccia da fermo); sopra, smoothing esponenziale.
@@ -178,6 +197,11 @@ class GpsService extends ChangeNotifier {
   final Map<String, String> _fineToSpecial = {};
   final Set<String> _passedWaypoints = {};
 
+  // Fix 4 — polyline di riferimento tenuta anche dopo attachGates (che la
+  // usa solo transitoriamente): serve a stimare la distanza tra un cluster
+  // di jump scartati e il percorso atteso (vedi _flushJumpCluster).
+  List<LatLng> _referenceTrack = const [];
+
   // Zone a velocità controllata: i punti di inizio/fine sono iniettati in
   // _waypoints come WaypointType.intermedio sintetici (riusano la doppia
   // conferma di WaypointDetector) e mappati qui all'id della zona.
@@ -211,6 +235,18 @@ class GpsService extends ChangeNotifier {
   String? _currentSpecialId;
   String? _currentSpecialNome;
   final List<SpecialEntry> _specialEntries = [];
+
+  // Fix 1/2 — registro del passaggio più affidabile finora noto per ogni
+  // waypoint gated (inizio/fine PS, zone velocità), a prescindere da
+  // quando/se la SpecialEntry corrispondente è aperta. È il meccanismo che
+  // impedisce a un fallback (raggio/recovery/forfait) di sovrascrivere un
+  // attraversamento porta già rilevato, ed è anche il modo in cui un
+  // attraversamento "orfano" (porta di fine rilevata mentre la speciale non
+  // risultava aperta) sopravvive fino a quando la speciale viene chiusa da
+  // un altro meccanismo — vedi _registerPassage.
+  final Map<String,
+      ({DateTime timestamp, String timingMethod, double? distanceMeters})>
+      _bestPassageByWaypoint = {};
   DateTime? _recordingStart;
   StreamSubscription<Position>? _positionSub;
   double _totalDistanceKm = 0.0;
@@ -248,6 +284,13 @@ class GpsService extends ChangeNotifier {
   // Geometric jump filter state (raw points, before Kalman)
   LatLng? _lastAcceptedRawPos;
   DateTime? _lastAcceptedTs;
+
+  // Fix 4 — posizioni scartate dal filtro jump da quando è stato accettato
+  // l'ultimo fix, usate per riassumere il cluster (dimensione + posizione
+  // media + scarto dalla traccia di riferimento) al prossimo fix accettato:
+  // distingue un multipath sostenuto (più scarti ravvicinati e sistematici)
+  // dal rumore isolato (un singolo scarto).
+  final List<LatLng> _jumpClusterBuffer = [];
 
   // Doppia conferma waypoint: protegge la rilevazione PS dai ghost points.
   final WaypointDetector _waypointDetector = WaypointDetector();
@@ -315,6 +358,21 @@ class GpsService extends ChangeNotifier {
   String? get currentSpecialId => _currentSpecialId;
   String? get currentSpecialNome => _currentSpecialNome;
   List<SpecialEntry> get specialEntries => List.unmodifiable(_specialEntries);
+
+  /// Fix 1/2 — metodo di timing vincente per [waypointId] secondo il
+  /// registro di precedenza (`_bestPassageByWaypoint`): riflette il dato
+  /// EFFETTIVAMENTE usato per l'ingresso/uscita PS, anche quando è stato
+  /// scritto da una recovery che ha trovato — e usato — una porta orfana
+  /// invece del proprio ricalcolo. Null se il waypoint non ha ancora alcun
+  /// passaggio registrato in questa sessione.
+  String? timingMethodFor(String waypointId) =>
+      _bestPassageByWaypoint[waypointId]?.timingMethod;
+
+  /// Distanza (metri) dal waypoint del passaggio vincente per [waypointId],
+  /// se disponibile (popolata solo per porta/recovery con ricerca a
+  /// distanza, non per le stime a tempo fisso).
+  double? passageDistanceFor(String waypointId) =>
+      _bestPassageByWaypoint[waypointId]?.distanceMeters;
   DateTime? get recordingStart => _recordingStart;
   Duration get elapsed => _recordingStart != null
       ? DateTime.now().difference(_recordingStart!)
@@ -573,17 +631,27 @@ class GpsService extends ChangeNotifier {
           'start retroattivo a $recoveredTime '
           '(dist min: ${bestDistM.toStringAsFixed(1)}m)');
 
+      // Fix 1 — non sovrascrivere un passaggio già noto più preciso (in
+      // pratica qui il candidato vince quasi sempre, dato che il guard
+      // _passedWaypoints sopra impedisce di arrivarci due volte per lo
+      // stesso waypoint — instradato comunque per coerenza col resto della
+      // pipeline).
+      final resolution = _registerPassage(
+          inizioId, recoveredTime, 'recovery',
+          candidateDistanceMeters: bestDistM);
+      final entryTime = resolution.timestamp;
+
       // Register inizio waypoint as passed to block double-detection
       _passedWaypoints.add(inizioId);
       _passages.add(
-          WaypointPassage(waypoint: special.waypointInizio, timestamp: recoveredTime));
+          WaypointPassage(waypoint: special.waypointInizio, timestamp: entryTime));
 
       // Open the special with the recovered entry time
       _currentSpecialId = special.id;
       _currentSpecialNome = special.nome;
       _addSpecialEntry(
         specialeId: special.id,
-        entryTime: recoveredTime,
+        entryTime: entryTime,
         recoveredStart: true,
       );
 
@@ -599,9 +667,9 @@ class GpsService extends ChangeNotifier {
             userId: _activeUserId!,
             waypointId: inizioId,
             waypointNome: special.waypointInizio.nome,
-            timestamp: recoveredTime,
+            timestamp: entryTime,
             recoveredStart: true,
-            timingMethod: 'recovery',
+            timingMethod: resolution.timingMethod,
           );
         } catch (_) {
           await _offlineQueue.queuePassage(
@@ -609,8 +677,8 @@ class GpsService extends ChangeNotifier {
             userId: _activeUserId!,
             waypointId: inizioId,
             waypointNome: special.waypointInizio.nome,
-            timestamp: recoveredTime,
-            timingMethod: 'recovery',
+            timestamp: entryTime,
+            timingMethod: resolution.timingMethod,
           );
         }
       }
@@ -666,9 +734,19 @@ class GpsService extends ChangeNotifier {
 
       final bool recoveredStart =
           bestStartIdx >= 0 && bestStartDistM < kSpecialStartRecoveryRadiusMeters;
-      final DateTime entryTime = recoveredStart
+      // Fix 1 — 'recovery' se un punto reale è stato trovato entro il
+      // raggio, 'forfait' se si tratta di una stima a tempo (nessun dato
+      // GPS a supporto): precedenza più bassa, così un dato migliore
+      // trovato altrove (es. una porta orfana) non viene mai scartato a
+      // favore di una pura stima.
+      final startCandidateMethod = recoveredStart ? 'recovery' : 'forfait';
+      final startCandidateTs = recoveredStart
           ? _recoveryTimestamps[bestStartIdx]
           : nextStartTs.subtract(const Duration(minutes: 2));
+      final startResolution = _registerPassage(
+          startWp.id, startCandidateTs, startCandidateMethod,
+          candidateDistanceMeters: recoveredStart ? bestStartDistM : null);
+      final entryTime = startResolution.timestamp;
 
       debugPrint('RECOVERY SKIPPED speciale ${prev.id}: '
           'inizio ${recoveredStart ? "recuperato" : "stimato"} a $entryTime');
@@ -701,11 +779,25 @@ class GpsService extends ChangeNotifier {
 
       final bool recoveredEnd =
           bestEndIdx >= 0 && bestEndDistM < kSpecialEndRecoveryRadiusMeters;
-      final DateTime exitTime = recoveredEnd
+      final endCandidateMethod = recoveredEnd ? 'recovery' : 'forfait';
+      final endCandidateTs = recoveredEnd
           ? _recoveryTimestamps[bestEndIdx]
           : nextStartTs.subtract(const Duration(seconds: 1));
-      final String? timingError =
-          (recoveredStart && recoveredEnd) ? null : 'speciale_non_rilevata';
+      final endResolution = _registerPassage(
+          endWp.id, endCandidateTs, endCandidateMethod,
+          candidateDistanceMeters: recoveredEnd ? bestEndDistM : null);
+      final exitTime = endResolution.timestamp;
+
+      // Fix 2 — se il valore vincente non è il nostro candidato fresco, è
+      // perché esisteva già un passaggio migliore (tipicamente una porta
+      // rilevata "a vuoto" mentre questa speciale non risultava ancora
+      // aperta): segnalalo all'admin come nota, la sequenza delle speciali
+      // ha avuto un'anomalia da verificare — non un errore di misura.
+      final bool closedFromOrphan = endResolution.usedExisting &&
+          endResolution.timingMethod != endCandidateMethod;
+      final String? timingError = closedFromOrphan
+          ? 'chiusura_da_porta_orfana'
+          : ((recoveredStart && recoveredEnd) ? null : 'speciale_non_rilevata');
 
       final entryIdx = _specialEntries.length - 1;
       _specialEntries[entryIdx] = _specialEntries[entryIdx].withExit(exitTime);
@@ -727,7 +819,7 @@ class GpsService extends ChangeNotifier {
             waypointNome: startWp.nome,
             timestamp: entryTime,
             recoveredStart: recoveredStart,
-            timingMethod: 'recovery',
+            timingMethod: startResolution.timingMethod,
           );
           await _firestoreService.recordWaypointPassage(
             eventId: _activeEventId!,
@@ -737,7 +829,7 @@ class GpsService extends ChangeNotifier {
             timestamp: exitTime,
             recoveredEnd: true,
             timingError: timingError,
-            timingMethod: 'recovery',
+            timingMethod: endResolution.timingMethod,
           );
         } catch (_) {
           await _offlineQueue.queuePassage(
@@ -746,7 +838,7 @@ class GpsService extends ChangeNotifier {
             waypointId: startWp.id,
             waypointNome: startWp.nome,
             timestamp: entryTime,
-            timingMethod: 'recovery',
+            timingMethod: startResolution.timingMethod,
           );
           await _offlineQueue.queuePassage(
             eventId: _activeEventId!,
@@ -754,11 +846,88 @@ class GpsService extends ChangeNotifier {
             waypointId: endWp.id,
             waypointNome: endWp.nome,
             timestamp: exitTime,
-            timingMethod: 'recovery',
+            timingMethod: endResolution.timingMethod,
           );
         }
       }
     }
+  }
+
+  /// Fix 1/2 — punto unico di scrittura nel registro [_bestPassageByWaypoint]:
+  /// va chiamato da OGNI meccanismo che produce un candidato ingresso/uscita
+  /// PS (rilevamento diretto, le tre recovery, la chiusura da FINE GARA, lo
+  /// skip manuale) prima di scrivere effettivamente su [_specialEntries]/
+  /// Firestore. Un passaggio esistente di precedenza pari o superiore a
+  /// [candidateMethod] non viene mai sostituito — questo è sia la garanzia
+  /// "non peggiorare mai un dato preciso" (Fix 1) sia il meccanismo con cui
+  /// una porta di fine rilevata "a vuoto" (Fix 2, speciale non ancora
+  /// aperta) sopravvive fino a quando qualcuno tenta di chiudere quella
+  /// speciale.
+  PassageResolution _registerPassage(
+    String waypointId,
+    DateTime candidateTs,
+    String candidateMethod, {
+    double? candidateDistanceMeters,
+  }) {
+    final existing = _bestPassageByWaypoint[waypointId];
+    final candidateRank = timingMethodRank[candidateMethod] ?? 99;
+    if (existing != null) {
+      final existingRank = timingMethodRank[existing.timingMethod] ?? 99;
+      if (existingRank <= candidateRank) {
+        if (existing.timingMethod != candidateMethod ||
+            existing.timestamp != candidateTs) {
+          _diagLogger?.logOverwriteAvoided(
+            waypointId,
+            existing.timingMethod,
+            existing.distanceMeters,
+            candidateMethod,
+            candidateDistanceMeters,
+          );
+        }
+        return (
+          timestamp: existing.timestamp,
+          timingMethod: existing.timingMethod,
+          usedExisting: true,
+        );
+      }
+    }
+    _bestPassageByWaypoint[waypointId] = (
+      timestamp: candidateTs,
+      timingMethod: candidateMethod,
+      distanceMeters: candidateDistanceMeters,
+    );
+    return (
+      timestamp: candidateTs,
+      timingMethod: candidateMethod,
+      usedExisting: false,
+    );
+  }
+
+  /// Fix 4 — chiamato appena un fix viene accettato: se nel frattempo si
+  /// erano accumulati scarti jump consecutivi, riassume il cluster (numero,
+  /// posizione media, distanza tra la media e il punto più vicino della
+  /// traccia di riferimento) e lo logga, poi svuota il buffer. Una distanza
+  /// piccola e sistematica indica multipath sostenuto (il chip resta
+  /// "agganciato" a una soluzione errata per qualche secondo); un cluster
+  /// piccolo o una distanza grande e variabile indicano piuttosto rumore
+  /// isolato o un vero spostamento del pilota.
+  void _flushJumpCluster() {
+    if (_jumpClusterBuffer.isEmpty) return;
+    final count = _jumpClusterBuffer.length;
+    final avgLat =
+        _jumpClusterBuffer.map((p) => p.latitude).reduce((a, b) => a + b) /
+            count;
+    final avgLng =
+        _jumpClusterBuffer.map((p) => p.longitude).reduce((a, b) => a + b) /
+            count;
+    double? nearestDist;
+    final avgPos = LatLng(avgLat, avgLng);
+    for (final rp in _referenceTrack) {
+      final d = _haversineKm(avgPos, rp) * 1000.0;
+      if (nearestDist == null || d < nearestDist) nearestDist = d;
+    }
+    _diagLogger?.logJumpCluster(count, avgLat, avgLng, nearestDist);
+    _jumpClusterBuffer.clear();
   }
 
   /// Registra un passaggio waypoint confermato da [WaypointDetector]:
@@ -771,17 +940,25 @@ class GpsService extends ChangeNotifier {
     String timingMethod = 'radius',
   }) async {
     final wp = detection.waypoint;
-    final passageTs = detection.timestamp;
+    final resolution = _registerPassage(
+      wp.id,
+      detection.timestamp,
+      timingMethod,
+      candidateDistanceMeters: detection.distanceMeters,
+    );
+    final passageTs = resolution.timestamp;
+    final method = resolution.timingMethod;
+
     _passedWaypoints.add(wp.id);
     final passage = WaypointPassage(waypoint: wp, timestamp: passageTs);
     _passages.add(passage);
 
-    if (timingMethod == 'gate' &&
+    if ((method == 'gate' || method == 'gate_gap') &&
         detection.fractionT != null &&
         detection.distanceMeters != null) {
-      _diagLogger?.logGateCrossing(wp.id, passageTs, detection.fractionT!,
-          detection.distanceMeters!);
-    } else if (timingMethod == 'radius') {
+      _diagLogger?.logGateCrossing(wp.id, detection.timestamp,
+          detection.fractionT!, detection.distanceMeters!);
+    } else if (method == 'radius') {
       _diagLogger?.logRadiusFallback(
           wp.id, wp.gate != null ? 'nessuna_intersezione' : 'porta_assente');
     }
@@ -820,23 +997,40 @@ class GpsService extends ChangeNotifier {
           _currentSpecialId = specialId;
           _currentSpecialNome = special.nome;
           _addSpecialEntry(specialeId: specialId, entryTime: passageTs);
-          _diagLogger?.logSpecialEntry(specialId, timingMethod);
+          _diagLogger?.logSpecialEntry(specialId, method);
           _voiceAlerts?.announceSpecialStartCrossed(
               specialId, _specialNumero(specialId));
         }
       }
-    } else if (_fineToSpecial.containsKey(wp.id) &&
-        _currentSpecialId == _fineToSpecial[wp.id]) {
-      final idx = _specialEntries.lastIndexWhere((e) => e.exitTime == null);
+    } else if (_fineToSpecial.containsKey(wp.id)) {
+      // Fix 2 — un attraversamento della porta di fine è un fatto fisico
+      // misurato: va registrato SEMPRE, indipendentemente da
+      // _currentSpecialId (che può essere rimasto bloccato su una speciale
+      // precedente mai chiusa, es. la sua fine mai rilevata). Cerca la
+      // SpecialEntry per specialId esplicitamente, non "quella aperta
+      // qualunque essa sia". Se non esiste ancora (speciale non aperta), il
+      // passaggio resta comunque nel registro _bestPassageByWaypoint sopra
+      // come "orfano": la prossima recovery che tenta di chiudere questa
+      // speciale lo troverà e lo userà al posto di un ricalcolo impreciso.
+      final specialId = _fineToSpecial[wp.id]!;
+      final idx = _specialEntries.lastIndexWhere(
+          (e) => e.specialeId == specialId && e.exitTime == null);
       if (idx >= 0) {
         final entry = _specialEntries[idx].withExit(passageTs);
         _specialEntries[idx] = entry;
-        _diagLogger?.logSpecialExit(entry.specialeId, timingMethod);
-        _voiceAlerts?.announceSpecialEndCrossed(entry.specialeId,
-            _specialNumero(entry.specialeId), entry.elapsed!);
+        _diagLogger?.logSpecialExit(specialId, method);
+        _voiceAlerts?.announceSpecialEndCrossed(
+            specialId, _specialNumero(specialId), entry.elapsed!);
+        if (_currentSpecialId == specialId) {
+          _currentSpecialId = null;
+          _currentSpecialNome = null;
+        }
+      } else {
+        debugPrint(
+            'PORTA FINE ORFANA: speciale $specialId non ancora aperta al '
+            'momento dell\'attraversamento — passaggio conservato per una '
+            'chiusura successiva');
       }
-      _currentSpecialId = null;
-      _currentSpecialNome = null;
     } else if (_zoneStartToZone.containsKey(wp.id)) {
       final zoneId = _zoneStartToZone[wp.id]!;
       _zoneEntryTimestamps[zoneId] = passageTs;
@@ -862,7 +1056,7 @@ class GpsService extends ChangeNotifier {
           waypointId: wp.id,
           waypointNome: wp.nome,
           timestamp: passage.timestamp,
-          timingMethod: timingMethod,
+          timingMethod: method,
         );
       } catch (_) {
         await _offlineQueue.queuePassage(
@@ -871,7 +1065,7 @@ class GpsService extends ChangeNotifier {
           waypointId: wp.id,
           waypointNome: wp.nome,
           timestamp: passage.timestamp,
-          timingMethod: timingMethod,
+          timingMethod: method,
         );
       }
     }
@@ -912,16 +1106,36 @@ class GpsService extends ChangeNotifier {
       }
     }
 
-    DateTime exitTime;
+    final bool foundPrecise =
+        bestIdx >= 0 && bestDistM < kSpecialEndRecoveryRadiusMeters;
+    // Fix 1 — 'recovery' se un punto reale è stato trovato entro il raggio,
+    // 'forfait' se si tratta di una stima a tempo fisso (nessun dato GPS a
+    // supporto).
+    final candidateMethod = foundPrecise ? 'recovery' : 'forfait';
+    final candidateTs = foundPrecise ? _recoveryTimestamps[bestIdx] : fallbackTime;
+    final resolution = _registerPassage(endWp.id, candidateTs, candidateMethod,
+        candidateDistanceMeters: foundPrecise ? bestDistM : null);
+    final exitTime = resolution.timestamp;
+
+    // Fix 2 — se un passaggio già noto (tipicamente una porta rilevata "a
+    // vuoto" mentre questa speciale non risultava ancora aperta) ha vinto
+    // sul nostro candidato, usalo e segnalalo come nota invece che come
+    // stima grezza: è più preciso, non meno.
+    final closedFromOrphan =
+        resolution.usedExisting && resolution.timingMethod != candidateMethod;
     String? timingError;
-    if (bestIdx >= 0 && bestDistM < kSpecialEndRecoveryRadiusMeters) {
-      exitTime = _recoveryTimestamps[bestIdx];
+    if (closedFromOrphan) {
+      timingError = 'chiusura_da_porta_orfana';
+      debugPrint('RECOVERY END (finestra ampia) speciale ${special.id}: '
+          'porta orfana già registrata usata al posto della ricerca a raggio');
+      _recoveryStreamCtrl.add('⚡ Fine ${special.nome} recuperata (porta)');
+      _diagLogger?.logRecovery(special.id, 'chiusura_da_porta_orfana');
+    } else if (foundPrecise) {
       debugPrint('RECOVERY END (finestra ampia) speciale ${special.id}: '
           'fine retroattiva a $exitTime (dist: ${bestDistM.toStringAsFixed(1)}m)');
       _recoveryStreamCtrl.add('⚡ Fine ${special.nome} recuperata');
       _diagLogger?.logRecovery(special.id, 'chiusura_speciale_precisa');
     } else {
-      exitTime = fallbackTime;
       timingError = fallbackTimingError;
       debugPrint('RECOVERY END (finestra ampia) speciale ${special.id}: '
           'nessun punto entro ${kSpecialEndRecoveryRadiusMeters}m, '
@@ -950,7 +1164,7 @@ class GpsService extends ChangeNotifier {
           timestamp: exitTime,
           recoveredEnd: true,
           timingError: timingError,
-          timingMethod: 'recovery',
+          timingMethod: resolution.timingMethod,
         );
       } catch (_) {
         await _offlineQueue.queuePassage(
@@ -959,7 +1173,7 @@ class GpsService extends ChangeNotifier {
           waypointId: endWp.id,
           waypointNome: endWp.nome,
           timestamp: exitTime,
-          timingMethod: 'recovery',
+          timingMethod: resolution.timingMethod,
         );
       }
     }
@@ -1084,22 +1298,32 @@ class GpsService extends ChangeNotifier {
         continue;
       }
 
+      // Fix 1 — non sovrascrivere un passaggio già noto più preciso (Fix 2:
+      // può essere una porta orfana rilevata prima che questa speciale
+      // risultasse ancora aperta).
+      final resolution = _registerPassage(
+          endWp.id, recoveredTime, 'recovery',
+          candidateDistanceMeters: bestDistM);
+      final exitTime = resolution.timestamp;
+      final closedFromOrphan =
+          resolution.usedExisting && resolution.timingMethod != 'recovery';
+
       // Registra fine PS retroattiva
-      _specialEntries[entryIdx] =
-          _specialEntries[entryIdx].withExit(recoveredTime);
+      _specialEntries[entryIdx] = _specialEntries[entryIdx].withExit(exitTime);
       if (_currentSpecialId == special.id) {
         _currentSpecialId = null;
         _currentSpecialNome = null;
       }
       _passedWaypoints.add(endWp.id);
-      _passages.add(WaypointPassage(waypoint: endWp, timestamp: recoveredTime));
+      _passages.add(WaypointPassage(waypoint: endWp, timestamp: exitTime));
 
       debugPrint('RECOVERY END speciale ${special.id}: '
-          'fine retroattiva a $recoveredTime '
+          'fine retroattiva a $exitTime '
           '(dist: ${bestDistM.toStringAsFixed(1)}m)');
 
       _recoveryStreamCtrl.add('⚡ Fine ${special.nome} recuperata');
-      _diagLogger?.logRecovery(special.id, 'fine_speciale_retroattiva');
+      _diagLogger?.logRecovery(special.id,
+          closedFromOrphan ? 'chiusura_da_porta_orfana' : 'fine_speciale_retroattiva');
 
       if (_activeEventId != null && _activeUserId != null) {
         try {
@@ -1108,9 +1332,10 @@ class GpsService extends ChangeNotifier {
             userId: _activeUserId!,
             waypointId: endWp.id,
             waypointNome: endWp.nome,
-            timestamp: recoveredTime,
+            timestamp: exitTime,
             recoveredEnd: true,
-            timingMethod: 'recovery',
+            timingError: closedFromOrphan ? 'chiusura_da_porta_orfana' : null,
+            timingMethod: resolution.timingMethod,
           );
         } catch (_) {
           await _offlineQueue.queuePassage(
@@ -1118,8 +1343,8 @@ class GpsService extends ChangeNotifier {
             userId: _activeUserId!,
             waypointId: endWp.id,
             waypointNome: endWp.nome,
-            timestamp: recoveredTime,
-            timingMethod: 'recovery',
+            timestamp: exitTime,
+            timingMethod: resolution.timingMethod,
           );
         }
       }
@@ -1180,6 +1405,18 @@ class GpsService extends ChangeNotifier {
     _passages.add(WaypointPassage(waypoint: startWp, timestamp: entryTime));
     _passages.add(WaypointPassage(waypoint: endWp, timestamp: now));
 
+    // Skip manuale: azione esplicita del pilota/admin, non un fallback
+    // automatico — non passa dalla regola di precedenza di _registerPassage
+    // (che qui vincolerebbe uno 'skip' a non poter mai sostituire un dato
+    // migliore già noto: questa azione deve invece avere sempre effetto
+    // quando richiesta esplicitamente). Il registro viene comunque
+    // aggiornato direttamente per restare coerente con eventuali letture
+    // future.
+    _bestPassageByWaypoint[startWp.id] =
+        (timestamp: entryTime, timingMethod: 'forfait', distanceMeters: null);
+    _bestPassageByWaypoint[endWp.id] =
+        (timestamp: now, timingMethod: 'forfait', distanceMeters: null);
+
     if (_activeEventId != null && _activeUserId != null) {
       try {
         await _firestoreService.recordWaypointPassage(
@@ -1189,7 +1426,7 @@ class GpsService extends ChangeNotifier {
           waypointNome: startWp.nome,
           timestamp: entryTime,
           timingError: 'speciale_saltata',
-          timingMethod: 'recovery',
+          timingMethod: 'forfait',
         );
         await _firestoreService.recordWaypointPassage(
           eventId: _activeEventId!,
@@ -1198,7 +1435,7 @@ class GpsService extends ChangeNotifier {
           waypointNome: endWp.nome,
           timestamp: now,
           timingError: 'speciale_saltata',
-          timingMethod: 'recovery',
+          timingMethod: 'forfait',
         );
       } catch (_) {
         await _offlineQueue.queuePassage(
@@ -1207,7 +1444,7 @@ class GpsService extends ChangeNotifier {
           waypointId: endWp.id,
           waypointNome: endWp.nome,
           timestamp: now,
-          timingMethod: 'recovery',
+          timingMethod: 'forfait',
         );
       }
     }
@@ -1282,9 +1519,17 @@ class GpsService extends ChangeNotifier {
         type: WaypointType.intermedio,
       ));
     }
+    // Fix 4 — tenuta per stimare la distanza tra un cluster di jump
+    // scartati e il percorso atteso (vedi _flushJumpCluster).
+    _referenceTrack = referenceTrack;
+
     // Porte virtuali (Blocco A): attaccate solo a inizio/fine PS e a
     // ingresso/uscita zona velocità — per i checkpoint intermedi resta il
     // solo metodo a raggio (A5: lì conta solo il passaggio, non l'istante).
+    // Fix 3 — semi-larghezza personalizzabile per waypoint
+    // (WaypointModel.gateHalfWidthMeters); se la curvatura locale della
+    // traccia è troppo accentuata, buildGate ritorna null e lo notifica qui
+    // per il log diagnostico (il waypoint ricade sul solo raggio).
     _waypoints = WaypointDetector.attachGates(
       [...waypoints, ...zoneWaypoints],
       referenceTrack,
@@ -1293,8 +1538,12 @@ class GpsService extends ChangeNotifier {
           w.type == WaypointType.fine ||
           _zoneStartToZone.containsKey(w.id) ||
           _zoneEndToZone.containsKey(w.id),
+      onUnreliableBearing: (w, variationDeg) =>
+          _diagLogger?.logUnreliableGateBearing(w.id, variationDeg),
     );
     _passedWaypoints.clear();
+    _bestPassageByWaypoint.clear();
+    _jumpClusterBuffer.clear();
     _fuelPoints = fuelPoints;
     _passedFuelPoints.clear();
     _dangerPoints = dangerPoints;
@@ -1463,6 +1712,7 @@ class GpsService extends ChangeNotifier {
   /// [stopRecording], nessun side-effect live da fermare perché nessuno è
   /// mai stato avviato).
   void endReplaySession() {
+    _flushJumpCluster();
     _isRecording = false;
     _mode = GpsMode.idle;
     _replayMode = false;
@@ -1663,11 +1913,16 @@ class GpsService extends ChangeNotifier {
             accuracy: pos.accuracy,
             discardValue: impliedSpeedKmh,
           );
+          // Fix 4 — accumula per il riassunto di cluster: un multipath
+          // sostenuto (più scarti ravvicinati con posizione sistematica)
+          // è diagnosticamente diverso da un singolo scarto isolato.
+          _jumpClusterBuffer.add(rawLatLng);
           _safeNotify();
           return;
         }
       }
     }
+    _flushJumpCluster();
     _lastAcceptedRawPos = rawLatLng;
     _lastAcceptedTs = now;
 
@@ -1808,7 +2063,16 @@ class GpsService extends ChangeNotifier {
           _waypoints,
           _passedWaypoints,
         );
-        if (detection != null) timingMethod = 'gate';
+        if (detection != null) {
+          // Fix 4 — l'interpolazione lineare resta valida anche a cavallo
+          // di un gap, ma un gap ampio tra i due fix che delimitano
+          // l'attraversamento rende il tempo meno affidabile: lo si
+          // segnala con un metodo distinto invece di un semplice 'gate',
+          // così l'admin sa che va guardato con più attenzione.
+          final gapMs =
+              now.difference(previousFilteredTsForGate).inMilliseconds;
+          timingMethod = gapMs > kGateGapThresholdMs ? 'gate_gap' : 'gate';
+        }
       }
 
       // Detect waypoint passage a raggio — sempre sulla posizione filtrata
@@ -2044,6 +2308,7 @@ class GpsService extends ChangeNotifier {
   }
 
   Future<void> stopRecording() async {
+    _flushJumpCluster();
     unawaited(_voiceAlerts?.stop());
     _positionSub?.cancel();
     _positionSub = null;

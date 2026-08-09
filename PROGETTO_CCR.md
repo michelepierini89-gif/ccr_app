@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 07 agosto 2026 (Step 37 completato)  
+**Data aggiornamento:** 09 agosto 2026 (Step 38 completato)  
 **Branch:** main  
 **Versione:** 1.0.2+3
 
@@ -1598,6 +1598,39 @@ id/nome arbitrario.
 
 ---
 
+### Step 38 — Diagnosi e correzione porte virtuali non agganciate, test di regressione su dati reali (09 agosto 2026) ✅
+
+**Obiettivo:** capire perché 2 delle 5 PS del test in moto (6022 punti GPS reali, evento "Enduro test 01") non agganciavano completamente via porta virtuale, e correggere solo le cause reali trovate. Analisi prima, fix dopo — nessuna modifica speculativa.
+
+**Parte 1 — Diagnosi (dati reali, non sintetici come lo Step 37):** recuperati da Firestore/Storage (via token OAuth del CLI Firebase già autenticato, nessuna Cloud Function temporanea questa volta) l'evento, la traccia pilota (`pilotTrack`, 6022 punti) e la traccia di riferimento KML (1280 punti). Rieseguito il replay con la pipeline live reale (`GpsService.startReplaySession`/`ingestReplaySample`) e un banco diagnostico ad-hoc (rimosso a fine analisi). Tabella completa delle 10 porte riportata all'utente prima di ogni correzione. Cause reali identificate:
+- **PS2 FINE**: cluster di 7 fix consecutivi scartati dal filtro jump (multipath sostenuto, posizione sistematicamente 65-100m fuori corridoio) a ridosso della porta — nessun bridging può recuperare un dato mai misurato correttamente (Causa B).
+- **PS3 FINE**: **non un difetto** — confermato dall'utente che la squadra ha volutamente tagliato il percorso per un problema in gara. La traiettoria reale (anche grezza, nessun gap nelle vicinanze) non passa mai a meno di ~386m dal waypoint: comportamento corretto del sistema, non va "risolto".
+- **PS4 INIZIO**: nessuna intersezione geometrica pur passando a 26-28m (offset laterale 15m, entro la semi-larghezza) — bearing locale della porta calcolato da un solo punto GPX adiacente, instabile su curva (Causa A).
+- **PS4 FINE — bug reale**: la porta aveva agganciato correttamente (22m, verso giusto) ma il risultato veniva scartato perché `_currentSpecialId` non valeva "PS4" in quell'istante (conseguenza a catena del fallimento di PS3 FINE) — una recovery generica ricalcolava da zero 4s dopo, trovava un punto peggiore (44m) e sovrascriveva silenziosamente il dato migliore (Causa E).
+- Causa C (verso rifiutato) e D (porta non costruita) **non riscontrate**: il controllo di verso esistente è già equivalente a ±90°, e `buildGate` aveva sempre una `referenceTrack` valida per tutte le 10 porte.
+
+**Parte 2 — Correzioni (`waypoint_detector.dart`, `gps_service.dart`, `diagnostic_logger.dart`, `waypoint_model.dart`, `track_replay_service.dart`, `timing_screen.dart`, `specials_editor_screen.dart`):**
+
+*Fix 1 — precedenza esplicita tra metodi di timing:* nuovo ordine `gate` > `gate_gap` > `radius` > `recovery` > `forfait` (`timingMethodRank`, esteso). `GpsService._registerPassage()`: punto unico di scrittura in un nuovo registro `_bestPassageByWaypoint` — un passaggio già noto di precedenza pari o superiore non viene mai sovrascritto; la sovrascrittura evitata viene loggata (`DiagnosticLogger.logOverwriteAvoided`) con entrambi i metodi/distanze. Applicato a tutti i punti di scrittura: rilevamento diretto, recovery start/end, recovery di speciale saltata, chiusura da FINE GARA. Nuovi getter pubblici `GpsService.timingMethodFor`/`passageDistanceFor` per ispezionare il metodo vincente (usati anche dal banco di replay admin, che aveva lo stesso limite).
+
+*Fix 2 — porta di fine disaccoppiata dallo stato della speciale:* `_handleWaypointDetection` non richiede più `_currentSpecialId == specialId` per registrare un attraversamento di porta di fine — cerca la `SpecialEntry` per id esplicito. Se la speciale non è ancora aperta, il passaggio resta comunque nel registro di precedenza (Fix 1) come "orfano": la prossima recovery che tenta di chiudere quella speciale lo trova e lo usa al posto di un ricalcolo impreciso, segnalando `timingError: 'chiusura_da_porta_orfana'` per la verifica admin.
+
+*Fix 3 — bearing locale della porta su finestra ±30m (non più un solo punto adiacente), media vettoriale dei bearing dei segmenti; oltre 60° di variazione nella finestra la porta viene comunque costruita ma segnalata come "poco affidabile" (`logUnreliableGateBearing`) per diagnostica, SENZA disabilitarla — verificato empiricamente che disabilitarla (prima versione del fix) perdeva PS1 FINE, che aggancia correttamente nonostante l'alta curvatura locale, senza risolvere PS4 INIZIO (il bearing a finestra larga è identico entro 1° a quello a punto singolo: il mismatch lì non è di orientamento). `kGateHalfWidthMeters` di default alzato a 30m e reso configurabile per singolo waypoint (`WaypointModel.gateHalfWidthMeters`, persistito), editabile dall'admin nell'editor speciali (slider 15-80m con tooltip sul compromesso larghezza/attraversamenti spuri) per inizio/fine di ogni PS.
+
+*Fix 4 — tracciabilità gap:* nuovo `timingMethod: 'gate_gap'` quando una porta scatta con gap >2s tra i fix che la delimitano (badge distinto "PORTA (GAP)" in giallo su `timing_screen.dart`, badge "FORFAIT" in rosso per il nuovo metodo). Cluster di jump consecutivi riassunti nel log diagnostico (`logJumpCluster`: numero, posizione media, distanza dalla traccia di riferimento) invece di righe isolate, per riconoscere il multipath sostenuto.
+
+**Parte 3 — Verifica dopo i fix:** 7 porte su 10 con metodo gate/gate_gap (era 6/10) — invariate le 6 originali (PS1 in/fine, PS2 in, PS3 in, PS5 in/fine) più **PS4 FINE recuperata dal Fix 1/2** (gate_gap, 22.2m, timestamp preciso invece della stima grezza a 44m). PS2 FINE e PS3 FINE restano a fallback per le ragioni reali sopra (non risolvibili né da risolvere). PS4 INIZIO resta a recovery: limite noto, non risolto dal Fix 3 su questi dati.
+
+**Parte 4 — Test di regressione (`test/features/gps/gate_replay_test.dart`, nuovo):** traccia pilota (6022 punti), traccia di riferimento (1280 punti) e le 5 speciali salvate in forma compatta in `test/fixtures/`. Il test rigioca la traccia con `TrackReplayService.runFullPipeline` (stessa pipeline di produzione, nessuna logica duplicata) e verifica: le 7 porte gate/gate_gap attese, PS3 FINE esplicitamente documentato come comportamento atteso (taglio di percorso volontario, non un difetto — commento in cima al file per non farlo scambiare per un bug in futuro), PS4 FINE non sovrascritta da una recovery meno precisa. Rete di sicurezza contro regressioni future nella pipeline GPS/timing.
+
+**Deploy:**
+- `flutter analyze`: 0 issues
+- `flutter test`: 52/52 verdi (43 preesistenti + 9 nuovi)
+- `flutter build web --release` + `firebase deploy --only hosting` ✅ → https://ccr-enduro.web.app
+- `git push origin main` ✅
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**
@@ -1617,6 +1650,10 @@ id/nome arbitrario.
 **Validazione banco di replay (Step 37 — Parte 1E, dati sintetici finora):**
 - Rieseguire il confronto raggio/porta/RTS su una gara futura con `pilotTrackFull` reale (timestamp + accuracy veri, non sintetici) per validare i valori assoluti di durata, non solo il confronto qualitativo tra metodi
 - Verificare se la perdita di 2 PS su 5 passando da porta+raggio a porta+RTS (vista nella validazione sintetica) si ripete su dati con cadenza di campionamento reale (250ms in speciale) invece del 1s sintetico usato
+
+**Limiti noti dallo Step 38 (diagnosticati, non risolti — nessuna azione pianificata, solo da tenere a mente):**
+- `_trySpecialStartRecovery`/`_trySpecialEndRecovery`: il tentativo "one-shot" può consumarsi troppo presto durante l'avvicinamento a un waypoint (quando la distanza è ancora calando verso il target, non ancora al minimo), fallendo il lookback e non venendo mai ritentato — osservato su PS4 INIZIO. Il Fix 1 (precedenza) ne limita il danno quando una porta successiva recupera il dato, ma il meccanismo in sé resta fragile. Una revisione (es. tentare al momento di massimo avvicinamento, non al primo ingresso in raggio) richiede test approfonditi su altre gare prima di toccare una logica già più volte tarata sul campo.
+- PS4 INIZIO: bearing locale confermato corretto (finestra larga e stretta concordano entro 1°) ma la porta non intercetta comunque la traiettoria reale — probabile scarto di pochi metri tra la linea mappata (KML) e la linea effettivamente percorribile in quel punto tecnico. Non risolvibile allargando la porta (l'offset laterale, 15m, era già entro i 25m precedenti) né correggendo l'orientamento.
 
 **Test rimanenti:**
 - Test end-to-end classifica campionato con più eventi

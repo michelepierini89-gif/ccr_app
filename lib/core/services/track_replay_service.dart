@@ -221,13 +221,11 @@ class TrackReplayService {
     DiagnosticLogger diag,
   ) {
     // campo1=waypointId, campo3/campo4=fractionT/distanza (String) per le
-    // porte; campo1=specialeId, campo2=timingMethod per ingresso/uscita PS.
+    // porte; campo1=waypointId, campo2=motivo per il fallback a raggio.
     final gateInfo = <String, (double, double)>{};
     var gateCount = 0;
     var radiusFallbackCount = 0;
     final radiusFallbackReasons = <String>[];
-    final entryMethod = <String, String>{};
-    final exitMethod = <String, String>{};
 
     for (final e in diag.captured) {
       if (e.categoria != 'timing') continue;
@@ -240,10 +238,6 @@ class TrackReplayService {
       } else if (e.evento == 'raggio_fallback') {
         radiusFallbackCount++;
         radiusFallbackReasons.add('${e.campi[0]}: ${e.campi[1]}');
-      } else if (e.evento == 'ps_ingresso') {
-        entryMethod[e.campi[0] as String] = e.campi[1] as String;
-      } else if (e.evento == 'ps_uscita') {
-        exitMethod[e.campi[0] as String] = e.campi[1] as String;
       }
     }
 
@@ -252,10 +246,18 @@ class TrackReplayService {
       if (s.annullata) continue;
       final entry =
           gps.specialEntries.where((e) => e.specialeId == s.id).lastOrNull;
-      final metodoIn = entryMethod[s.id];
-      final metodoOut = exitMethod[s.id];
-      final gateIn = metodoIn == 'gate' ? gateInfo[s.waypointInizio.id] : null;
-      final gateOut = metodoOut == 'gate' ? gateInfo[s.waypointFine.id] : null;
+      // Fix 1/2 — il metodo EFFETTIVAMENTE vincente (registro di
+      // precedenza), non solo quello del primo tentativo: una recovery che
+      // ha usato una porta orfana risulta correttamente 'gate'/'gate_gap',
+      // non 'recovery'.
+      final metodoIn = gps.timingMethodFor(s.waypointInizio.id);
+      final metodoOut = gps.timingMethodFor(s.waypointFine.id);
+      final gateIn = (metodoIn == 'gate' || metodoIn == 'gate_gap')
+          ? gateInfo[s.waypointInizio.id]
+          : null;
+      final gateOut = (metodoOut == 'gate' || metodoOut == 'gate_gap')
+          ? gateInfo[s.waypointFine.id]
+          : null;
       speciali.add(ReplaySpecialResult(
         specialeId: s.id,
         specialeNome: s.nome,
@@ -265,9 +267,9 @@ class TrackReplayService {
         metodoIngresso: metodoIn,
         metodoUscita: metodoOut,
         fractionTIngresso: gateIn?.$1,
-        distanzaIngressoM: gateIn?.$2,
+        distanzaIngressoM: gateIn?.$2 ?? gps.passageDistanceFor(s.waypointInizio.id),
         fractionTUscita: gateOut?.$1,
-        distanzaUscitaM: gateOut?.$2,
+        distanzaUscitaM: gateOut?.$2 ?? gps.passageDistanceFor(s.waypointFine.id),
       ));
     }
 
@@ -296,8 +298,18 @@ class TrackReplayService {
     final gatedBySpecial = <String, (WaypointModel, WaypointModel)>{};
     for (final s in specials) {
       if (s.annullata) continue;
-      final gIni = WaypointDetector.buildGate(s.waypointInizio, referenceTrack);
-      final gFin = WaypointDetector.buildGate(s.waypointFine, referenceTrack);
+      final gIni = WaypointDetector.buildGate(
+        s.waypointInizio,
+        referenceTrack,
+        halfWidthMeters: s.waypointInizio.gateHalfWidthMeters ??
+            WaypointDetector.kGateHalfWidthMeters,
+      );
+      final gFin = WaypointDetector.buildGate(
+        s.waypointFine,
+        referenceTrack,
+        halfWidthMeters: s.waypointFine.gateHalfWidthMeters ??
+            WaypointDetector.kGateHalfWidthMeters,
+      );
       gatedBySpecial[s.id] = (
         gIni == null ? s.waypointInizio : s.waypointInizio.copyWithGate(gIni),
         gFin == null ? s.waypointFine : s.waypointFine.copyWithGate(gFin),

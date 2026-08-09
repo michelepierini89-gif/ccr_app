@@ -260,6 +260,58 @@ class DiagnosticLogger {
   void logSpecialExit(String specialeId, String timingMethod) =>
       log('timing', 'ps_uscita', [specialeId, timingMethod]);
 
+  /// Fix 1/2 — una scrittura è stata evitata perché per [waypointId]
+  /// esisteva già un passaggio di precedenza pari o superiore (vedi
+  /// `timingMethodRank`/`GpsService._registerPassage`). Copre sia il caso
+  /// diretto (un fallback tenta di sovrascrivere un dato migliore) sia il
+  /// caso "porta orfana" (Fix 2: la chiusura di una speciale trova un
+  /// attraversamento porta già registrato prima che la speciale risultasse
+  /// aperta, e lo usa al posto del proprio ricalcolo).
+  /// campo1: waypointId, campo2: metodo esistente (vincitore), campo3:
+  /// distanza esistente, campo4: metodo scartato, campo5: distanza scartata.
+  void logOverwriteAvoided(
+    String waypointId,
+    String existingMethod,
+    double? existingDistanceMeters,
+    String discardedMethod,
+    double? discardedDistanceMeters,
+  ) =>
+      log('timing', 'sovrascrittura_evitata', [
+        waypointId,
+        existingMethod,
+        existingDistanceMeters?.toStringAsFixed(1),
+        discardedMethod,
+        discardedDistanceMeters?.toStringAsFixed(1),
+      ]);
+
+  /// Fix 3 — la curvatura della traccia di riferimento nella finestra
+  /// attorno a [waypointId] supera la soglia di affidabilità: la porta non
+  /// è stata costruita, il rilevamento per questo waypoint ricade sul solo
+  /// raggio. campo1: waypointId, campo2: variazione di bearing (gradi).
+  void logUnreliableGateBearing(String waypointId, double bearingVariationDeg) =>
+      log('timing', 'porta_inaffidabile',
+          [waypointId, bearingVariationDeg.toStringAsFixed(1)]);
+
+  /// Fix 4 — riassunto di un cluster di fix consecutivi scartati dal filtro
+  /// jump (STEP 2): distingue un multipath sostenuto (più scarti di fila
+  /// con posizione media lontana dalla traccia di riferimento) dal rumore
+  /// isolato (un singolo scarto). campo1: numero di scarti nel cluster,
+  /// campo2/3: lat/lng medi del cluster, campo4: distanza tra la posizione
+  /// media e il punto più vicino della traccia di riferimento (null se non
+  /// disponibile).
+  void logJumpCluster(
+    int count,
+    double avgLat,
+    double avgLng,
+    double? distanceToReferenceTrackMeters,
+  ) =>
+      log('gps_fix', 'jump_cluster_riassunto', [
+        count,
+        avgLat,
+        avgLng,
+        distanceToReferenceTrackMeters?.toStringAsFixed(1),
+      ]);
+
   // ── IMU (campo1: headingDisplay, campo2: headingGps) ────────────────────
 
   /// Throttled internamente a 1 riga ogni 5s (spec 4A) — chiamare da un

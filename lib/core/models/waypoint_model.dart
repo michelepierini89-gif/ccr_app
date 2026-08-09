@@ -160,6 +160,15 @@ class WaypointModel {
   /// (vedi [WaypointGate]). Null finché non attaccata con [copyWithGate].
   final WaypointGate? gate;
 
+  /// Semi-larghezza porta personalizzata per questo waypoint, in metri
+  /// (Fix 3): null usa il default globale
+  /// (`WaypointDetector.kGateHalfWidthMeters`). Regolabile dall'admin
+  /// nell'editor speciali per i punti in area aperta, dove una porta più
+  /// larga aggancia più facilmente — a costo di essere più esposta ad
+  /// attraversamenti spuri dove il percorso passa vicino a sé stesso (es.
+  /// tornanti, tratti che si incrociano). Persistito su Firestore.
+  final double? gateHalfWidthMeters;
+
   const WaypointModel({
     required this.id,
     required this.nome,
@@ -167,6 +176,7 @@ class WaypointModel {
     required this.lng,
     required this.type,
     this.gate,
+    this.gateHalfWidthMeters,
   });
 
   LatLng get latLng => LatLng(lat, lng);
@@ -178,6 +188,17 @@ class WaypointModel {
         lng: lng,
         type: type,
         gate: gate,
+        gateHalfWidthMeters: gateHalfWidthMeters,
+      );
+
+  WaypointModel copyWithGateHalfWidth(double? meters) => WaypointModel(
+        id: id,
+        nome: nome,
+        lat: lat,
+        lng: lng,
+        type: type,
+        gate: gate,
+        gateHalfWidthMeters: meters,
       );
 
   factory WaypointModel.fromMap(Map<String, dynamic> m) => WaypointModel(
@@ -189,6 +210,7 @@ class WaypointModel {
           (e) => e.name == (m['type'] ?? 'intermedio'),
           orElse: () => WaypointType.intermedio,
         ),
+        gateHalfWidthMeters: (m['gateHalfWidthMeters'] as num?)?.toDouble(),
       );
 
   Map<String, dynamic> toMap() => {
@@ -197,5 +219,7 @@ class WaypointModel {
         'lat': lat,
         'lng': lng,
         'type': type.name,
+        if (gateHalfWidthMeters != null)
+          'gateHalfWidthMeters': gateHalfWidthMeters,
       };
 }

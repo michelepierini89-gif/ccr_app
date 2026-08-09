@@ -1,0 +1,257 @@
+[
+  {
+    "controlPoints": [
+      {
+        "type": "intermedio",
+        "id": "track_pt_311",
+        "nome": "43.41431, 12.63805",
+        "lat": 43.41430943795333,
+        "lng": 12.6380461101229
+      },
+      {
+        "id": "track_pt_174",
+        "type": "intermedio",
+        "nome": "43.42563, 12.61104",
+        "lat": 43.42562978329086,
+        "lng": 12.61104405034392
+      },
+      {
+        "lng": 12.63004242540322,
+        "lat": 43.42049192471841,
+        "nome": "43.42049, 12.63004",
+        "id": "track_pt_244",
+        "type": "intermedio"
+      },
+      {
+        "nome": "43.41710, 12.61892",
+        "id": "track_pt_211",
+        "type": "intermedio",
+        "lng": 12.6189223835146,
+        "lat": 43.41709548446395
+      },
+      {
+        "lng": 12.59503005187932,
+        "lat": 43.41458337541291,
+        "nome": "43.41458, 12.59503",
+        "type": "intermedio",
+        "id": "track_pt_44"
+      }
+    ],
+    "ordine": 0,
+    "colorIndex": 0,
+    "nome": "PS1",
+    "waypointFine": {
+      "id": "track_pt_375",
+      "type": "fine",
+      "nome": "43.42474, 12.64637",
+      "lat": 43.42473507212897,
+      "lng": 12.64636640066024
+    },
+    "id": "4235f27e-e711-4674-acee-650faa1c1cd0",
+    "annullata": false,
+    "waypointInizio": {
+      "type": "inizio",
+      "id": "track_pt_12",
+      "nome": "43.42246, 12.59832",
+      "lat": 43.42245982121985,
+      "lng": 12.59832388836836
+    }
+  },
+  {
+    "colorIndex": 1,
+    "nome": "PS2",
+    "waypointFine": {
+      "lat": 43.41385573190009,
+      "lng": 12.679421044967,
+      "id": "track_pt_587",
+      "type": "fine",
+      "nome": "43.41386, 12.67942"
+    },
+    "id": "6bdfb9c2-4273-44fa-a607-40e057d8e598",
+    "waypointInizio": {
+      "lat": 43.42589864044209,
+      "lng": 12.64805395965819,
+      "type": "inizio",
+      "id": "track_pt_394",
+      "nome": "43.42590, 12.64805"
+    },
+    "annullata": false,
+    "controlPoints": [
+      {
+        "lng": 12.66108569172743,
+        "lat": 43.42854725247218,
+        "nome": "43.42855, 12.66109",
+        "type": "intermedio",
+        "id": "track_pt_469"
+      },
+      {
+        "nome": "43.43361, 12.67890",
+        "id": "track_pt_506",
+        "type": "intermedio",
+        "lng": 12.67889562844299,
+        "lat": 43.43361471211281
+      },
+      {
+        "lng": 12.68617176889572,
+        "lat": 43.42726816300407,
+        "nome": "43.42727, 12.68617",
+        "type": "intermedio",
+        "id": "track_pt_526"
+      },
+      {
+        "nome": "43.42119, 12.67075",
+        "type": "intermedio",
+        "id": "track_pt_546",
+        "lng": 12.67074662212262,
+        "lat": 43.42119334952561
+      }
+    ],
+    "ordine": 1
+  },
+  {
+    "waypointFine": {
+      "nome": "43.38877, 12.65749",
+      "id": "track_pt_749",
+      "type": "fine",
+      "lng": 12.65749253851686,
+      "lat": 43.38876972124658
+    },
+    "waypointInizio": {
+      "nome": "43.39653, 12.66150",
+      "id": "track_pt_619",
+      "type": "inizio",
+      "lng": 12.66150026845675,
+      "lat": 43.39653090614167
+    },
+    "annullata": false,
+    "id": "1e5efeb4-a7e9-4690-a1d8-6d09c61f3561",
+    "colorIndex": 2,
+    "nome": "PS3",
+    "controlPoints": [
+      {
+        "nome": "43.39462, 12.65648",
+        "id": "track_pt_630",
+        "type": "intermedio",
+        "lng": 12.65647572180473,
+        "lat": 43.39462239902924
+      },
+      {
+        "lat": 43.39519777166644,
+        "lng": 12.64638772893961,
+        "id": "track_pt_681",
+        "type": "intermedio",
+        "nome": "43.39520, 12.64639"
+      },
+      {
+        "lat": 43.39003360219818,
+        "lng": 12.64966054531244,
+        "id": "track_pt_719",
+        "type": "intermedio",
+        "nome": "43.39003, 12.64966"
+      }
+    ],
+    "ordine": 2
+  },
+  {
+    "id": "47f4c851-47c7-4712-86eb-a7e38d678113",
+    "annullata": false,
+    "waypointInizio": {
+      "lat": 43.37787505086003,
+      "lng": 12.66162039335262,
+      "type": "inizio",
+      "id": "track_pt_792",
+      "nome": "43.37788, 12.66162"
+    },
+    "waypointFine": {
+      "lng": 12.59441772508228,
+      "lat": 43.35709004734726,
+      "nome": "43.35709, 12.59442",
+      "type": "fine",
+      "id": "track_pt_1201"
+    },
+    "nome": "PS4",
+    "colorIndex": 3,
+    "ordine": 3,
+    "controlPoints": [
+      {
+        "lng": 12.65530049130011,
+        "lat": 43.36831763646256,
+        "nome": "43.36832, 12.65530",
+        "id": "track_pt_842",
+        "type": "intermedio"
+      },
+      {
+        "lng": 12.65462117637984,
+        "lat": 43.36367823261928,
+        "nome": "43.36368, 12.65462",
+        "id": "track_pt_879",
+        "type": "intermedio"
+      },
+      {
+        "id": "track_pt_979",
+        "type": "intermedio",
+        "nome": "43.34509, 12.63293",
+        "lat": 43.34509126325185,
+        "lng": 12.63293458714695
+      },
+      {
+        "type": "intermedio",
+        "id": "track_pt_1028",
+        "nome": "43.34092, 12.62558",
+        "lat": 43.34092138661817,
+        "lng": 12.62558091063265
+      },
+      {
+        "nome": "43.35524, 12.62043",
+        "type": "intermedio",
+        "id": "track_pt_1105",
+        "lng": 12.62043241061803,
+        "lat": 43.3552447600898
+      },
+      {
+        "lat": 43.35131105724501,
+        "lng": 12.60533569201643,
+        "type": "intermedio",
+        "id": "track_pt_1159",
+        "nome": "43.35131, 12.60534"
+      }
+    ]
+  },
+  {
+    "colorIndex": 4,
+    "nome": "PS5",
+    "waypointFine": {
+      "lng": 12.60548752633137,
+      "lat": 43.37518112085296,
+      "nome": "43.37518, 12.60549",
+      "type": "fine",
+      "id": "track_pt_1269"
+    },
+    "id": "3dd2f2df-d3b0-4d74-a063-ac194c9cac13",
+    "waypointInizio": {
+      "lat": 43.36079445398928,
+      "lng": 12.59506795460013,
+      "id": "track_pt_1209",
+      "type": "inizio",
+      "nome": "43.36079, 12.59507"
+    },
+    "annullata": false,
+    "controlPoints": [
+      {
+        "nome": "43.36239, 12.60271",
+        "id": "track_pt_1234",
+        "type": "intermedio",
+        "lng": 12.60271225373639,
+        "lat": 43.36238601117134
+      },
+      {
+        "id": "track_pt_1249",
+        "type": "intermedio",
+        "nome": "43.36756, 12.60275",
+        "lat": 43.36755562038485,
+        "lng": 12.60274723191453
+      }
+    ],
+    "ordine": 4
+  }
+]

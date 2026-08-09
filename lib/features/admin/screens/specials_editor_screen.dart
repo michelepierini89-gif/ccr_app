@@ -10,6 +10,7 @@ import '../../../core/models/event_model.dart';
 import '../../../core/models/special_model.dart';
 import '../../../core/models/waypoint_model.dart';
 import '../../../core/services/gpx_parser.dart';
+import '../../../core/services/waypoint_detector.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/gpx_utils.dart';
 import '../../map/danger_marker_icon.dart';
@@ -84,6 +85,10 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
   int _editingColorIndex = 0;
   int _editingInicioIdx = -1;
   int _editingFineIdx = -1;
+  // Fix 3 — semi-larghezza porta personalizzata per questa speciale (null =
+  // default globale WaypointDetector.kGateHalfWidthMeters).
+  double? _editingInizioGateWidth;
+  double? _editingFineGateWidth;
   List<int> _editingControlIdxs = [];
   _SelectionMode _selectionMode = _SelectionMode.none;
   int _activeControlPointIdx = -1;
@@ -206,7 +211,8 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
     return minIdx;
   }
 
-  WaypointModel _waypointFromIdx(int idx, WaypointType type) {
+  WaypointModel _waypointFromIdx(int idx, WaypointType type,
+      {double? gateHalfWidthMeters}) {
     final pt = widget.parsedTrack.points[idx];
     return WaypointModel(
       id: 'track_pt_$idx',
@@ -215,6 +221,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
       lat: pt.latitude,
       lng: pt.longitude,
       type: type,
+      gateHalfWidthMeters: gateHalfWidthMeters,
     );
   }
 
@@ -235,6 +242,8 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
       _nomeCtrl.text = 'PS${_specials.length + 1}';
       _editingInicioIdx = ptCount > 0 ? 0 : -1;
       _editingFineIdx = ptCount > 1 ? ptCount - 1 : -1;
+      _editingInizioGateWidth = null;
+      _editingFineGateWidth = null;
       _editingControlIdxs = [];
       _selectionMode = _SelectionMode.none;
       _activeControlPointIdx = -1;
@@ -252,6 +261,8 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
           widget.parsedTrack.points.isNotEmpty ? _ensureTrackIdx(s.waypointInizio) : -1;
       _editingFineIdx =
           widget.parsedTrack.points.isNotEmpty ? _ensureTrackIdx(s.waypointFine) : -1;
+      _editingInizioGateWidth = s.waypointInizio.gateHalfWidthMeters;
+      _editingFineGateWidth = s.waypointFine.gateHalfWidthMeters;
       _editingControlIdxs =
           s.controlPoints.map(_ensureTrackIdx).toList();
       _selectionMode = _SelectionMode.none;
@@ -265,6 +276,8 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
       _editingIndex = -1;
       _editingInicioIdx = -1;
       _editingFineIdx = -1;
+      _editingInizioGateWidth = null;
+      _editingFineGateWidth = null;
       _editingControlIdxs = [];
       _selectionMode = _SelectionMode.none;
       _activeControlPointIdx = -1;
@@ -301,8 +314,10 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
       }
     }
 
-    final inizio = _waypointFromIdx(_editingInicioIdx, WaypointType.inizio);
-    final fine = _waypointFromIdx(_editingFineIdx, WaypointType.fine);
+    final inizio = _waypointFromIdx(_editingInicioIdx, WaypointType.inizio,
+        gateHalfWidthMeters: _editingInizioGateWidth);
+    final fine = _waypointFromIdx(_editingFineIdx, WaypointType.fine,
+        gateHalfWidthMeters: _editingFineGateWidth);
     final controlPoints = _editingControlIdxs
         .where((idx) => idx >= 0 && idx < ptCount)
         .map((idx) => _waypointFromIdx(idx, WaypointType.intermedio))
@@ -1434,6 +1449,12 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
                   })
               : null,
         ),
+        _buildGateWidthControl(
+          label: 'inizio',
+          color: AppColors.success,
+          value: _editingInizioGateWidth,
+          onChanged: (v) => setState(() => _editingInizioGateWidth = v),
+        ),
         const SizedBox(height: 6),
 
         // Fine slider
@@ -1459,6 +1480,12 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
                     _activeControlPointIdx = -1;
                   })
               : null,
+        ),
+        _buildGateWidthControl(
+          label: 'fine',
+          color: AppColors.error,
+          value: _editingFineGateWidth,
+          onChanged: (v) => setState(() => _editingFineGateWidth = v),
         ),
         const SizedBox(height: 6),
         if (_editingInicioIdx >= 0 &&
@@ -1648,6 +1675,75 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
             ),
           ),
       ],
+    );
+  }
+
+  /// Fix 3 — controllo per la semi-larghezza della porta virtuale di
+  /// [label] ('inizio'/'fine'), personalizzabile per singolo waypoint.
+  /// [value] null usa il default globale
+  /// (`WaypointDetector.kGateHalfWidthMeters`). Una porta più larga aggancia
+  /// più facilmente in aree aperte, ma è più esposta ad attraversamenti
+  /// spuri dove il percorso passa vicino a sé stesso (es. tornanti, tratti
+  /// che si incrociano) — da usare con cautela dove il tracciato è denso.
+  Widget _buildGateWidthControl({
+    required String label,
+    required Color color,
+    required double? value,
+    required ValueChanged<double?> onChanged,
+  }) {
+    final effective = value ?? WaypointDetector.kGateHalfWidthMeters;
+    return Padding(
+      padding: const EdgeInsets.only(left: 14, top: 2, bottom: 2),
+      child: Row(
+        children: [
+          Icon(Icons.height, size: 12, color: color.withValues(alpha: 0.7)),
+          const SizedBox(width: 4),
+          Text(
+            'Porta $label: ${effective.toStringAsFixed(0)} m'
+            '${value == null ? ' (default)' : ''}',
+            style:
+                const TextStyle(fontSize: 10, color: AppColors.textSecondary),
+          ),
+          const SizedBox(width: 2),
+          Tooltip(
+            message:
+                'Semi-larghezza della porta virtuale di cronometraggio. Più '
+                'larga aggancia più facilmente (utile in area aperta), ma è '
+                'più esposta ad attraversamenti spuri dove il percorso '
+                'passa vicino a sé stesso (tornanti, tratti che si '
+                'incrociano). Default 30 m.',
+            child: Icon(Icons.info_outline,
+                size: 12, color: AppColors.textSecondary),
+          ),
+          Expanded(
+            child: SliderTheme(
+              data: SliderThemeData(
+                activeTrackColor: color,
+                inactiveTrackColor: AppColors.border,
+                thumbColor: color,
+                trackHeight: 2,
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+              ),
+              child: Slider(
+                value: effective.clamp(15.0, 80.0),
+                min: 15,
+                max: 80,
+                divisions: 13,
+                label: '${effective.toStringAsFixed(0)} m',
+                onChanged: (v) => onChanged(v.roundToDouble()),
+              ),
+            ),
+          ),
+          if (value != null)
+            IconButton(
+              icon: const Icon(Icons.restore, size: 14),
+              tooltip: 'Ripristina default (30 m)',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+              onPressed: () => onChanged(null),
+            ),
+        ],
+      ),
     );
   }
 

@@ -1016,10 +1016,16 @@ class _SpecialTimingRow extends StatelessWidget {
   Widget _timingMethodBadge() {
     final worst = worstTimingMethod(
         special.startTimingMethod, special.endTimingMethod);
+    // Fix 4 — 'gate_gap': porta attraversata correttamente ma a cavallo di
+    // un gap GPS >2s, tempo meno affidabile di una porta 'gate' normale ma
+    // comunque migliore di un fallback a raggio/recovery — badge distinto
+    // in giallo (tra il verde di PORTA e l'arancio di RECOVERY).
     final (label, color) = switch (worst) {
       'gate' => ('PORTA', AppColors.success),
-      'recovery' => ('RECOVERY', Colors.orange),
-      _ => ('RAGGIO', AppColors.textSecondary),
+      'gate_gap' => ('PORTA (GAP)', Colors.amber),
+      'radius' => ('RAGGIO', AppColors.textSecondary),
+      'forfait' => ('FORFAIT', AppColors.error),
+      _ => ('RECOVERY', Colors.orange),
     };
     return Tooltip(
       message: 'Inizio: ${special.startTimingMethod} · '
