@@ -1740,13 +1740,21 @@ id/nome arbitrario.
 - `flutter test`: 83/83 verdi (72 preesistenti + 11 nuovi)
 - `firebase deploy --only hosting` ✅
 - `git push origin main` ✅
-- ⚠️ **Da fare separatamente**: `firebase deploy --only functions:onRouteChanged,firestore:rules` (nuovo trigger + regole aggiornate: `tracking/pilots` owner-read, nuova `tracking/routeVariantByUser`) — non eseguito in questa sessione, solo hosting come richiesto.
+- `firebase deploy --only functions:onRouteChanged,firestore:rules` ✅ — eseguito e verificato end-to-end nella sessione successiva (10 agosto 2026), vedi sotto.
+
+**Verifica end-to-end del deploy separato (10 agosto 2026, sessione successiva):**
+
+Deploy lanciato e poi verificato con 3 controlli mirati, usando l'account pilota di test reale (`test.pilota.audit@ccr-enduro-test.com`, non admin) e un evento temporaneo isolato (creato, usato, ripulito):
+
+1. **Lettura del proprio tracking (bug regole pre-esistente, Step 41):** autenticato come pilota via REST, letto il proprio documento `tracking/{eventId}/pilots/{uid}` → `200 OK` (prima del fix sarebbe stato `403`). Controllo negativo: lettura del tracking di un ALTRO pilota reale → `403`, la regola resta corretta (`isAdmin() || isOwner(userId)`), non è stata aperta a tutti.
+2. **Notifica FCM su attivazione percorso:** aggiunti temporaneamente dei log diagnostici a `onRouteChanged`, ridispiegato, triggerato un cambio `activeRouteId` reale su un evento di test con un'iscrizione approvata e un token FCM fittizio. Log confermano l'intera pipeline: trigger rilevato → 1 iscritto approvato trovato → 1 token FCM risolto → chiamata `sendEachForMulticast` eseguita (fallita con `messaging/invalid-argument` perché il token era fittizio, non un device reale — atteso). Log diagnostici rimossi e versione pulita (`git diff` vuoto) ridispiegata subito dopo.
+3. **Lettura di `routeVariantByUser` da un pilota non admin:** stesso pilota di test, lettura dell'intera collezione (propria voce + una di un altro pilota fittizio, scritta via admin) → `200 OK`, entrambe le voci visibili — conferma che la classifica lato pilota può risolvere le varianti di ogni pilota, non solo la propria.
+
+**Incidente durante la pulizia (segnalato per trasparenza):** un comando di pulizia con `updateMask` mal formato ha azzerato per errore tutti i campi del documento utente del pilota di test (non solo il campo da rimuovere). Rilevato subito confrontando con la lettura iniziale, ripristinato (`nome`/`cognome`/`email`/`role`/`createdAt`) allo stato esatto precedente. Tutti i dati di test (evento, tracking, iscrizione) eliminati al termine — il progetto Firestore è tornato esattamente allo stato precedente (15 eventi, nessun residuo).
 
 ---
 
 ## Prossimi Step
-
-**URGENTE — deploy separato Step 41 non ancora fatto:** `firebase deploy --only functions:onRouteChanged,firestore:rules`. Finché non è eseguito, l'attivazione del percorso alternativo scrive comunque `activeRouteId`/log su Firestore ma NON invia la notifica push FCM ai piloti (il trigger non esiste ancora lato server), e le nuove regole (owner-read su `tracking/pilots`, `tracking/routeVariantByUser`) non sono in vigore — la classifica lato pilota non risolverebbe la variante corretta per gli altri piloti finché le regole non sono deployate.
 
 **Produzione / sicurezza:**
 - Ripristinare regole Storage granulari per produzione (Firestore è già granulare dallo Step 16) — vedi `storage.rules`, TODO ancora aperto
