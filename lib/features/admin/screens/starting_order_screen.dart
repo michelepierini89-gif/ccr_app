@@ -188,6 +188,8 @@ class _StartingOrderScreenState extends ConsumerState<StartingOrderScreen> {
     final teams = await svc.getTeamsOnce(prevEventId);
     final withdrawals = await svc.getWithdrawalsOnce(prevEventId);
     final penalties = await svc.getEffectivePenaltySettings(prevEventId);
+    final routeVariantByUserId =
+        await svc.getRouteVariantByUserOnce(prevEventId);
 
     final entries = ClassificaEngine.compute(
       event: prevEvent,
@@ -197,6 +199,7 @@ class _StartingOrderScreenState extends ConsumerState<StartingOrderScreen> {
       withdrawals: withdrawals,
       liveTracking: const <GpsPointModel>[],
       penalties: penalties,
+      routeVariantByUserId: routeVariantByUserId,
     );
 
     // Classifica inversa: ultimo classificato parte per primo.

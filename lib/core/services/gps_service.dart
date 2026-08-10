@@ -1684,6 +1684,15 @@ class GpsService extends ChangeNotifier {
     // A — timing di precisione). Se vuota, tutti i waypoint restano senza
     // porta e il rilevamento ricade sul metodo a raggio esistente.
     List<LatLng> referenceTrack = const [],
+    // Percorso alternativo (10/08/2026, Parte 5) — 'A' o 'B': la variante
+    // ATTIVA sull'evento nel momento in cui il pilota preme START, salvata
+    // sul suo documento di tracking così che il ricalcolo tempi
+    // ufficiali/il replay/la classifica possano sempre risalire a quale
+    // percorso ha corso REALMENTE, anche se l'admin cambia
+    // `event.activeRouteId` più tardi (anche per errore). Obbligatorio: non
+    // deve esistere un percorso "che il chiamante ha dimenticato di
+    // specificare".
+    required String routeVariantId,
   }) async {
     if (_isRecording) return;
     final hasPermission = await requestPermissions();
@@ -1734,7 +1743,12 @@ class GpsService extends ChangeNotifier {
     WakelockPlus.enable().ignore();
     await _imu.start();
 
-    _firestoreService.setRaceStatus(eventId, userId, 'racing').catchError((_) {});
+    _firestoreService
+        .setRaceStatus(eventId, userId, 'racing', routeVariantId: routeVariantId)
+        .catchError((_) {});
+    _firestoreService
+        .saveRouteVariantUsed(eventId, userId, routeVariantId)
+        .catchError((_) {});
     _startPositionStream(AppConstants.gpsIntervalTransferMs);
   }
 

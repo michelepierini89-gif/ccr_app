@@ -23,7 +23,7 @@ EventModel _makeEvent({EventStatus stato = EventStatus.bozza}) => EventModel(
       luogo: 'Modena',
       data: DateTime(2026, 6, 10),
       descrizione: '',
-      speciali: const [],
+      specialiRouteA: const [],
       stato: stato,
       createdBy: 'user1',
       createdAt: DateTime(2026, 1, 1),

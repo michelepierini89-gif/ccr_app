@@ -229,9 +229,96 @@ class FirestoreService {
       .doc(point.userId)
       .set(point.toFirestore(), SetOptions(merge: true));
 
+  /// Percorso alternativo (10/08/2026, Parte 3) — true se almeno un pilota
+  /// ha avviato la registrazione per questo evento (qualunque documento in
+  /// `tracking/{eventId}/pilots`: il primo scritto è `raceStatus:'racing'`
+  /// da `GpsService.startRecording`, PRIMA di qualunque fix GPS — quindi
+  /// l'esistenza del documento è già la garanzia cercata). Usato per
+  /// bloccare il cambio di percorso attivo: cambiarlo a gara iniziata
+  /// renderebbe incoerenti i rilevamenti già registrati.
+  Future<bool> hasAnyTrackingData(String eventId) async {
+    final snap = await _db
+        .collection(FirebaseConstants.tracking)
+        .doc(eventId)
+        .collection(FirebaseConstants.pilots)
+        .limit(1)
+        .get();
+    return snap.docs.isNotEmpty;
+  }
+
+  /// Percorso alternativo (10/08/2026, Parte 3) — notifica in-app (lista
+  /// campanella) a tutti i piloti iscritti e approvati per [eventId]. La
+  /// notifica push FCM è gestita separatamente dal trigger Cloud Function
+  /// `onRouteChanged`, che reagisce allo stesso scritto di
+  /// `activeRouteId` su cui questo metodo non ha bisogno di intervenire
+  /// (nessuna chiamata FCM diretta dal client, stesso pattern di
+  /// `updateRegistrationStatus`/`onRegistrationStatusChange`).
+  Future<void> notifyRouteChanged(String eventId, String newRouteLabel) async {
+    final regsSnap = await _db
+        .collection(FirebaseConstants.events)
+        .doc(eventId)
+        .collection(FirebaseConstants.iscritti)
+        .where('stato', isEqualTo: 'approvato')
+        .get();
+    for (final reg in regsSnap.docs) {
+      await _sendUserNotification(
+        recipientId: reg.id,
+        type: NotificationType.routeChanged,
+        title: 'Percorso modificato',
+        body: 'Percorso modificato: la manifestazione si svolgerà sul '
+            '$newRouteLabel. Controlla la mappa aggiornata.',
+      );
+    }
+  }
+
+  /// Percorso alternativo (10/08/2026, Parte 5) — scritto una sola volta da
+  /// GpsService.startRecording, in parallelo a [setRaceStatus]: mappa
+  /// pubblica (leggibile da tutti gli autenticati, come 'passages') perché
+  /// la classifica deve risolvere la variante di OGNI pilota anche quando
+  /// la guarda un altro pilota, non solo l'admin (che invece può leggere
+  /// direttamente il documento tracking/pilots, privato).
+  Future<void> saveRouteVariantUsed(
+          String eventId, String userId, String routeVariantId) =>
+      _db
+          .collection(FirebaseConstants.tracking)
+          .doc(eventId)
+          .collection(FirebaseConstants.routeVariantByUser)
+          .doc(userId)
+          .set({'routeVariantId': routeVariantId});
+
+  Stream<Map<String, String>> routeVariantByUserStream(String eventId) => _db
+      .collection(FirebaseConstants.tracking)
+      .doc(eventId)
+      .collection(FirebaseConstants.routeVariantByUser)
+      .snapshots()
+      .map((snap) => {
+            for (final d in snap.docs)
+              d.id: (d.data()['routeVariantId'] as String?) ?? 'A',
+          });
+
+  Future<Map<String, String>> getRouteVariantByUserOnce(
+      String eventId) async {
+    final snap = await _db
+        .collection(FirebaseConstants.tracking)
+        .doc(eventId)
+        .collection(FirebaseConstants.routeVariantByUser)
+        .get();
+    return {
+      for (final d in snap.docs)
+        d.id: (d.data()['routeVariantId'] as String?) ?? 'A',
+    };
+  }
+
   Future<void> setRaceStatus(
           String eventId, String userId, String status,
-          {String? retiredReason, DateTime? finishedAt}) =>
+          {String? retiredReason,
+          DateTime? finishedAt,
+          // Percorso alternativo (10/08/2026, Parte 5) — scritto SOLO da
+          // GpsService.startRecording (status=='racing'): non sovrascrivere
+          // con null sulle chiamate 'finished'/'retired', che non lo
+          // passano — il campo, una volta scritto all'avvio, deve restare
+          // quello con cui il pilota ha effettivamente corso.
+          String? routeVariantId}) =>
       _db
           .collection(FirebaseConstants.tracking)
           .doc(eventId)
@@ -242,6 +329,7 @@ class FirestoreService {
             'retiredReason': ?retiredReason,
             if (finishedAt != null)
               'finishedAt': Timestamp.fromDate(finishedAt),
+            'routeVariantId': ?routeVariantId,
           }, SetOptions(merge: true));
 
   /// Persists the full GPS track for post-race replay.
@@ -479,6 +567,22 @@ class FirestoreService {
           .doc(userId)
           .snapshots()
           .map((doc) => doc.exists ? doc.data() as Map<String, dynamic> : null);
+
+  /// Percorso alternativo (10/08/2026, Parte 5) — lettura one-shot (non
+  /// stream) dello stesso documento di [myPilotStatusStream], usata da
+  /// `RaceResultScreen` per risolvere `routeVariantId` una sola volta in
+  /// `initState`, prima che i provider reattivi della build siano
+  /// disponibili.
+  Future<Map<String, dynamic>?> getPilotStatusOnce(
+      String eventId, String userId) async {
+    final doc = await _db
+        .collection(FirebaseConstants.tracking)
+        .doc(eventId)
+        .collection(FirebaseConstants.pilots)
+        .doc(userId)
+        .get();
+    return doc.exists ? doc.data() as Map<String, dynamic> : null;
+  }
 
   Stream<List<GpsPointModel>> getPilotTracking(String eventId) => _db
       .collection(FirebaseConstants.tracking)
@@ -876,9 +980,16 @@ class FirestoreService {
       final myPassages = (await getPassagesOnce(eventId))
           .where((p) => p.userId == pilotId)
           .toList();
+      // Percorso alternativo, Parte 5 — le speciali della variante con cui
+      // QUESTO pilota ha corso (mai quella attiva sull'evento): la
+      // segnalazione CP riguarda una sua PS specifica, deve risolversi
+      // sulla stessa variante con cui l'ha effettivamente corsa.
+      final pilotStatus = await getPilotStatusOnce(eventId, pilotId);
+      final routeId = pilotStatus?['routeVariantId'] as String? ?? 'A';
+      final variant = event.routeVariant(routeId) ?? event.routeAAsVariant;
       for (final cp in missedCps) {
         final special =
-            event.speciali.where((s) => s.id == cp.specialeId).firstOrNull;
+            variant.speciali.where((s) => s.id == cp.specialeId).firstOrNull;
         if (special == null) continue;
         final iniP = myPassages
             .where((p) => p.waypointId == special.waypointInizio.id)

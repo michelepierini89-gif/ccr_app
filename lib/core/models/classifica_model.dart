@@ -230,6 +230,15 @@ class ClassificaEntry {
   final int pilotiMancantiPenaltySeconds; // secondi aggiunti per piloti mancanti
   final bool isLive; // has recent GPS ping
   final String? retiredReason; // 'timeout' | 'manual' | null
+  // Percorso alternativo (10/08/2026, Parte 5) — variante ('A'/'B') con cui
+  // questa entry ha corso, risolta dal campo `routeVariantId` scritto sul
+  // tracking di ciascun pilota da GpsService.startRecording — MAI da
+  // `event.activeRouteId`. [mixedRouteVariants] è true solo nel caso
+  // anomalo (errore di gestione admin) in cui i membri della stessa
+  // squadra abbiano corso su varianti diverse: le classifiche non sarebbero
+  // confrontabili, va segnalato in UI (TimingScreen admin).
+  final String routeIdUsed;
+  final bool mixedRouteVariants;
 
   const ClassificaEntry({
     required this.entryId,
@@ -247,6 +256,8 @@ class ClassificaEntry {
     this.pilotiMancantiPenaltySeconds = 0,
     required this.isLive,
     this.retiredReason,
+    this.routeIdUsed = 'A',
+    this.mixedRouteVariants = false,
   });
 
   bool get hasFinished => specialiCompletati.length == totaleSpeciali;

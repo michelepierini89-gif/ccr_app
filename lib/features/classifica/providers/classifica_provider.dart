@@ -41,6 +41,15 @@ final officialTimesStreamProvider = StreamProvider.family<
     Map<String, Map<String, OfficialSpecialTime>>, String>((ref, eventId) =>
     ref.watch(firestoreServiceProvider).officialTimesStream(eventId));
 
+/// Percorso alternativo (10/08/2026, Parte 5) — userId -> routeVariantId
+/// ('A'/'B'), leggibile da tutti gli autenticati (a differenza del
+/// documento tracking/pilots, privato): la classifica lo usa per calcolare
+/// i tempi di ogni pilota sulla variante con cui ha REALMENTE corso.
+final routeVariantByUserProvider =
+    StreamProvider.family<Map<String, String>, String>((ref, eventId) => ref
+        .watch(firestoreServiceProvider)
+        .routeVariantByUserStream(eventId));
+
 /// Computes the live ranking. Returns `AsyncValue<List<ClassificaEntry>>`.
 /// Re-runs whenever any underlying stream emits a new value.
 final classificaProvider =
@@ -71,6 +80,7 @@ final classificaProvider =
   final speedViolationsAv =
       ref.watch(speedZoneViolationsStreamProvider(eventId));
   final officialTimesAv = ref.watch(officialTimesStreamProvider(eventId));
+  final routeVariantByUserAv = ref.watch(routeVariantByUserProvider(eventId));
 
   if (eventAv.isLoading || passAv.isLoading || regsAv.isLoading) {
     return const AsyncValue.loading();
@@ -97,6 +107,7 @@ final classificaProvider =
         const PenaltySettingsModel(),
     speedZoneViolations: speedViolationsAv.valueOrNull ?? [],
     officialTimesByUserId: officialTimesAv.valueOrNull ?? {},
+    routeVariantByUserId: routeVariantByUserAv.valueOrNull ?? {},
   ));
 });
 
@@ -127,6 +138,7 @@ final championshipStandingsProvider =
     final withdrawals = await svc.getWithdrawalsOnce(eventId);
     final speedZoneViolations = await svc.getSpeedZoneViolationsOnce(eventId);
     final officialTimes = await svc.getOfficialTimesOnce(eventId);
+    final routeVariantByUserId = await svc.getRouteVariantByUserOnce(eventId);
 
     final entries = ClassificaEngine.compute(
       event: event,
@@ -138,6 +150,7 @@ final championshipStandingsProvider =
       penalties: penalties,
       speedZoneViolations: speedZoneViolations,
       officialTimesByUserId: officialTimes,
+      routeVariantByUserId: routeVariantByUserId,
     );
 
     results.add(EventResults(eventId: eventId, entries: entries));

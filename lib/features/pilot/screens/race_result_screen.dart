@@ -12,6 +12,7 @@ import '../../../core/models/cp_dispute_model.dart';
 import '../../../core/models/event_model.dart';
 import '../../../core/models/penalty_settings_model.dart';
 import '../../../core/models/registration_model.dart';
+import '../../../core/models/route_variant_model.dart';
 import '../../../core/models/special_model.dart';
 import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
@@ -36,6 +37,11 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
   final _mapController = MapController();
   List<LatLng> _refTrack = [];
   bool _mapFitted = false;
+  // Percorso alternativo, Parte 5 — variante con cui il pilota ha corso
+  // (mai quella attiva sull'evento), risolta una volta in _loadRefTrack.
+  // Null finché non risolta: i widget che la usano ricadono su
+  // event.routeAAsVariant nel frattempo (stesso comportamento pre-feature).
+  RouteVariantModel? _raceVariant;
 
   @override
   void initState() {
@@ -43,13 +49,31 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadRefTrack());
   }
 
+  /// Percorso alternativo, Parte 5 — un riepilogo post-gara deve mostrare
+  /// SEMPRE il percorso con cui il pilota ha effettivamente corso, letto
+  /// dal suo tracking (`routeVariantId`, scritto da
+  /// GpsService.startRecording), MAI `event.activeRouteId`: se l'admin
+  /// cambia percorso dopo la gara (anche per errore), questo riepilogo non
+  /// deve cambiare sotto i piedi del pilota.
   Future<void> _loadRefTrack() async {
     try {
       final event = await ref.read(eventProvider(widget.eventId).future);
-      if (event?.trackUrl == null || !mounted) return;
-      final bytes = await StorageService().downloadTrack(event!.trackUrl!);
+      if (event == null || !mounted) return;
+      final userId = ref.read(authStateProvider).valueOrNull?.uid;
+      String routeId = 'A';
+      if (userId != null) {
+        final status = await ref
+            .read(firestoreServiceProvider)
+            .getPilotStatusOnce(widget.eventId, userId);
+        routeId = status?['routeVariantId'] as String? ?? 'A';
+      }
+      if (!mounted) return;
+      final variant = event.routeVariant(routeId) ?? event.routeAAsVariant;
+      _raceVariant = variant;
+      if (variant.trackUrl == null) return;
+      final bytes = await StorageService().downloadTrack(variant.trackUrl!);
       final content = utf8.decode(bytes);
-      final pts = event.trackUrl!.contains('.kml')
+      final pts = variant.trackUrl!.contains('.kml')
           ? GpxParser.parseKml(content).points
           : GpxParser.parseGpx(content).points;
       if (mounted) setState(() => _refTrack = pts);
@@ -237,8 +261,12 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
     Set<String> waypointPassati,
   ) {
     final markers = <Marker>[];
-    if (event != null) {
-      final speciali = [...event.speciali]
+    // Percorso alternativo, Parte 5 — la variante con cui il pilota ha
+    // effettivamente corso (_raceVariant, risolta in _loadRefTrack), mai
+    // quella attiva sull'evento.
+    final variant = _raceVariant ?? event?.routeAAsVariant;
+    if (variant != null) {
+      final speciali = [...variant.speciali]
         ..sort((a, b) => a.ordine.compareTo(b.ordine));
       for (final s in speciali) {
         if (s.annullata) continue;
@@ -274,8 +302,8 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
               strokeWidth: 2.5,
             ),
           ]),
-        if (event != null && event.speedZones.isNotEmpty)
-          SpeedZoneLayer(zones: event.speedZones, trackPoints: _refTrack),
+        if (variant != null && variant.speedZones.isNotEmpty)
+          SpeedZoneLayer(zones: variant.speedZones, trackPoints: _refTrack),
         if (pilotPoints.isNotEmpty)
           PolylineLayer(polylines: [
             Polyline(
@@ -591,8 +619,11 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
     String? userId,
     RegistrationModel? myReg,
   ) {
-    final speciali = event != null
-        ? ([...event.speciali]..sort((a, b) => a.ordine.compareTo(b.ordine)))
+    // Percorso alternativo, Parte 5 — sempre la variante corsa
+    // (_raceVariant), mai quella attiva sull'evento.
+    final variant = _raceVariant ?? event?.routeAAsVariant;
+    final speciali = variant != null
+        ? ([...variant.speciali]..sort((a, b) => a.ordine.compareTo(b.ordine)))
             .where((s) => !s.annullata)
             .toList()
         : <SpecialModel>[];
@@ -629,11 +660,12 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
                 tempo: _findTempo(myEntry, s.id),
                 dangerCount: _refTrack.isNotEmpty
                     ? GpxUtils.countDangerPointsInSpecial(
-                        s, event!.dangerPoints, _refTrack)
+                        s, variant?.dangerPoints ?? const [], _refTrack)
                     : 0,
-                speedZoneCount:
-                    event?.speedZones.where((z) => z.specialeId == s.id).length ??
-                        0,
+                speedZoneCount: variant?.speedZones
+                        .where((z) => z.specialeId == s.id)
+                        .length ??
+                    0,
               ),
             ),
             const SizedBox(height: 16),

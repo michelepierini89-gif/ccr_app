@@ -105,9 +105,13 @@ service cloud.firestore {
     }
 
     // ── GPS Tracking ──────────────────────────────────────────────────────────
-    // Posizioni live — solo il proprio pilota scrive; solo admin legge (privacy)
+    // Posizioni live — solo il proprio pilota scrive; lettura ad admin
+    // (mappa live/gestione) E al proprio pilota (privacy verso gli ALTRI
+    // piloti, non verso se stesso: gli serve per il proprio riepilogo
+    // post-gara — RaceResultScreen/myPilotStatusStream — e per sapere con
+    // quale variante di percorso ha corso, Fix 10/08/2026 Parte 5).
     match /tracking/{eventId}/pilots/{userId} {
-      allow read: if isAdmin();
+      allow read: if isAdmin() || isOwner(userId);
       allow write: if isOwner(userId);
 
       // Fix 5 (09/08/2026) — chunk della traccia grezza completa (vedi
@@ -118,6 +122,15 @@ service cloud.firestore {
         allow read: if isAdmin();
         allow write: if isOwner(userId);
       }
+    }
+
+    // Percorso alternativo (10/08/2026, Parte 5) — userId -> routeVariantId,
+    // stessa visibilità di 'passages': tutti gli autenticati, perché la
+    // classifica (guardata anche dai piloti) deve sapere con quale
+    // variante ha corso ogni pilota, non solo il proprio.
+    match /tracking/{eventId}/routeVariantByUser/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner(userId);
     }
 
     // Passaggi ai waypoint — tutti gli autenticati leggono/scrivono (classifica)

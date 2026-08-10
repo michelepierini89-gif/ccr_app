@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 10 agosto 2026 (Step 40 completato)  
+**Data aggiornamento:** 10 agosto 2026 (Step 41 completato)  
 **Branch:** main  
 **Versione:** 1.0.2+3
 
@@ -1698,7 +1698,55 @@ id/nome arbitrario.
 
 ---
 
+### Step 41 — Percorso alternativo per evento (10 agosto 2026) ✅
+
+**Obiettivo:** un evento può avere un secondo percorso ("variante B", es. accorciato per maltempo), attivabile dall'admin al posto di quello principale ("variante A"). Refactoring del modello dati, non una semplice aggiunta — eseguito in ordine (modello → admin → attivazione → pilota → tracciabilità → duplicazione).
+
+**Parte 1 — Modello (`route_variant_model.dart` nuovo, `event_model.dart`):**
+- `RouteVariantModel`: id ('A'/'B'), label, trackUrl, speciali (con checkpoint), dangerPoints, speedZones, fuelPoint, `totalLengthKm(trackPoints)` calcolato (mai persistito, come già per tutta la traccia).
+- `EventModel`: i vecchi campi diretti rinominati con suffisso `RouteA` (`speciali`→`specialiRouteA`, `dangerPoints`→`dangerPointsRouteA`, `speedZones`→`speedZonesRouteA`, `fuelPoint`→`fuelPointRouteA`, `trackUrl`→`trackUrlRouteA`, + nuovo `labelRouteA`) — rename deliberato per rompere la compilazione in ogni punto che leggeva i vecchi campi, garanzia che nessuno restasse agganciato per dimenticanza al solo percorso A. Nuovi campi: `routeB` (`RouteVariantModel?`, null finché non creata), `activeRouteId` (default `'A'`), `routeChangeLog` (`List<RouteChangeLogEntry>`: chi/quando/da-a).
+- Getter `active*` (`activeSpeciali`/`activeDangerPoints`/`activeSpeedZones`/`activeFuelPoint`/`activeTrackUrl`/`activeLabel`) risolvono sempre sulla variante in `activeRouteId` — unico punto da usare fuori da editor/gestione percorsi. `routeAAsVariant`/`routeVariant(id)` per trattare A e B in modo simmetrico nella UI.
+- **Retrocompatibilità totale, zero migrazione:** le chiavi Firestore della variante A restano quelle di sempre (`speciali`, `trackUrl`, ecc. — invariati); `routeB`/`activeRouteId`/`routeALabel` sono nuovi campi opzionali, assenti sui documenti esistenti e gestiti con default in `fromFirestore`.
+
+**Parte 2 — Admin (`event_management_screen.dart`, `specials_editor_screen.dart`):**
+- Tab Tracciato: pannello sempre visibile con selettore A/B **per l'editing** (`editingRouteId`, stato locale nello screen, indipendente da `activeRouteId`) + riga separata "Attivo per la gara: Percorso X — label". I due concetti non si toccano mai nello stesso controllo, per non confonderli.
+- "Crea percorso alternativo" (vuoto o "Copia dal percorso A come base") quando B non esiste; una volta creata si edita con lo stesso editor di A (stessi strumenti: tracciato, speciali, checkpoint, punti pericolo, zone velocità, punto ristoro). Eliminazione B con doppia conferma, bloccata se B è la variante attiva.
+- `SpecialsEditorScreen` riceve `routeId` esplicito e scrive SEMPRE su quella variante (mai su `event.activeRouteId`).
+
+**Parte 3 — Attivazione (`event_management_screen.dart`, `firestore_service.dart`, `functions/index.js`):**
+- `FirestoreService.hasAnyTrackingData(eventId)`: true se esiste anche un solo documento in `tracking/{eventId}/pilots` (il primo scritto è `raceStatus:'racing'`, prima di qualunque fix GPS — esistenza del doc = registrazione avviata). Se true, il cambio è bloccato con spiegazione ("resetta prima i dati gara" se sono tracce di test).
+- Doppia conferma con riepilogo (speciali attive, lunghezza se il tracciato è già stato caricato in sessione, punti pericolo, zone velocità) prima di attivare.
+- All'attivazione: `activeRouteId` aggiornato + nuova `RouteChangeLogEntry` (chi/quando/da-a, con nome admin da `currentUserModelProvider`) in un solo `updateEvent`; notifica in-app a tutti gli iscritti approvati (`notifyRouteChanged`); nuovo trigger Cloud Function `onRouteChanged` (stesso pattern di `onStartEnabled`) invia il push FCM — il client non chiama mai FCM direttamente. Log visibile in un dialog dedicato ("Storico cambi percorso") nel pannello.
+
+**Parte 4 — Lato pilota (`event_detail_screen.dart`, `gps_recording_screen.dart`, `offline_maps_screen.dart`):**
+- Banner rosso ben visibile in cima a `EventDetailScreen` se B è attiva, con label e data/ora dell'ultimo cambio.
+- Mappa, marker, elenco speciali, punto ristoro: sempre `event.active*`.
+- `GpsRecordingScreen`: se il percorso è cambiato nelle ultime 24h, banner d'allerta nella schermata pre-gara a ricontrollare la mappa.
+- `OfflineMapsScreen._eventBbox`: unione delle waypoint di ENTRAMBE le varianti (non solo quella attiva) — il cambio può avvenire quando il pilota è già offline.
+
+**Parte 5 — Tracciabilità (punto critico, `gps_service.dart`, `firestore_service.dart`, `classifica_engine.dart`, `classifica_provider.dart`, `timing_screen.dart`, `track_replay_screen.dart`):**
+- `GpsService.startRecording` riceve `routeVariantId` obbligatorio (la variante attiva nel momento in cui il pilota preme START) e lo scrive su `tracking/{eventId}/pilots/{userId}.routeVariantId` (via `setRaceStatus`) **e** su una nuova mappa pubblica `tracking/{eventId}/routeVariantByUser/{userId}` — necessaria perché il documento pilota resta leggibile solo da admin/proprietario (privacy posizione live), ma la classifica deve risolvere la variante di OGNI pilota anche quando la guarda un altro pilota.
+- `ClassificaEngine.compute(routeVariantByUserId:)`: ogni entry (team o solo) risolve la propria variante dai membri (concorde → quella; discorde → `mixedRouteVariants=true`, segnalato) e calcola tempi/checkpoint/`totaleSpeciali` SEMPRE su quella — mai su `event.activeRouteId`. Se l'admin cambia percorso dopo la gara (anche per errore), i tempi già corsi non cambiano.
+- Ricalcolo "Tempi ufficiali" (`timing_screen.dart`) e banco di replay admin (`track_replay_screen.dart`): stessa regola, porte/speciali/tracciato di riferimento risolti per-pilota (cache per variante, non per ogni pilota, dato che normalmente condividono la stessa).
+- `timing_screen.dart`: banner rosso se coesistono registrazioni su varianti diverse nello stesso evento (caso anomalo, classifiche non confrontabili).
+- **Bug pre-esistente scoperto e corretto in `firestore.rules`:** `tracking/{eventId}/pilots/{userId}` permetteva lettura solo ad admin, bloccando anche il proprietario — `RaceResultScreen`/`myPilotStatusStream` (già esistenti) erano quindi già silenziosamente non funzionanti per i piloti prima di questo fix. Corretto in `isAdmin() || isOwner(userId)`.
+
+**Parte 6 — Duplica evento (`event_management_screen.dart`):** copia entrambe le varianti (tracciato ricaricato su Storage sotto il nuovo eventId per ciascuna, se presente), sempre con `activeRouteId:'A'` sul nuovo evento indipendentemente da quale fosse attiva nell'originale.
+
+**Test nuovi:** `event_model_route_variant_test.dart` (retrocompatibilità fromFirestore su documento nel vecchio formato, getter active* per A/B, fallback se B cancellata), `route_activation_guard_test.dart` (`hasAnyTrackingData` con `fake_cloud_firestore`), `classifica_engine_route_variant_test.dart` (stesso pilota calcolato su speciali diverse a seconda della variante registrata, indipendente da `event.activeRouteId`).
+
+**Deploy:**
+- `flutter analyze`: 0 issues
+- `flutter test`: 83/83 verdi (72 preesistenti + 11 nuovi)
+- `firebase deploy --only hosting` ✅
+- `git push origin main` ✅
+- ⚠️ **Da fare separatamente**: `firebase deploy --only functions:onRouteChanged,firestore:rules` (nuovo trigger + regole aggiornate: `tracking/pilots` owner-read, nuova `tracking/routeVariantByUser`) — non eseguito in questa sessione, solo hosting come richiesto.
+
+---
+
 ## Prossimi Step
+
+**URGENTE — deploy separato Step 41 non ancora fatto:** `firebase deploy --only functions:onRouteChanged,firestore:rules`. Finché non è eseguito, l'attivazione del percorso alternativo scrive comunque `activeRouteId`/log su Firestore ma NON invia la notifica push FCM ai piloti (il trigger non esiste ancora lato server), e le nuove regole (owner-read su `tracking/pilots`, `tracking/routeVariantByUser`) non sono in vigore — la classifica lato pilota non risolverebbe la variante corretta per gli altri piloti finché le regole non sono deployate.
 
 **Produzione / sicurezza:**
 - Ripristinare regole Storage granulari per produzione (Firestore è già granulare dallo Step 16) — vedi `storage.rules`, TODO ancora aperto

@@ -54,6 +54,7 @@ class _NotificationListenerWidgetState
       NotificationType.specialEntry => AppColors.accent,
       NotificationType.cpDisputeAccepted => AppColors.success,
       NotificationType.cpDisputeRejected => AppColors.error,
+      NotificationType.routeChanged => AppColors.warning,
     };
 
     ScaffoldMessenger.of(context).showSnackBar(

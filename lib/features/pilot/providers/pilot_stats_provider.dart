@@ -35,6 +35,8 @@ final pilotStatsProvider = FutureProvider<PilotStatsModel>((ref) async {
     final withdrawals = await svc.getWithdrawalsOnce(event.id);
     final speedZoneViolations =
         await svc.getSpeedZoneViolationsOnce(event.id);
+    final routeVariantByUserId =
+        await svc.getRouteVariantByUserOnce(event.id);
 
     final entries = ClassificaEngine.compute(
       event: event,
@@ -45,6 +47,7 @@ final pilotStatsProvider = FutureProvider<PilotStatsModel>((ref) async {
       liveTracking: const <GpsPointModel>[],
       penalties: penalties,
       speedZoneViolations: speedZoneViolations,
+      routeVariantByUserId: routeVariantByUserId,
     );
 
     final myEntryId = reg.squadraId ?? reg.userId;

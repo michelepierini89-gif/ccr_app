@@ -120,7 +120,7 @@ class EventCardAdmin extends StatelessWidget {
                   ),
                 ],
               ),
-              if (pilotCount != null || event.speciali.isNotEmpty) ...[
+              if (pilotCount != null || event.activeSpeciali.isNotEmpty) ...[
                 const SizedBox(height: 12),
                 const Divider(color: AppColors.border, height: 1),
                 const SizedBox(height: 12),
@@ -141,7 +141,7 @@ class EventCardAdmin extends StatelessWidget {
                         color: AppColors.textSecondary, size: 16),
                     const SizedBox(width: 4),
                     Text(
-                      '${event.speciali.length} speciali',
+                      '${event.activeSpeciali.length} speciali',
                       style: const TextStyle(
                           color: AppColors.textSecondary, fontSize: 13),
                     ),

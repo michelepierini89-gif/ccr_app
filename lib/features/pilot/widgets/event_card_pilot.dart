@@ -211,14 +211,14 @@ class EventCardPilot extends StatelessWidget {
                     ),
                   ],
                   const Spacer(),
-                  if (event.speciali.isNotEmpty)
+                  if (event.activeSpeciali.isNotEmpty)
                     Row(
                       children: [
                         const Icon(Icons.route,
                             color: AppColors.textSecondary, size: 14),
                         const SizedBox(width: 4),
                         Text(
-                          '${event.speciali.length} speciali',
+                          '${event.activeSpeciali.length} speciali',
                           style: const TextStyle(
                               color: AppColors.textSecondary,
                               fontSize: 12),

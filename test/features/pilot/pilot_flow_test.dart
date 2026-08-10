@@ -33,7 +33,7 @@ EventModel _makeEvent({EventStatus stato = EventStatus.aperto}) => EventModel(
       luogo: 'Bologna',
       data: DateTime(2026, 10, 15),
       descrizione: 'Una gara di test',
-      speciali: const [],
+      specialiRouteA: const [],
       stato: stato,
       createdBy: 'uid-admin',
       createdAt: DateTime(2026, 1, 1),

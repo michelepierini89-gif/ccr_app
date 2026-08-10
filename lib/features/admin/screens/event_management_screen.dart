@@ -10,6 +10,7 @@ import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/models/event_model.dart';
+import '../../../core/models/route_variant_model.dart';
 import '../../../core/models/waypoint_model.dart';
 import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
@@ -41,8 +42,18 @@ class _EventManagementScreenState
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
   bool _isTrackLoading = false;
-  ParsedTrack? _parsedTrack;
-  String? _loadedTrackUrl;
+  // Percorso alternativo (10/08/2026) — cache per URL invece che per
+  // singola variante: le due varianti hanno URL diversi (o B può non
+  // averne ancora uno), quindi la cache resta valida indipendentemente da
+  // quale sia in editing in un dato momento; String? _loadingUrl evita
+  // ricariche concorrenti dello stesso URL.
+  final Map<String, ParsedTrack> _trackCache = {};
+  String? _loadingUrl;
+  // Variante SELEZIONATA nell'editor — distinta da event.activeRouteId
+  // (Parte 2: sono due concetti separati, mai confusi in UI). Di default
+  // si apre sulla variante attiva, comodità per l'admin.
+  String _editingRouteId = 'A';
+  bool _editingRouteIdInitialized = false;
 
   @override
   void initState() {
@@ -199,8 +210,12 @@ class _EventManagementScreenState
                 'Verrà creato "${event.nome} (copia)" in stato bozza, con '
                 'tracciato, speciali, checkpoint, punti pericolo, punto '
                 'ristoro, zone velocità, dimensione squadra, tipologia '
-                'punteggio e tempo massimo gara copiati. Iscrizioni, ordine '
-                'di partenza, tracce GPS e classifiche non vengono copiate.',
+                'punteggio e tempo massimo gara copiati'
+                '${event.routeB != null ? ' (inclusa la variante di percorso B)' : ''}. '
+                'Il nuovo evento nasce sempre con il percorso principale (A) '
+                'attivo, indipendentemente da quale fosse attivo qui. '
+                'Iscrizioni, ordine di partenza, tracce GPS e classifiche '
+                'non vengono copiate.',
                 style: const TextStyle(color: AppColors.textSecondary),
               ),
               const SizedBox(height: 16),
@@ -257,28 +272,48 @@ class _EventManagementScreenState
         luogo: event.luogo,
         data: pickedDate,
         descrizione: event.descrizione,
-        speciali: event.speciali,
+        labelRouteA: event.labelRouteA,
+        specialiRouteA: event.specialiRouteA,
+        routeB: event.routeB,
+        // Percorso alternativo, Parte 6 — sempre A attiva sul nuovo evento,
+        // indipendentemente da quale fosse attiva sull'originale: un
+        // evento appena creato in bozza non ha ancora avuto un motivo
+        // (maltempo, impraticabilità) per partire su B.
+        activeRouteId: 'A',
         stato: EventStatus.bozza,
         createdBy: uid,
         createdAt: DateTime.now(),
         minSquadra: event.minSquadra,
         maxSquadra: event.maxSquadra,
         tipologiaClassifica: event.tipologiaClassifica,
-        fuelPoint: event.fuelPoint,
+        fuelPointRouteA: event.fuelPointRouteA,
         maxRaceTimeMinutes: event.maxRaceTimeMinutes,
-        dangerPoints: event.dangerPoints,
-        speedZones: event.speedZones,
+        dangerPointsRouteA: event.dangerPointsRouteA,
+        speedZonesRouteA: event.speedZonesRouteA,
       );
       final newId = await svc.createEvent(newEvent);
 
       // Il tracciato è un file su Storage: si copia il contenuto sotto il
       // nuovo eventId invece di riusare lo stesso URL, così il nuovo
       // evento resta indipendente (regole Storage granulari future,
-      // cancellazione dell'originale, ecc.).
-      if (event.trackUrl != null) {
-        final bytes = await StorageService().downloadTrack(event.trackUrl!);
-        final ext = event.trackUrl!.contains('.kml') ? 'kml' : 'gpx';
-        final newUrl = await StorageService().uploadTrack(newId, bytes, ext);
+      // cancellazione dell'originale, ecc.) — per ENTRAMBE le varianti, se
+      // presenti.
+      String? newUrlA;
+      RouteVariantModel? newRouteB = newEvent.routeB;
+      if (event.trackUrlRouteA != null) {
+        final bytes =
+            await StorageService().downloadTrack(event.trackUrlRouteA!);
+        final ext = event.trackUrlRouteA!.contains('.kml') ? 'kml' : 'gpx';
+        newUrlA = await StorageService().uploadTrack(newId, bytes, ext);
+      }
+      if (event.routeB?.trackUrl != null) {
+        final bytes =
+            await StorageService().downloadTrack(event.routeB!.trackUrl!);
+        final ext = event.routeB!.trackUrl!.contains('.kml') ? 'kml' : 'gpx';
+        final newUrlB = await StorageService().uploadTrack(newId, bytes, ext);
+        newRouteB = event.routeB!.copyWith(trackUrl: newUrlB);
+      }
+      if (newUrlA != null || newRouteB != event.routeB) {
         // `newEvent.copyWith` non permette di cambiare l'id (resta quello
         // vuoto passato a createEvent): si ricostruisce l'entità con l'id
         // reale assegnato da Firestore.
@@ -288,18 +323,21 @@ class _EventManagementScreenState
           luogo: newEvent.luogo,
           data: newEvent.data,
           descrizione: newEvent.descrizione,
-          trackUrl: newUrl,
-          speciali: newEvent.speciali,
+          labelRouteA: newEvent.labelRouteA,
+          trackUrlRouteA: newUrlA ?? newEvent.trackUrlRouteA,
+          specialiRouteA: newEvent.specialiRouteA,
+          routeB: newRouteB,
+          activeRouteId: newEvent.activeRouteId,
           stato: newEvent.stato,
           createdBy: newEvent.createdBy,
           createdAt: newEvent.createdAt,
           minSquadra: newEvent.minSquadra,
           maxSquadra: newEvent.maxSquadra,
           tipologiaClassifica: newEvent.tipologiaClassifica,
-          fuelPoint: newEvent.fuelPoint,
+          fuelPointRouteA: newEvent.fuelPointRouteA,
           maxRaceTimeMinutes: newEvent.maxRaceTimeMinutes,
-          dangerPoints: newEvent.dangerPoints,
-          speedZones: newEvent.speedZones,
+          dangerPointsRouteA: newEvent.dangerPointsRouteA,
+          speedZonesRouteA: newEvent.speedZonesRouteA,
         ));
       }
 
@@ -339,7 +377,7 @@ class _EventManagementScreenState
     if (_isTrackLoading) return;
     setState(() {
       _isTrackLoading = true;
-      _loadedTrackUrl = url;
+      _loadingUrl = url;
     });
     try {
       final bytes = await StorageService().downloadTrack(url);
@@ -348,10 +386,9 @@ class _EventManagementScreenState
       final parsed = ext == 'gpx'
           ? GpxParser.parseGpx(content)
           : GpxParser.parseKml(content);
-      if (mounted) setState(() => _parsedTrack = parsed);
+      if (mounted) setState(() => _trackCache[url] = parsed);
     } catch (e) {
       if (mounted) {
-        setState(() => _loadedTrackUrl = null);
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text(FirebaseErrorHandler.getMessage(e)),
           backgroundColor: AppColors.error,
@@ -364,12 +401,20 @@ class _EventManagementScreenState
         ));
       }
     } finally {
-      if (mounted) setState(() => _isTrackLoading = false);
+      if (mounted) {
+        setState(() {
+          _isTrackLoading = false;
+          _loadingUrl = null;
+        });
+      }
     }
   }
 
+  /// Percorso alternativo — [routeId] decide se il nuovo URL va scritto sui
+  /// campi RouteA dell'evento o dentro `event.routeB` (che deve già
+  /// esistere: si crea da "Crea percorso alternativo", non da qui).
   Future<void> _pickAndUploadTrack(
-      BuildContext context, EventModel event) async {
+      BuildContext context, EventModel event, String routeId) async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['gpx', 'kml'],
@@ -389,15 +434,11 @@ class _EventManagementScreenState
           : GpxParser.parseKml(content);
 
       final url = await StorageService().uploadTrack(event.id, bytes, ext);
-      await ref.read(firestoreServiceProvider).updateEvent(
-            event.copyWith(trackUrl: url),
-          );
-      if (mounted) {
-        setState(() {
-          _parsedTrack = parsed;
-          _loadedTrackUrl = url;
-        });
-      }
+      final updated = routeId == 'B'
+          ? event.copyWith(routeB: event.routeB!.copyWith(trackUrl: url))
+          : event.copyWith(trackUrlRouteA: url);
+      await ref.read(firestoreServiceProvider).updateEvent(updated);
+      if (mounted) setState(() => _trackCache[url] = parsed);
 
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -416,6 +457,121 @@ class _EventManagementScreenState
       );
     } finally {
       if (mounted) setState(() => _isTrackLoading = false);
+    }
+  }
+
+  /// Percorso alternativo — crea `event.routeB`, vuoto o come copia della
+  /// variante A (Parte 2: "Copia dal percorso A come base"). Il tracciato
+  /// (file su Storage) NON viene copiato automaticamente anche scegliendo
+  /// "copia da A": è un file grezzo indipendente dal resto e l'admin lo
+  /// carica esplicitamente per B, così le due varianti non condividono mai
+  /// lo stesso URL (coerente con come "Duplica evento", Parte 6, gestisce
+  /// già il tracciato per un nuovo evento).
+  Future<void> _createRouteB(BuildContext context, EventModel event,
+      {required bool copyFromA}) async {
+    final variant = copyFromA
+        ? RouteVariantModel(
+            id: 'B',
+            label: 'Percorso alternativo',
+            speciali: event.specialiRouteA,
+            dangerPoints: event.dangerPointsRouteA,
+            speedZones: event.speedZonesRouteA,
+            fuelPoint: event.fuelPointRouteA,
+          )
+        : const RouteVariantModel(id: 'B', label: 'Percorso alternativo');
+    try {
+      await ref
+          .read(firestoreServiceProvider)
+          .updateEvent(event.copyWith(routeB: variant));
+      if (mounted) setState(() => _editingRouteId = 'B');
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(FirebaseErrorHandler.getMessage(e)),
+        backgroundColor: AppColors.error,
+      ));
+    }
+  }
+
+  /// Percorso alternativo — elimina `event.routeB`. Bloccato se B è
+  /// attualmente la variante attiva per la gara: cambiare prima il
+  /// percorso attivo (Parte 3, che ha già le proprie salvaguardie) evita di
+  /// lasciare l'evento senza un percorso attivo valido.
+  Future<void> _deleteRouteB(BuildContext context, EventModel event) async {
+    if (event.isRouteBActive) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text(
+            'Il percorso B è attivo per la gara — torna al percorso '
+            'principale prima di eliminarlo'),
+        backgroundColor: AppColors.warning,
+      ));
+      return;
+    }
+    final first = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: const Text('Eliminare il percorso alternativo?',
+            style: TextStyle(color: AppColors.textPrimary)),
+        content: const Text(
+          'Tracciato, speciali, checkpoint, punti pericolo, zone velocità '
+          'e punto ristoro della variante B andranno persi.',
+          style: TextStyle(color: AppColors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annulla',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Continua',
+                style: TextStyle(color: AppColors.error)),
+          ),
+        ],
+      ),
+    );
+    if (first != true || !context.mounted) return;
+
+    final second = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: const Text('Conferma eliminazione',
+            style: TextStyle(color: AppColors.error)),
+        content: const Text(
+          'Sei sicuro? Il percorso alternativo verrà eliminato '
+          'definitivamente.',
+          style: TextStyle(color: AppColors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annulla',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+            child: const Text('Elimina definitivamente'),
+          ),
+        ],
+      ),
+    );
+    if (second != true || !context.mounted) return;
+
+    try {
+      await ref
+          .read(firestoreServiceProvider)
+          .updateEvent(event.copyWith(clearRouteB: true));
+      if (mounted) setState(() => _editingRouteId = 'A');
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(FirebaseErrorHandler.getMessage(e)),
+        backgroundColor: AppColors.error,
+      ));
     }
   }
 
@@ -459,17 +615,29 @@ class _EventManagementScreenState
           );
         }
 
-        if (event.trackUrl != null &&
-            _parsedTrack == null &&
-            _loadedTrackUrl != event.trackUrl &&
+        // Percorso alternativo — di default l'editor si apre sulla
+        // variante attiva (comodità: è quella su cui l'admin lavora più
+        // spesso), una volta sola per apertura schermata.
+        if (!_editingRouteIdInitialized) {
+          _editingRouteIdInitialized = true;
+          _editingRouteId = event.activeRouteId;
+        }
+        final editingUrl = _editingRouteId == 'B'
+            ? event.routeB?.trackUrl
+            : event.trackUrlRouteA;
+        final parsedTrack =
+            editingUrl != null ? _trackCache[editingUrl] : null;
+
+        if (editingUrl != null &&
+            parsedTrack == null &&
+            _loadingUrl != editingUrl &&
             !_isTrackLoading) {
           WidgetsBinding.instance.addPostFrameCallback(
-              (_) => _autoLoadTrack(event.trackUrl!));
+              (_) => _autoLoadTrack(editingUrl));
         }
 
         final statusColor = _statusColor(event.stato);
-        final trackAvailable =
-            _parsedTrack != null || event.trackUrl != null;
+        final trackAvailable = parsedTrack != null || editingUrl != null;
 
         return Scaffold(
           backgroundColor: AppColors.background,
@@ -633,20 +801,27 @@ class _EventManagementScreenState
                   children: [
                     _TracciatoTab(
                       event: event,
-                      parsedTrack: _parsedTrack,
+                      parsedTrack: parsedTrack,
                       trackAvailable: trackAvailable,
                       uploadingTrack: _isTrackLoading,
+                      editingRouteId: _editingRouteId,
+                      onEditingRouteChanged: (id) =>
+                          setState(() => _editingRouteId = id),
+                      onCreateRouteB: (copyFromA) =>
+                          _createRouteB(context, event, copyFromA: copyFromA),
+                      onDeleteRouteB: () => _deleteRouteB(context, event),
                       onPickTrack: () =>
-                          _pickAndUploadTrack(context, event),
+                          _pickAndUploadTrack(context, event, _editingRouteId),
                       onManageSpecials: () {
-                        if (_parsedTrack != null) {
+                        if (parsedTrack != null) {
                           Navigator.push(
                             context,
                             MaterialPageRoute(
                               builder: (_) => SpecialsEditorScreen(
                                 eventId: event.id,
-                                parsedTrack: _parsedTrack!,
+                                parsedTrack: parsedTrack,
                                 event: event,
+                                routeId: _editingRouteId,
                               ),
                             ),
                           );
@@ -725,6 +900,16 @@ class _TracciatoTab extends ConsumerStatefulWidget {
   final VoidCallback onPickTrack;
   final VoidCallback onManageSpecials;
 
+  /// Percorso alternativo (10/08/2026, Parte 2) — variante 'A'/'B'
+  /// SELEZIONATA nell'editor: [parsedTrack]/[trackAvailable] e tutto ciò
+  /// che questo tab mostra/modifica si riferiscono SEMPRE a questa
+  /// variante, mai a `event.activeRouteId` (mostrato solo come indicatore,
+  /// mai come sorgente dei dati in editing).
+  final String editingRouteId;
+  final ValueChanged<String> onEditingRouteChanged;
+  final ValueChanged<bool> onCreateRouteB;
+  final VoidCallback onDeleteRouteB;
+
   const _TracciatoTab({
     required this.event,
     required this.parsedTrack,
@@ -732,6 +917,10 @@ class _TracciatoTab extends ConsumerStatefulWidget {
     required this.uploadingTrack,
     required this.onPickTrack,
     required this.onManageSpecials,
+    required this.editingRouteId,
+    required this.onEditingRouteChanged,
+    required this.onCreateRouteB,
+    required this.onDeleteRouteB,
   });
 
   @override
@@ -748,6 +937,12 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
   Timer? _squadraDebounce;
   Timer? _tipologiaDebounce;
   Timer? _maxRaceDebounce;
+
+  /// Percorso alternativo — la variante SELEZIONATA nell'editor (mai quella
+  /// attiva per la gara, vedi doc su [_TracciatoTab.editingRouteId]). Null
+  /// solo se si sta "editando" B ma non è ancora stata creata.
+  RouteVariantModel? get _editingVariant =>
+      widget.event.routeVariant(widget.editingRouteId);
 
   @override
   void initState() {
@@ -798,6 +993,339 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
     _tipologiaDebounce?.cancel();
     _maxRaceDebounce?.cancel();
     super.dispose();
+  }
+
+  // ── Percorso alternativo — attivazione (Parte 3) ───────────────────────────
+
+  Future<void> _activateRoute(String targetRouteId) async {
+    final event = widget.event;
+    final target = event.routeVariant(targetRouteId);
+    if (target == null) return;
+
+    // ── Vincolo di sicurezza: nessun cambio a gara iniziata ──
+    final hasTracking =
+        await ref.read(firestoreServiceProvider).hasAnyTrackingData(event.id);
+    if (!mounted) return;
+    if (hasTracking) {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppColors.cardBackground,
+          title: const Text('Cambio percorso bloccato',
+              style: TextStyle(color: AppColors.error)),
+          content: const Text(
+            'Almeno un pilota ha già avviato la registrazione per questo '
+            'evento: cambiare percorso ora renderebbe incoerenti i '
+            'rilevamenti già effettuati.\n\nSe si tratta di tracce di '
+            'test da cancellare, resetta prima i dati gara di questo '
+            'evento, poi riprova.',
+            style: TextStyle(color: AppColors.textSecondary),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Ho capito'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    // ── Riepilogo diff + doppia conferma ──
+    // La lunghezza è nota solo se il tracciato di questa variante è già
+    // stato caricato in questa sessione (cache per URL nello screen
+    // padre) — altrimenti si mostra il resto del riepilogo comunque,
+    // senza bloccare il flusso per un ricaricamento.
+    final lengthLabel = (targetRouteId == widget.editingRouteId &&
+            widget.parsedTrack != null)
+        ? '${target.totalLengthKm(widget.parsedTrack!.points).toStringAsFixed(1)} km'
+        : 'apri "Gestisci Speciali" su questa variante per vederla';
+
+    final first = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: Text('Attivare "${target.label}"?',
+            style: const TextStyle(color: AppColors.textPrimary)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Diventerà il percorso in vigore per la gara al posto di '
+              '"${event.activeLabel}".',
+              style: const TextStyle(color: AppColors.textSecondary),
+            ),
+            const SizedBox(height: 12),
+            _DiffRow('Speciali attive', '${target.specialiAttiveCount}'),
+            _DiffRow('Lunghezza', lengthLabel),
+            _DiffRow('Punti pericolo', '${target.dangerPoints.length}'),
+            _DiffRow('Zone velocità', '${target.speedZones.length}'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annulla',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
+            child: const Text('Continua'),
+          ),
+        ],
+      ),
+    );
+    if (first != true || !mounted) return;
+
+    final second = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: const Text('Conferma cambio percorso',
+            style: TextStyle(color: AppColors.warning)),
+        content: Text(
+          'Tutti i piloti iscritti e approvati riceveranno una notifica. '
+          'Confermi di voler attivare "${target.label}"?',
+          style: const TextStyle(color: AppColors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annulla',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.warning),
+            child: const Text('Conferma attivazione'),
+          ),
+        ],
+      ),
+    );
+    if (second != true || !mounted) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final authUser = ref.read(authStateProvider).valueOrNull;
+      final userModel = await ref.read(currentUserModelProvider.future);
+      final changedByName = userModel != null
+          ? '${userModel.nome} ${userModel.cognome}'.trim()
+          : (authUser?.email ?? authUser?.uid ?? 'admin');
+
+      final logEntry = RouteChangeLogEntry(
+        changedByUid: authUser?.uid ?? '',
+        changedByName:
+            changedByName.isEmpty ? (authUser?.uid ?? 'admin') : changedByName,
+        timestamp: DateTime.now(),
+        fromRouteId: event.activeRouteId,
+        toRouteId: targetRouteId,
+      );
+      final updated = event.copyWith(
+        activeRouteId: targetRouteId,
+        routeChangeLog: [...event.routeChangeLog, logEntry],
+      );
+      final svc = ref.read(firestoreServiceProvider);
+      await svc.updateEvent(updated);
+      await svc.notifyRouteChanged(event.id, target.label);
+
+      messenger.showSnackBar(SnackBar(
+        content: Text('"${target.label}" attivato — piloti notificati'),
+        backgroundColor: AppColors.success,
+      ));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(
+        content: Text(FirebaseErrorHandler.getMessage(e)),
+        backgroundColor: AppColors.error,
+      ));
+    }
+  }
+
+  // ── Percorso alternativo — pannello selettore + stato (Parte 2/3) ──────────
+
+  /// Sempre visibile in cima al tab Tracciato: quale variante è in editing
+  /// (selettore A/B) e quale è attiva per la gara — i due concetti NON
+  /// vanno mai confusi, per questo restano su due righe distinte con
+  /// colori diversi invece che un solo indicatore ambiguo.
+  Widget _buildRouteVariantPanel(EventModel event) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.cardBackground,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.edit_outlined,
+                  size: 14, color: AppColors.textSecondary),
+              const SizedBox(width: 6),
+              const Text('In modifica:',
+                  style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              // Etichette dei segmenti volutamente corte (solo "A"/"B") per
+              // non rischiare overflow su schermi stretti — la label
+              // completa della variante selezionata è mostrata accanto, in
+              // un Expanded che si comprime con l'ellissi invece di
+              // sforare il layout.
+              SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(value: 'A', label: Text('A')),
+                  ButtonSegment(value: 'B', label: Text('B')),
+                ],
+                selected: {widget.editingRouteId},
+                onSelectionChanged: (s) => widget.onEditingRouteChanged(s.first),
+                style: const ButtonStyle(
+                    visualDensity: VisualDensity.compact),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  widget.editingRouteId == 'B'
+                      ? (event.routeB?.label ?? 'non creato')
+                      : event.labelRouteA,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      color: AppColors.textPrimary, fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Icon(Icons.flag_circle_outlined,
+                  size: 14,
+                  color: event.isRouteBActive
+                      ? AppColors.warning
+                      : AppColors.success),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  'Attivo per la gara: Percorso ${event.activeRouteId} — '
+                  '${event.activeLabel}',
+                  style: TextStyle(
+                    color: event.isRouteBActive
+                        ? AppColors.warning
+                        : AppColors.success,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (event.lastRouteChangeAt != null) ...[
+            const SizedBox(height: 2),
+            Text(
+              'Ultimo cambio: '
+              '${event.lastRouteChangeAt!.day.toString().padLeft(2, '0')}/'
+              '${event.lastRouteChangeAt!.month.toString().padLeft(2, '0')}/'
+              '${event.lastRouteChangeAt!.year} — '
+              '${event.routeChangeLog.last.changedByName}',
+              style: const TextStyle(
+                  color: AppColors.textSecondary, fontSize: 11),
+            ),
+          ],
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: event.routeB == null
+                      ? null
+                      : () => _activateRoute(
+                          event.isRouteBActive ? 'A' : 'B'),
+                  icon: Icon(event.isRouteBActive
+                      ? Icons.u_turn_left
+                      : Icons.swap_horiz),
+                  label: Text(event.isRouteBActive
+                      ? 'Torna al percorso principale'
+                      : 'Attiva percorso alternativo'),
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(0, 44),
+                    foregroundColor: AppColors.accent,
+                    side: const BorderSide(color: AppColors.accent),
+                  ),
+                ),
+              ),
+              if (event.routeB != null) ...[
+                const SizedBox(width: 8),
+                IconButton(
+                  tooltip: 'Elimina percorso alternativo',
+                  icon: const Icon(Icons.delete_outline,
+                      color: AppColors.error, size: 20),
+                  onPressed: widget.onDeleteRouteB,
+                ),
+              ],
+            ],
+          ),
+          if (event.routeChangeLog.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            InkWell(
+              onTap: () => _showRouteChangeLog(context, event),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Text(
+                  'Storico cambi percorso (${event.routeChangeLog.length})',
+                  style: const TextStyle(
+                      color: AppColors.accent,
+                      fontSize: 11,
+                      decoration: TextDecoration.underline),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  void _showRouteChangeLog(BuildContext context, EventModel event) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: const Text('Storico cambi percorso',
+            style: TextStyle(color: AppColors.textPrimary)),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView(
+            shrinkWrap: true,
+            children: event.routeChangeLog.reversed.map((e) {
+              final d = e.timestamp;
+              final ts = '${d.day.toString().padLeft(2, '0')}/'
+                  '${d.month.toString().padLeft(2, '0')}/${d.year} '
+                  '${d.hour.toString().padLeft(2, '0')}:'
+                  '${d.minute.toString().padLeft(2, '0')}';
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Text(
+                  '$ts — ${e.changedByName}: ${e.fromRouteId} → ${e.toRouteId}',
+                  style: const TextStyle(
+                      color: AppColors.textSecondary, fontSize: 12),
+                ),
+              );
+            }).toList(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Chiudi'),
+          ),
+        ],
+      ),
+    );
   }
 
   // ── Geometry helpers ───────────────────────────────────────────────────────
@@ -916,13 +1444,25 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
 
   // ── Fuel point ─────────────────────────────────────────────────────────────
 
+  /// Ricostruisce [widget.event] scrivendo su RouteA o su `routeB` a
+  /// seconda della variante in editing — stesso principio di
+  /// `SpecialsEditorScreen._buildUpdatedEvent`.
+  EventModel _withEditingFuelPoint(WaypointModel? fuelPoint,
+          {bool clear = false}) =>
+      widget.editingRouteId == 'B'
+          ? widget.event.copyWith(
+              routeB: widget.event.routeB!
+                  .copyWith(fuelPoint: fuelPoint, clearFuelPoint: clear))
+          : widget.event.copyWith(
+              fuelPointRouteA: fuelPoint, clearFuelPointRouteA: clear);
+
   Future<void> _showFuelPointDialog() async {
     final pts = widget.parsedTrack?.points ?? [];
     final result = await showDialog<LatLng>(
       context: context,
       builder: (_) => _FuelPointDialog(
         trackPoints: pts,
-        initial: widget.event.fuelPoint?.latLng,
+        initial: _editingVariant?.fuelPoint?.latLng,
       ),
     );
     if (result == null || !mounted) return;
@@ -936,7 +1476,7 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
     try {
       await ref
           .read(firestoreServiceProvider)
-          .updateEvent(widget.event.copyWith(fuelPoint: wp));
+          .updateEvent(_withEditingFuelPoint(wp));
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -951,7 +1491,7 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
     try {
       await ref
           .read(firestoreServiceProvider)
-          .updateEvent(widget.event.copyWith(clearFuelPoint: true));
+          .updateEvent(_withEditingFuelPoint(null, clear: true));
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -965,17 +1505,17 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
   // ── Map widget ─────────────────────────────────────────────────────────────
 
   Widget _mapWidget() {
-    if (widget.parsedTrack != null) {
+    final variant = _editingVariant;
+    if (widget.parsedTrack != null && variant != null) {
       return TrackMapScreen(
         trackPoints: widget.parsedTrack!.points,
-        specials: widget.event.speciali,
+        specials: variant.speciali,
         waypoints: [
           ...widget.parsedTrack!.waypoints,
-          ...widget.event.speciali
-              .expand((s) => [s.waypointInizio, s.waypointFine]),
+          ...variant.speciali.expand((s) => [s.waypointInizio, s.waypointFine]),
         ],
-        fuelPoint: widget.event.fuelPoint,
-        dangerPoints: widget.event.dangerPoints,
+        fuelPoint: variant.fuelPoint,
+        dangerPoints: variant.dangerPoints,
         interactive: true,
       );
     }
@@ -1031,10 +1571,49 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
   Widget _buildControlsColumn() {
     final parsedTrack = widget.parsedTrack;
     final event = widget.event;
+    final variant = _editingVariant;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        _buildRouteVariantPanel(event),
+        const SizedBox(height: 16),
+        if (variant == null) ...[
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppColors.cardBackground,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  'Il percorso alternativo non esiste ancora per questo '
+                  'evento.',
+                  style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                ),
+                const SizedBox(height: 12),
+                ElevatedButton.icon(
+                  onPressed: () => widget.onCreateRouteB(false),
+                  icon: const Icon(Icons.add_road),
+                  label: const Text('Crea percorso alternativo'),
+                  style:
+                      ElevatedButton.styleFrom(minimumSize: const Size(0, 48)),
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: () => widget.onCreateRouteB(true),
+                  icon: const Icon(Icons.content_copy),
+                  label: const Text('Copia dal percorso A come base'),
+                  style:
+                      OutlinedButton.styleFrom(minimumSize: const Size(0, 48)),
+                ),
+              ],
+            ),
+          ),
+        ] else ...[
         // ── Track actions ──
         ElevatedButton.icon(
           onPressed: parsedTrack != null ? widget.onManageSpecials : null,
@@ -1098,7 +1677,7 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
         const SizedBox(height: 16),
         _SectionLabel('Punto ristoro'),
         const SizedBox(height: 8),
-        if (event.fuelPoint != null) ...[
+        if (variant.fuelPoint != null) ...[
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(
@@ -1113,8 +1692,8 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    '${event.fuelPoint!.lat.toStringAsFixed(5)}, '
-                    '${event.fuelPoint!.lng.toStringAsFixed(5)}',
+                    '${variant.fuelPoint!.lat.toStringAsFixed(5)}, '
+                    '${variant.fuelPoint!.lng.toStringAsFixed(5)}',
                     style: TextStyle(
                         color: Colors.amber.shade200, fontSize: 11),
                   ),
@@ -1146,7 +1725,7 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
           icon: Icon(Icons.local_gas_station,
               color: Colors.amber.shade600, size: 18),
           label: Text(
-            event.fuelPoint != null
+            variant.fuelPoint != null
                 ? 'Modifica punto ristoro'
                 : 'Aggiungi punto ristoro',
             style: TextStyle(color: Colors.amber.shade600),
@@ -1264,7 +1843,7 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
         ),
 
         // ── Specials list ──
-        if (event.speciali.isNotEmpty) ...[
+        if (variant.speciali.isNotEmpty) ...[
           const SizedBox(height: 20),
           Row(
             children: [
@@ -1276,7 +1855,7 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
               if (_totalLength != null) ...[
                 const Spacer(),
                 Text(
-                  '${event.speciali.length} prove',
+                  '${variant.speciali.length} prove',
                   style: const TextStyle(
                       color: AppColors.textSecondary, fontSize: 12),
                 ),
@@ -1284,7 +1863,7 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
             ],
           ),
           const SizedBox(height: 8),
-          ...event.speciali.map((s) {
+          ...variant.speciali.map((s) {
             double? len;
             var dangerCount = 0;
             if (parsedTrack != null && parsedTrack.points.isNotEmpty) {
@@ -1292,10 +1871,11 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
               final b = _ensureTrackIdx(s.waypointFine);
               len = _sectionLength(a, b);
               dangerCount = GpxUtils.countDangerPointsInSpecial(
-                  s, event.dangerPoints, parsedTrack.points);
+                  s, variant.dangerPoints, parsedTrack.points);
             }
             return SpecialTile(special: s, lengthKm: len, dangerCount: dangerCount);
           }),
+        ],
         ],
       ],
     );
@@ -1545,6 +2125,33 @@ class _FuelPointDialogState extends State<_FuelPointDialog> {
 }
 
 // ── Shared widgets ────────────────────────────────────────────────────────────
+
+class _DiffRow extends StatelessWidget {
+  final String label;
+  final String value;
+  const _DiffRow(this.label, this.value);
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(label,
+                style: const TextStyle(
+                    color: AppColors.textSecondary, fontSize: 12)),
+            Flexible(
+              child: Text(value,
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600)),
+            ),
+          ],
+        ),
+      );
+}
 
 class _SectionLabel extends StatelessWidget {
   final String text;

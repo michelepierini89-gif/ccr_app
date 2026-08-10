@@ -63,11 +63,20 @@ class SpecialsEditorScreen extends ConsumerStatefulWidget {
   final ParsedTrack parsedTrack;
   final EventModel event;
 
+  /// Percorso alternativo (10/08/2026) — 'A' o 'B': la variante su cui
+  /// l'editor lavora, SEMPRE quella selezionata nella schermata di gestione
+  /// percorsi (Parte 2), MAI dedotta da `event.activeRouteId` — sono due
+  /// concetti distinti (variante in editing vs variante attiva per la
+  /// gara), tenuti separati per non rischiare di modificare a sua insaputa
+  /// il percorso su cui una gara è già impostata.
+  final String routeId;
+
   const SpecialsEditorScreen({
     super.key,
     required this.eventId,
     required this.parsedTrack,
     required this.event,
+    required this.routeId,
   });
 
   @override
@@ -120,11 +129,29 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
   @override
   void initState() {
     super.initState();
-    _specials = List.from(widget.event.speciali);
-    _dangerPoints = List.from(widget.event.dangerPoints);
-    _speedZones = List.from(widget.event.speedZones);
+    final variant = widget.event.routeVariant(widget.routeId)!;
+    _specials = List.from(variant.speciali);
+    _dangerPoints = List.from(variant.dangerPoints);
+    _speedZones = List.from(variant.speedZones);
     _cachedTotalLength = _computeTotalLength();
   }
+
+  /// Ricostruisce [widget.event] con le liste locali correnti scritte sulla
+  /// variante [widget.routeId] — MAI sull'altra, indipendentemente da quale
+  /// sia `event.activeRouteId` in quel momento.
+  EventModel _buildUpdatedEvent() => widget.routeId == 'B'
+      ? widget.event.copyWith(
+          routeB: widget.event.routeB!.copyWith(
+            speciali: _specials,
+            dangerPoints: _dangerPoints,
+            speedZones: _speedZones,
+          ),
+        )
+      : widget.event.copyWith(
+          specialiRouteA: _specials,
+          dangerPointsRouteA: _dangerPoints,
+          speedZonesRouteA: _speedZones,
+        );
 
   @override
   void dispose() {
@@ -413,10 +440,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
     });
 
     try {
-      final updated = widget.event.copyWith(
-          speciali: _specials,
-          dangerPoints: _dangerPoints,
-          speedZones: _speedZones);
+      final updated = _buildUpdatedEvent();
       await ref.read(firestoreServiceProvider).updateEvent(updated);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -441,10 +465,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
   Future<void> _save() async {
     setState(() => _isSaving = true);
     try {
-      final updated = widget.event.copyWith(
-          speciali: _specials,
-          dangerPoints: _dangerPoints,
-          speedZones: _speedZones);
+      final updated = _buildUpdatedEvent();
       await ref.read(firestoreServiceProvider).updateEvent(updated);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1019,7 +1040,24 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
-        title: const Text('Gestisci Speciali'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Gestisci Speciali'),
+            Text(
+              'In modifica: Percorso ${widget.routeId} — '
+              '${widget.event.routeVariant(widget.routeId)?.label ?? ''}'
+              '${widget.routeId == widget.event.activeRouteId ? ' (attivo per la gara)' : ''}',
+              style: TextStyle(
+                fontSize: 11,
+                color: widget.routeId == widget.event.activeRouteId
+                    ? AppColors.success
+                    : AppColors.warning,
+              ),
+            ),
+          ],
+        ),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => context.pop(),

@@ -8,6 +8,7 @@ enum NotificationType {
   specialEntry,
   cpDisputeAccepted,
   cpDisputeRejected,
+  routeChanged,
 }
 
 class AppNotificationModel {

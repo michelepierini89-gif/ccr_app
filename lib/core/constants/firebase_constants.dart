@@ -25,4 +25,12 @@ class FirebaseConstants {
   // salvataggio (catturato dal catch generico attorno alla chiamata) —
   // vedi FirestoreService.saveFullPilotTrack/getFullPilotTrack.
   static const String fullTrackChunks = 'fullTrackChunks';
+  // Percorso alternativo (10/08/2026, Parte 5) — mappa pubblica (tutti gli
+  // autenticati, come 'passages') userId -> routeVariantId ('A'/'B'),
+  // scritta una sola volta da GpsService.startRecording. Serve perché
+  // tracking/{eventId}/pilots/{userId} resta leggibile solo da admin e dal
+  // proprietario (privacy posizione live) — la classifica invece deve
+  // poter risolvere la variante di OGNI pilota anche quando la guarda un
+  // altro pilota, non solo l'admin.
+  static const String routeVariantByUser = 'routeVariantByUser';
 }

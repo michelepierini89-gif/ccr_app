@@ -3,6 +3,7 @@ import '../models/classifica_model.dart';
 import '../models/championship_model.dart';
 import '../models/penalty_settings_model.dart';
 import '../models/registration_model.dart';
+import '../models/route_variant_model.dart';
 import '../models/team_model.dart';
 import '../models/gps_point_model.dart';
 
@@ -23,6 +24,13 @@ class ClassificaEngine {
     // dai passaggi live).
     Map<String, Map<String, OfficialSpecialTime>> officialTimesByUserId =
         const {},
+    // Percorso alternativo (10/08/2026, Parte 5) — userId -> 'A'/'B', letto
+    // dal campo `routeVariantId` di ciascun tracking pilota (mai da
+    // `event.activeRouteId`): garantisce che il cambio di percorso attivo
+    // DOPO una gara, anche per errore, non alteri i tempi già corsi. Un
+    // userId assente (pilota che ha corso prima dell'introduzione di
+    // questo campo) ricade su 'A'.
+    Map<String, String> routeVariantByUserId = const {},
   }) {
     final approvedRegs =
         registrations.where((r) => r.stato == RegistrationStatus.approvato).toList();
@@ -80,6 +88,7 @@ class ClassificaEngine {
           .map((uid) => retiredReasonMap[uid])
           .where((r) => r != null)
           .firstOrNull;
+      final teamRoute = _resolveEntryRoute(memberIds, routeVariantByUserId);
       rawEntries.add(_RawEntry(
         entryId: teamId,
         teamNome: teamModel?.nome ?? teamRegs.firstOrNull?.teamName ?? teamId,
@@ -92,6 +101,8 @@ class ClassificaEngine {
         isLive: isLive,
         retiredReason: teamRetiredReason,
         memberIds: memberIds,
+        routeIdUsed: teamRoute.routeId,
+        mixedRouteVariants: teamRoute.mixed,
       ));
     }
 
@@ -114,12 +125,20 @@ class ClassificaEngine {
         isLive: liveUserIds.contains(reg.userId),
         retiredReason: retiredReasonMap[reg.userId],
         memberIds: {reg.userId},
+        routeIdUsed: routeVariantByUserId[reg.userId] ?? 'A',
+        mixedRouteVariants: false,
       ));
     }
 
-    // PASSO 1: calcola i tempi reali per tutte le entry.
+    // PASSO 1: calcola i tempi reali per tutte le entry — Parte 5: SEMPRE
+    // sulla variante con cui l'entry ha corso (e.routeIdUsed, risolta sopra
+    // dal tracking dei piloti), MAI su event.activeSpeciali. Se 'B' è stata
+    // corsa e poi cancellata dall'admin, ricade su A (routeVariant torna
+    // null) piuttosto che rompere il calcolo — caso limite, non la
+    // preoccupazione principale di questa Parte.
     var computed = rawEntries.map((e) {
-      final speciali = _computeSpeciali(event, e.passages,
+      final variant = event.routeVariant(e.routeIdUsed) ?? event.routeAAsVariant;
+      final speciali = _computeSpeciali(variant, e.passages,
           e.speedZoneViolations, penalties, e.memberIds, officialTimesByUserId);
       final cpTotale = speciali.fold(Duration.zero, (acc, s) => acc + s.tempo);
       final ritiroPenaltySeconds =
@@ -135,11 +154,14 @@ class ClassificaEngine {
         tempoTotale: tempoTotale,
         ritiroPenaltySeconds: ritiroPenaltySeconds,
         pilotiMancantiPenaltySeconds: pilotiMancantiPenaltySeconds,
+        totaleSpeciali: variant.specialiAttiveCount,
       );
     }).toList();
 
-    final specialiValide =
-        event.speciali.where((s) => !s.annullata).length;
+    // Riferimento per la base forfettaria (PASSO 2) — resta sul percorso
+    // ATTIVO dell'evento: maxRaceTimeMinutes è un'impostazione a livello
+    // evento, non per variante, quindi non ha senso renderla per-entry.
+    final specialiValide = event.activeSpeciali.where((s) => !s.annullata).length;
 
     // PASSO 2: penalità forfettaria PS saltate O non rilevate = peggiore
     // tempo registrato tra tutti i piloti per quella PS + 30 minuti (Fix 3,
@@ -184,27 +206,28 @@ class ClassificaEngine {
           tempoTotale: tempoTotale2,
           ritiroPenaltySeconds: c.ritiroPenaltySeconds,
           pilotiMancantiPenaltySeconds: c.pilotiMancantiPenaltySeconds,
+          totaleSpeciali: c.totaleSpeciali,
         );
       }).toList();
     }
 
     if (event.tipologiaClassifica == TipologiaClassifica.punteggioSpeciale) {
-      return _rankByPoints(computed, event, penalties);
+      return _rankByPoints(computed, penalties);
     }
-    return _rankByTime(computed, specialiValide);
+    return _rankByTime(computed);
   }
 
   static List<SpecialTempo> _computeSpeciali(
-      EventModel event,
+      RouteVariantModel variant,
       List<WaypointPassageRecord> passages,
       List<SpeedZoneViolation> speedZoneViolations,
       PenaltySettingsModel penalties,
       Set<String> memberIds,
       Map<String, Map<String, OfficialSpecialTime>> officialTimesByUserId) {
-    final zoneById = {for (final z in event.speedZones) z.id: z};
+    final zoneById = {for (final z in variant.speedZones) z.id: z};
     final result = <SpecialTempo>[];
     for (final special
-        in event.speciali..sort((a, b) => a.ordine.compareTo(b.ordine))) {
+        in variant.speciali..sort((a, b) => a.ordine.compareTo(b.ordine))) {
       if (special.annullata) continue;
       final iniP = passages
           .where((p) => p.waypointId == special.waypointInizio.id)
@@ -381,17 +404,19 @@ class ClassificaEngine {
               Duration tempoTotale,
               int ritiroPenaltySeconds,
               int pilotiMancantiPenaltySeconds,
+              int totaleSpeciali,
             })>
         computed,
-    int totaleSpeciali,
   ) {
     final sorted = [...computed];
     sorted.sort((a, b) {
       if (a.entry.ritirato != b.entry.ritirato) {
         return a.entry.ritirato ? 1 : -1;
       }
-      final aFin = a.speciali.length == totaleSpeciali;
-      final bFin = b.speciali.length == totaleSpeciali;
+      // Parte 5 — totaleSpeciali è per-entry (variante con cui ha corso),
+      // non un unico valore condiviso da tutto l'evento.
+      final aFin = a.speciali.length == a.totaleSpeciali;
+      final bFin = b.speciali.length == b.totaleSpeciali;
       if (aFin != bFin) return aFin ? -1 : 1;
       if (aFin) return a.tempoTotale.compareTo(b.tempoTotale);
       // Both not finished: sort by specials completed desc, then time asc
@@ -423,7 +448,7 @@ class ClassificaEngine {
         teamNome: c.entry.teamNome,
         membriNomi: c.entry.membriNomi,
         specialiCompletati: c.speciali,
-        totaleSpeciali: totaleSpeciali,
+        totaleSpeciali: c.totaleSpeciali,
         tempoTotale: c.tempoTotale,
         punteggioTotale: myPos > 0 ? pointsForPosition(myPos) : 0,
         posizione: myPos,
@@ -434,6 +459,8 @@ class ClassificaEngine {
         pilotiMancantiPenaltySeconds: c.pilotiMancantiPenaltySeconds,
         isLive: c.entry.isLive,
         retiredReason: c.entry.ritirato ? c.entry.retiredReason : null,
+        routeIdUsed: c.entry.routeIdUsed,
+        mixedRouteVariants: c.entry.mixedRouteVariants,
       );
     }).toList();
   }
@@ -538,25 +565,32 @@ class ClassificaEngine {
               Duration tempoTotale,
               int ritiroPenaltySeconds,
               int pilotiMancantiPenaltySeconds,
+              int totaleSpeciali,
             })>
         computed,
-    EventModel event,
     PenaltySettingsModel penalties,
   ) {
-    // Assign points per special
+    // Assign points per special. Parte 5 — gli id delle speciali si
+    // ricavano da [computed] (già risolto per-entry sulla propria
+    // variante), non più da `event.speciali`: se tutte le entry hanno
+    // corso sulla stessa variante (caso normale) il risultato è identico a
+    // prima; nel caso anomalo di varianti miste, ogni gruppo di speciali
+    // con lo stesso id si confronta comunque solo al proprio interno,
+    // senza mischiare id che non esistono per un'altra variante.
     final pointsMap = <String, int>{};
     for (final c in computed) {
       pointsMap[c.entry.entryId] = 0;
     }
 
-    for (final special in event.speciali) {
-      if (special.annullata) continue;
+    final specialeIds =
+        computed.expand((c) => c.speciali.map((s) => s.specialeId)).toSet();
+    for (final specialeId in specialeIds) {
       final completions = computed
-          .where((c) => c.speciali.any((s) => s.specialeId == special.id))
+          .where((c) => c.speciali.any((s) => s.specialeId == specialeId))
           .map((c) => (
                 id: c.entry.entryId,
                 tempo: c.speciali
-                    .firstWhere((s) => s.specialeId == special.id)
+                    .firstWhere((s) => s.specialeId == specialeId)
                     .tempo,
               ))
           .toList()
@@ -597,7 +631,7 @@ class ClassificaEngine {
         teamNome: c.entry.teamNome,
         membriNomi: c.entry.membriNomi,
         specialiCompletati: c.speciali,
-        totaleSpeciali: event.speciali.where((s) => !s.annullata).length,
+        totaleSpeciali: c.totaleSpeciali,
         tempoTotale: c.tempoTotale,
         punteggioTotale: pts,
         posizione: myPos,
@@ -608,6 +642,8 @@ class ClassificaEngine {
         pilotiMancantiPenaltySeconds: c.pilotiMancantiPenaltySeconds,
         isLive: c.entry.isLive,
         retiredReason: c.entry.ritirato ? c.entry.retiredReason : null,
+        routeIdUsed: c.entry.routeIdUsed,
+        mixedRouteVariants: c.entry.mixedRouteVariants,
       );
     }).toList();
   }
@@ -625,6 +661,8 @@ class _RawEntry {
   final bool isLive;
   final String? retiredReason;
   final Set<String> memberIds;
+  final String routeIdUsed;
+  final bool mixedRouteVariants;
 
   _RawEntry({
     required this.entryId,
@@ -638,5 +676,18 @@ class _RawEntry {
     required this.isLive,
     this.retiredReason,
     required this.memberIds,
+    required this.routeIdUsed,
+    required this.mixedRouteVariants,
   });
+}
+
+/// Percorso alternativo — risolve la variante di UNA entry (team o solo) a
+/// partire dalle variant dei suoi membri: se concordano, quella; se
+/// discordano (errore di gestione admin, non dovrebbe accadere), quella del
+/// primo membro con [mixed] = true, così il chiamante può segnalarlo.
+({String routeId, bool mixed}) _resolveEntryRoute(
+    Set<String> memberIds, Map<String, String> byUser) {
+  final ids = memberIds.map((m) => byUser[m] ?? 'A').toSet();
+  final first = byUser[memberIds.first] ?? 'A';
+  return (routeId: first, mixed: ids.length > 1);
 }

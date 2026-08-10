@@ -214,16 +214,16 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
           );
         }
 
-        if (event.trackUrl != null &&
+        if (event.activeTrackUrl != null &&
             _parsedTrack == null &&
-            _loadedTrackUrl != event.trackUrl &&
+            _loadedTrackUrl != event.activeTrackUrl &&
             !_isLoadingTrack) {
           WidgetsBinding.instance
-              .addPostFrameCallback((_) => _autoLoadTrack(event.trackUrl!));
+              .addPostFrameCallback((_) => _autoLoadTrack(event.activeTrackUrl!));
         }
 
         final trackPoints = _parsedTrack?.points ?? const [];
-        final showMap = event.speciali.isNotEmpty || event.trackUrl != null;
+        final showMap = event.activeSpeciali.isNotEmpty || event.activeTrackUrl != null;
 
         return Scaffold(
           backgroundColor: AppColors.background,
@@ -242,8 +242,8 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
                 _parsedTrack = null;
                 _loadedTrackUrl = null;
               });
-              if (event.trackUrl != null) {
-                await _autoLoadTrack(event.trackUrl!);
+              if (event.activeTrackUrl != null) {
+                await _autoLoadTrack(event.activeTrackUrl!);
               }
             },
             child: SingleChildScrollView(
@@ -251,6 +251,15 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
               child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // Percorso alternativo (10/08/2026, Parte 4) — se è attiva
+                // la variante B, il pilota deve capirlo SENZA doverlo
+                // cercare: banner ben visibile in cima, prima di qualunque
+                // altro contenuto.
+                if (event.isRouteBActive)
+                  _RouteBActiveBanner(
+                    label: event.activeLabel,
+                    changedAt: event.lastRouteChangeAt,
+                  ),
                 // Event header
                 Container(
                   color: AppColors.cardBackground,
@@ -331,20 +340,20 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
                           height: 220,
                           child: TrackMapScreen(
                             trackPoints: trackPoints,
-                            specials: event.speciali,
-                            waypoints: event.speciali
+                            specials: event.activeSpeciali,
+                            waypoints: event.activeSpeciali
                                 .expand((s) =>
                                     [s.waypointInizio, s.waypointFine])
                                 .toList(),
-                            fuelPoint: event.fuelPoint,
-                            dangerPoints: event.dangerPoints,
+                            fuelPoint: event.activeFuelPoint,
+                            dangerPoints: event.activeDangerPoints,
                           ),
                         ),
                   const Divider(height: 1, color: AppColors.border),
                 ],
 
                 // Specials
-                if (event.speciali.isNotEmpty) ...[
+                if (event.activeSpeciali.isNotEmpty) ...[
                   Padding(
                     padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
                     child: const Text(
@@ -359,12 +368,12 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     child: Column(
-                      children: event.speciali.map((s) {
+                      children: event.activeSpeciali.map((s) {
                         final kmLen = _specialLengthKm(s, trackPoints);
                         final cpCount = s.controlPoints.length;
                         final dangerCount = trackPoints.isNotEmpty
                             ? GpxUtils.countDangerPointsInSpecial(
-                                s, event.dangerPoints, trackPoints)
+                                s, event.activeDangerPoints, trackPoints)
                             : 0;
                         return Container(
                           margin: const EdgeInsets.only(bottom: 8),
@@ -1513,6 +1522,50 @@ class _StepDot extends StatelessWidget {
                     color: active ? Colors.white : AppColors.textSecondary,
                     fontWeight: FontWeight.bold,
                     fontSize: 12)),
+      ),
+    );
+  }
+}
+
+/// Percorso alternativo (10/08/2026, Parte 4) — banner ben visibile in cima
+/// alla pagina evento quando è attiva la variante B, con label e data
+/// dell'ultimo cambio: il pilota deve capirlo subito, senza cercarlo nella
+/// mappa o nell'elenco speciali.
+class _RouteBActiveBanner extends StatelessWidget {
+  final String label;
+  final DateTime? changedAt;
+  const _RouteBActiveBanner({required this.label, this.changedAt});
+
+  @override
+  Widget build(BuildContext context) {
+    final dateLabel = changedAt == null
+        ? ''
+        : ' — cambiato il '
+            '${changedAt!.day.toString().padLeft(2, '0')}/'
+            '${changedAt!.month.toString().padLeft(2, '0')}/'
+            '${changedAt!.year} alle '
+            '${changedAt!.hour.toString().padLeft(2, '0')}:'
+            '${changedAt!.minute.toString().padLeft(2, '0')}';
+    return Container(
+      width: double.infinity,
+      color: AppColors.warning.withValues(alpha: 0.15),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        children: [
+          const Icon(Icons.warning_amber_rounded,
+              color: AppColors.warning, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Percorso modificato: la manifestazione si svolgerà sul '
+              '$label.$dateLabel',
+              style: const TextStyle(
+                  color: AppColors.warning,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13),
+            ),
+          ),
+        ],
       ),
     );
   }

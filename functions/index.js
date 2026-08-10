@@ -164,6 +164,57 @@ exports.onStartEnabled = onDocumentUpdated(
   }
 );
 
+// ── Trigger 3b: percorso alternativo attivato/disattivato (10/08/2026) ──────
+// Stesso pattern di onStartEnabled: reagisce al cambio di un campo su
+// events/{eventId}, notifica tutti gli iscritti approvati. Il client scrive
+// SOLO activeRouteId (+ routeChangeLog) su Firestore — nessuna chiamata FCM
+// diretta dal client, che non ha le credenziali per farlo.
+exports.onRouteChanged = onDocumentUpdated(
+  {
+    document: 'events/{eventId}',
+    region: 'europe-west1',
+  },
+  async (event) => {
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+    if (!before || !after) return;
+
+    const beforeRoute = before.activeRouteId ?? 'A';
+    const afterRoute = after.activeRouteId ?? 'A';
+    if (beforeRoute === afterRoute) return;
+
+    const { eventId } = event.params;
+    const eventName = after.nome ?? 'evento';
+    const label = afterRoute === 'B'
+      ? (after.routeB?.label ?? 'Percorso alternativo')
+      : (after.routeALabel ?? 'Percorso principale');
+    const db = getFirestore();
+
+    const regsSnap = await db
+      .collection('events').doc(eventId).collection('iscritti')
+      .where('stato', '==', 'approvato')
+      .get();
+    if (regsSnap.empty) return;
+
+    const userDocs = await Promise.all(
+      regsSnap.docs.map((d) => db.collection('users').doc(d.id).get())
+    );
+    const tokens = userDocs.map((d) => d.data()?.fcmToken).filter(Boolean);
+    if (tokens.length === 0) return;
+
+    await getMessaging().sendEachForMulticast({
+      tokens,
+      notification: {
+        title: '🛣️ Percorso modificato',
+        body: `Percorso modificato: la manifestazione si svolgerà sul ${label}. Controlla la mappa aggiornata. (${eventName})`,
+      },
+      data: { type: 'routeChanged', eventId, routeId: afterRoute },
+      android: { priority: 'high' },
+      apns: { payload: { aps: { sound: 'default' } } },
+    });
+  }
+);
+
 // ── Trigger 4: segnalazione CP risolta dall'admin ────────────────────────────
 exports.onCpDisputeResolved = onDocumentUpdated(
   {

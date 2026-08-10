@@ -8,6 +8,8 @@ import '../../../core/models/classifica_model.dart';
 import '../../../core/models/cp_dispute_model.dart';
 import '../../../core/models/event_model.dart';
 import '../../../core/models/registration_model.dart';
+import '../../../core/models/route_variant_model.dart';
+import '../../../core/models/special_model.dart';
 import '../../../core/models/waypoint_model.dart';
 import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
@@ -57,14 +59,17 @@ class _RecalcSkip {
   const _RecalcSkip({required this.pilotName, required this.reason});
 }
 
-/// Carica la traccia GPX/KML di riferimento dell'evento (stessa polyline
-/// usata in gara per costruire le porte virtuali — vedi WaypointDetector).
-Future<List<LatLng>> _loadEventReferenceTrack(EventModel event) async {
-  if (event.trackUrl == null) return [];
+/// Carica la traccia GPX/KML di riferimento di UNA variante di percorso
+/// (stessa polyline usata in gara per costruire le porte virtuali — vedi
+/// WaypointDetector). Percorso alternativo, Parte 5 — parametro
+/// [RouteVariantModel], non più `EventModel`: ogni variante ha il proprio
+/// tracciato.
+Future<List<LatLng>> _loadVariantReferenceTrack(RouteVariantModel variant) async {
+  if (variant.trackUrl == null) return [];
   try {
-    final bytes = await StorageService().downloadTrack(event.trackUrl!);
+    final bytes = await StorageService().downloadTrack(variant.trackUrl!);
     final content = utf8.decode(bytes);
-    return event.trackUrl!.contains('.kml')
+    return variant.trackUrl!.contains('.kml')
         ? GpxParser.parseKml(content).points
         : GpxParser.parseGpx(content).points;
   } catch (_) {
@@ -77,20 +82,47 @@ Future<List<LatLng>> _loadEventReferenceTrack(EventModel event) async {
 /// con [TrackSmoother], riesegue il rilevamento porte virtuali e salva i
 /// tempi ufficiali risultanti — separati dai tempi live, mai sovrascritti.
 /// Ritorna la lista dei confronti live/ufficiale per la UI di riepilogo.
+///
+/// Percorso alternativo, Parte 5 — punto critico: le porte/speciali usate
+/// per ciascun pilota sono SEMPRE quelle della variante con cui ha
+/// effettivamente corso (`routeVariantId` sul suo tracking, scritto da
+/// GpsService.startRecording), MAI `event.activeRouteId` — un cambio di
+/// percorso dopo la gara (anche per errore admin) non deve alterare il
+/// ricalcolo di tempi già corsi. Cache per variante (al più 'A' e 'B') per
+/// non ricostruire le porte/riscaricare il tracciato ad ogni pilota se
+/// condividono la stessa variante, che è il caso normale.
 Future<({List<_OfficialRecalcResult> results, List<_RecalcSkip> skipped})>
     _recalculateOfficialTimes(WidgetRef ref, EventModel event) async {
   final svc = ref.read(firestoreServiceProvider);
-  final referenceTrack = await _loadEventReferenceTrack(event);
-  final specials = event.speciali.where((s) => !s.annullata).toList();
 
-  final gatedBySpecial = <String, (WaypointModel, WaypointModel)>{};
-  for (final s in specials) {
-    final gIni = WaypointDetector.buildGate(s.waypointInizio, referenceTrack);
-    final gFin = WaypointDetector.buildGate(s.waypointFine, referenceTrack);
-    gatedBySpecial[s.id] = (
-      gIni == null ? s.waypointInizio : s.waypointInizio.copyWithGate(gIni),
-      gFin == null ? s.waypointFine : s.waypointFine.copyWithGate(gFin),
-    );
+  final gatesByRoute = <String, Map<String, (WaypointModel, WaypointModel)>>{};
+  final specialsByRoute = <String, List<SpecialModel>>{};
+
+  Future<
+      ({
+        Map<String, (WaypointModel, WaypointModel)> gates,
+        List<SpecialModel> specials,
+      })> resolveForRoute(String routeId) async {
+    final cachedGates = gatesByRoute[routeId];
+    final cachedSpecials = specialsByRoute[routeId];
+    if (cachedGates != null && cachedSpecials != null) {
+      return (gates: cachedGates, specials: cachedSpecials);
+    }
+    final variant = event.routeVariant(routeId) ?? event.routeAAsVariant;
+    final referenceTrack = await _loadVariantReferenceTrack(variant);
+    final specials = variant.speciali.where((s) => !s.annullata).toList();
+    final gated = <String, (WaypointModel, WaypointModel)>{};
+    for (final s in specials) {
+      final gIni = WaypointDetector.buildGate(s.waypointInizio, referenceTrack);
+      final gFin = WaypointDetector.buildGate(s.waypointFine, referenceTrack);
+      gated[s.id] = (
+        gIni == null ? s.waypointInizio : s.waypointInizio.copyWithGate(gIni),
+        gFin == null ? s.waypointFine : s.waypointFine.copyWithGate(gFin),
+      );
+    }
+    gatesByRoute[routeId] = gated;
+    specialsByRoute[routeId] = specials;
+    return (gates: gated, specials: specials);
   }
 
   final regs = await svc.getRegistrationsOnce(event.id);
@@ -102,6 +134,12 @@ Future<({List<_OfficialRecalcResult> results, List<_RecalcSkip> skipped})>
   final skipped = <_RecalcSkip>[];
 
   for (final reg in approved) {
+    final pilotStatus = await svc.getPilotStatusOnce(event.id, reg.userId);
+    final routeId = pilotStatus?['routeVariantId'] as String? ?? 'A';
+    final resolved = await resolveForRoute(routeId);
+    final gatedBySpecial = resolved.gates;
+    final specials = resolved.specials;
+
     final samples = await svc.getFullPilotTrack(event.id, reg.userId);
     if (samples.isEmpty) {
       skipped.add(_RecalcSkip(
@@ -501,8 +539,16 @@ class _AdminTimingView extends ConsumerWidget {
       );
     }
 
+    // Percorso alternativo, Parte 5 — non dovrebbe accadere (il cambio
+    // percorso è bloccato a gara iniziata, vedi Parte 3), ma un errore di
+    // gestione admin potrebbe comunque produrre registrazioni su varianti
+    // diverse nello stesso evento: segnalarlo chiaramente, le classifiche
+    // non sarebbero confrontabili.
+    final mixedEntries = entries.where((e) => e.mixedRouteVariants).toList();
+
     return Column(
       children: [
+        if (mixedEntries.isNotEmpty) _MixedRouteVariantsBanner(entries: mixedEntries),
         _CpDisputesBanner(eventId: eventId),
         Container(
           color: AppColors.cardBackground,
@@ -543,6 +589,37 @@ class _AdminTimingView extends ConsumerWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+// ── Percorso alternativo — avviso varianti miste (admin) ────────────────────────
+
+class _MixedRouteVariantsBanner extends StatelessWidget {
+  final List<ClassificaEntry> entries;
+  const _MixedRouteVariantsBanner({required this.entries});
+
+  @override
+  Widget build(BuildContext context) {
+    final names = entries.map((e) => e.teamNome).join(', ');
+    return Container(
+      width: double.infinity,
+      color: AppColors.error.withValues(alpha: 0.12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: Row(
+        children: [
+          const Icon(Icons.error_outline, color: AppColors.error, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Varianti di percorso miste tra i membri di: $names. '
+              'Le classifiche di questi team non sono confrontabili con '
+              'le altre — verifica manualmente.',
+              style: const TextStyle(color: AppColors.error, fontSize: 12),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

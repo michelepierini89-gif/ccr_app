@@ -7,6 +7,8 @@ import 'package:latlong2/latlong.dart';
 import 'package:share_plus/share_plus.dart';
 import '../../../core/models/event_model.dart';
 import '../../../core/models/registration_model.dart';
+import '../../../core/models/route_variant_model.dart';
+import '../../../core/models/special_model.dart';
 import '../../../core/providers/offline_provider.dart';
 import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
@@ -43,8 +45,12 @@ class _TrackReplayScreenState extends ConsumerState<TrackReplayScreen> {
   double _progress = 0;
 
   List<RawTrackSample>? _samples;
-  EventModel? _loadedEvent;
   List<LatLng> _referenceTrack = [];
+  // Percorso alternativo, Parte 5 — le speciali della variante RISOLTA per
+  // questo replay (pilota specifico se sorgente Firestore, altrimenti
+  // variante attiva) — mai `event.activeSpeciali` qui, per lo stesso
+  // motivo di _referenceTrack.
+  List<SpecialModel> _loadedSpecials = [];
   List<ReplayConfigResult>? _results;
   String? _error;
 
@@ -66,12 +72,12 @@ class _TrackReplayScreenState extends ConsumerState<TrackReplayScreen> {
     });
   }
 
-  Future<List<LatLng>> _loadReferenceTrack(EventModel event) async {
-    if (event.trackUrl == null) return [];
+  Future<List<LatLng>> _loadReferenceTrack(RouteVariantModel variant) async {
+    if (variant.trackUrl == null) return [];
     try {
-      final bytes = await StorageService().downloadTrack(event.trackUrl!);
+      final bytes = await StorageService().downloadTrack(variant.trackUrl!);
       final content = utf8.decode(bytes);
-      return event.trackUrl!.contains('.kml')
+      return variant.trackUrl!.contains('.kml')
           ? GpxParser.parseKml(content).points
           : GpxParser.parseGpx(content).points;
     } catch (_) {
@@ -128,10 +134,29 @@ class _TrackReplayScreenState extends ConsumerState<TrackReplayScreen> {
         }
       }
 
+      // Percorso alternativo, Parte 5 — se stiamo rigiocando la traccia di
+      // un pilota specifico (sorgente Firestore), usa la variante con cui
+      // ha REALMENTE corso (letta dal suo tracking), mai quella
+      // attualmente attiva sull'evento — coerente con ricalcolo
+      // ufficiale/classifica. Per CSV/GPX importati non c'è un pilota
+      // associato: si ricade sulla variante attiva, comportamento
+      // preesistente.
+      RouteVariantModel? variant;
+      if (event != null) {
+        if (_source == _ReplaySource.firestore && _selectedUserId != null) {
+          final status =
+              await svc.getPilotStatusOnce(_selectedEventId!, _selectedUserId!);
+          final routeId = status?['routeVariantId'] as String? ?? 'A';
+          variant = event.routeVariant(routeId) ?? event.routeAAsVariant;
+        } else {
+          variant = event.routeVariant(event.activeRouteId) ??
+              event.routeAAsVariant;
+        }
+      }
       final referenceTrack =
-          event != null ? await _loadReferenceTrack(event) : <LatLng>[];
+          variant != null ? await _loadReferenceTrack(variant) : <LatLng>[];
       final specials =
-          event?.speciali.where((s) => !s.annullata).toList() ?? const [];
+          variant?.speciali.where((s) => !s.annullata).toList() ?? const [];
       if (specials.isEmpty) {
         throw Exception(
             'Seleziona anche l\'evento di riferimento (per le speciali e la '
@@ -157,8 +182,8 @@ class _TrackReplayScreenState extends ConsumerState<TrackReplayScreen> {
       if (!mounted) return;
       setState(() {
         _samples = samples;
-        _loadedEvent = event;
         _referenceTrack = referenceTrack;
+        _loadedSpecials = specials;
         _results = results;
       });
     } catch (e) {
@@ -431,18 +456,15 @@ class _TrackReplayScreenState extends ConsumerState<TrackReplayScreen> {
     // rappresentativa del comportamento attuale) — stessa attachGates usata
     // in GpsService, solo per il disegno.
     final gateSegments = <Polyline>[];
-    final event = _loadedEvent;
-    if (event != null) {
-      for (final s in event.speciali.where((s) => !s.annullata)) {
-        for (final wp in [s.waypointInizio, s.waypointFine]) {
-          final gate = WaypointDetector.buildGate(wp, _referenceTrack);
-          if (gate == null) continue;
-          gateSegments.add(Polyline(
-            points: [gate.gateA, gate.gateB],
-            color: Colors.yellow,
-            strokeWidth: 3,
-          ));
-        }
+    for (final s in _loadedSpecials.where((s) => !s.annullata)) {
+      for (final wp in [s.waypointInizio, s.waypointFine]) {
+        final gate = WaypointDetector.buildGate(wp, _referenceTrack);
+        if (gate == null) continue;
+        gateSegments.add(Polyline(
+          points: [gate.gateA, gate.gateB],
+          color: Colors.yellow,
+          strokeWidth: 3,
+        ));
       }
     }
 

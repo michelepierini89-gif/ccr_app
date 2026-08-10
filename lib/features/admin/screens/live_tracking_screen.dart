@@ -112,7 +112,7 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
     final regsAsync = ref.watch(registrationsProvider(widget.eventId));
     final event = ref.watch(eventStreamProvider(widget.eventId)).valueOrNull;
     final startEnabled = event?.startEnabled ?? false;
-    if (event?.trackUrl != null) _loadTrack(event!.trackUrl!);
+    if (event?.activeTrackUrl != null) _loadTrack(event!.activeTrackUrl!);
 
     return StreamBuilder<List<GpsPointModel>>(
       stream: _pilotStream,

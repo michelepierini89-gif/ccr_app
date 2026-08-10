@@ -112,17 +112,25 @@ class _OfflineMapsScreenState extends ConsumerState<OfflineMapsScreen> {
     }
   }
 
-  /// Returns (SW, NE) bounding box with 10 km padding around all special waypoints.
+  /// Returns (SW, NE) bounding box with 10 km padding around all special
+  /// waypoints. Percorso alternativo, Parte 4 — copre SEMPRE l'unione di
+  /// ENTRAMBE le varianti (non solo quella attiva): il cambio di percorso
+  /// può avvenire quando il pilota è già senza connessione, quindi le
+  /// mappe scaricate devono coprire anche il percorso che potrebbe
+  /// diventare attivo dopo.
   (LatLng, LatLng)? _eventBbox(EventModel event) {
     final lats = <double>[];
     final lons = <double>[];
-    for (final s in event.speciali) {
-      if (s.annullata) continue;
-      lats.addAll([s.waypointInizio.lat, s.waypointFine.lat]);
-      lons.addAll([s.waypointInizio.lng, s.waypointFine.lng]);
-      for (final cp in s.controlPoints) {
-        lats.add(cp.lat);
-        lons.add(cp.lng);
+    final variants = [event.routeAAsVariant, if (event.routeB != null) event.routeB!];
+    for (final variant in variants) {
+      for (final s in variant.speciali) {
+        if (s.annullata) continue;
+        lats.addAll([s.waypointInizio.lat, s.waypointFine.lat]);
+        lons.addAll([s.waypointInizio.lng, s.waypointFine.lng]);
+        for (final cp in s.controlPoints) {
+          lats.add(cp.lat);
+          lons.add(cp.lng);
+        }
       }
     }
     if (lats.isEmpty) return null;
@@ -196,7 +204,8 @@ class _OfflineMapsScreenState extends ConsumerState<OfflineMapsScreen> {
                               fontSize: 15)),
                       const SizedBox(height: 4),
                       Text(
-                        '${event.speciali.where((s) => !s.annullata).length} speciali',
+                        '${event.activeSpeciali.where((s) => !s.annullata).length} speciali'
+                        '${event.routeB != null ? ' — copre anche il percorso alternativo' : ''}',
                         style: const TextStyle(
                             color: AppColors.textSecondary, fontSize: 12),
                       ),

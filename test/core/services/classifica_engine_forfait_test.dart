@@ -75,7 +75,7 @@ void main() {
         luogo: 'Test',
         data: baseStart,
         descrizione: '',
-        speciali: [ps1, ps2],
+        specialiRouteA: [ps1, ps2],
         stato: EventStatus.inCorso,
         createdBy: 'admin',
         createdAt: baseStart,

@@ -34,7 +34,7 @@ EventModel _sampleEvent() => EventModel(
       luogo: 'Roma',
       data: DateTime(2026, 9, 1),
       descrizione: 'Descrizione test',
-      speciali: const [],
+      specialiRouteA: const [],
       stato: EventStatus.aperto,
       createdBy: 'uid-admin',
       createdAt: DateTime(2026, 1, 1),

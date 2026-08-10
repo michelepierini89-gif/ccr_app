@@ -83,7 +83,7 @@ class _CreateEventScreenState extends ConsumerState<CreateEventScreen> {
         luogo: _luogoCtrl.text.trim(),
         data: _selectedDate,
         descrizione: _descrizioneCtrl.text.trim(),
-        speciali: const [],
+        specialiRouteA: const [],
         stato: EventStatus.bozza,
         createdBy: uid,
         createdAt: DateTime.now(),

@@ -462,10 +462,10 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     _eventTrackLoaded = true;
     try {
       final event = await ref.read(eventProvider(eid).future);
-      if (event?.trackUrl == null || !mounted) return;
-      final bytes = await StorageService().downloadTrack(event!.trackUrl!);
+      if (event?.activeTrackUrl == null || !mounted) return;
+      final bytes = await StorageService().downloadTrack(event!.activeTrackUrl!);
       final content = utf8.decode(bytes);
-      final pts = event.trackUrl!.contains('.kml')
+      final pts = event.activeTrackUrl!.contains('.kml')
           ? GpxParser.parseKml(content).points
           : GpxParser.parseGpx(content).points;
       if (mounted) setState(() => _eventTrackPoints = pts);
@@ -517,7 +517,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     final thresholdMeters = metersPerPixel * 50;
     final points = <LatLng>[];
     final markers = <Marker>[];
-    for (final s in event.speciali) {
+    for (final s in event.activeSpeciali) {
       if (s.annullata) continue;
       for (final entry in [
         (s.waypointInizio.latLng, true),
@@ -631,7 +631,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
       final event = await ref.read(eventProvider(widget.eventId!).future);
       final waypoints = <WaypointModel>[];
       if (event != null) {
-        for (final s in event.speciali) {
+        for (final s in event.activeSpeciali) {
           waypoints.add(s.waypointInizio);
           waypoints.addAll(s.controlPoints);
           waypoints.add(s.waypointFine);
@@ -641,11 +641,16 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         eventId: widget.eventId!,
         userId: user.uid,
         waypoints: waypoints,
-        specials: event?.speciali ?? [],
-        fuelPoints: event?.fuelPoint != null ? [event!.fuelPoint!] : [],
-        dangerPoints: event?.dangerPoints ?? [],
-        speedZones: event?.speedZones ?? [],
+        specials: event?.activeSpeciali ?? [],
+        fuelPoints:
+            event?.activeFuelPoint != null ? [event!.activeFuelPoint!] : [],
+        dangerPoints: event?.activeDangerPoints ?? [],
+        speedZones: event?.activeSpeedZones ?? [],
         referenceTrack: _eventTrackPoints,
+        // Percorso alternativo, Parte 5 — la variante ATTIVA in questo
+        // preciso momento (START), persistita sul tracking del pilota:
+        // eventuali cambi successivi dell'admin non la toccheranno più.
+        routeVariantId: event?.activeRouteId ?? 'A',
       );
       setState(() => _followMode = true);
     } catch (e) {
@@ -899,6 +904,16 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         ),
         if (!canStart)
           _WaitingBanner(),
+        // Percorso alternativo, Parte 4 — se il percorso è cambiato nelle
+        // ultime 24h, avviso a ricontrollare la mappa prima di partire
+        // (indipendentemente da quale variante sia ora attiva: il punto è
+        // che è CAMBIATA di recente, non quale sia il verso del cambio).
+        if (event != null &&
+            event.lastRouteChangeAt != null &&
+            DateTime.now().difference(event.lastRouteChangeAt!) <
+                const Duration(hours: 24))
+          _RouteChangedRecentlyBanner(
+              label: event.activeLabel, changedAt: event.lastRouteChangeAt!),
         if (isUnderSized)
           _UnderSizedTeamBanner(
             present: approvedTeamCount,
@@ -1449,10 +1464,10 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
 
         // Banner punto ristoro: appare quando il pilota è entro 200m e non
         // l'ha ancora superato (gps.passedFuelPoints persiste anche in background)
-        if (event?.fuelPoint != null &&
-            !gps.passedFuelPoints.contains(event!.fuelPoint!.id))
+        if (event?.activeFuelPoint != null &&
+            !gps.passedFuelPoints.contains(event!.activeFuelPoint!.id))
           Builder(builder: (context) {
-            final fuel = event.fuelPoint!;
+            final fuel = event.activeFuelPoint!;
             final distance = LocationUtils.haversineDistance(
                 curPos.latitude, curPos.longitude, fuel.lat, fuel.lng);
             if (distance > 200) return const SizedBox.shrink();
@@ -1578,9 +1593,9 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                   // Zone a velocità controllata: stesso stile della mappa admin —
                   // nessun avviso di violazione qui, il pilota vede solo dove
                   // rallentare, non se l'ha superato (lo scopre in classifica).
-                  if (event != null && event.speedZones.isNotEmpty)
+                  if (event != null && event.activeSpeedZones.isNotEmpty)
                     SpeedZoneLayer(
-                        zones: event.speedZones,
+                        zones: event.activeSpeedZones,
                         trackPoints: _eventTrackPoints),
                   // Pilot's recorded track — colore/larghezza personalizzabili
                   if (gps.localTrack.length >= 2)
@@ -1592,14 +1607,14 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                       ),
                     ]),
                   // PS start/end markers from event specials
-                  if (event != null && event.speciali.isNotEmpty)
+                  if (event != null && event.activeSpeciali.isNotEmpty)
                     MarkerLayer(markers: _buildPsMarkers(event)),
                   // Fuel point marker
-                  if (event?.fuelPoint != null)
+                  if (event?.activeFuelPoint != null)
                     MarkerLayer(markers: [
                       Marker(
-                        point: LatLng(event!.fuelPoint!.lat,
-                            event.fuelPoint!.lng),
+                        point: LatLng(event!.activeFuelPoint!.lat,
+                            event.activeFuelPoint!.lng),
                         width: 40,
                         height: 48,
                         rotate: true,
@@ -1635,9 +1650,9 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                       ),
                     ]),
                   // Danger points — sempre visibili, DangerMarkerIcon
-                  if (event != null && event.dangerPoints.isNotEmpty)
+                  if (event != null && event.activeDangerPoints.isNotEmpty)
                     MarkerLayer(
-                      markers: event.dangerPoints.map((dp) {
+                      markers: event.activeDangerPoints.map((dp) {
                         return Marker(
                           point: dp.latLng,
                           width: 36,
@@ -2086,7 +2101,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
               ),
               // SALTA PS — visibile solo se ci sono speciali non ancora saltate/completate
               if (event != null &&
-                  event.speciali.any((s) => !s.annullata) &&
+                  event.activeSpeciali.any((s) => !s.annullata) &&
                   !allSpecialsDone) ...[
                 const SizedBox(height: 8),
                 SizedBox(
@@ -2514,11 +2529,11 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   }
 
   bool _allSpecialsCompleted(GpsService gps, EventModel? event) {
-    if (event == null || event.speciali.isEmpty) {
+    if (event == null || event.activeSpeciali.isEmpty) {
       return gps.remainingWaypoints.isEmpty;
     }
     return gps.specialEntries.where((e) => e.exitTime != null).length >=
-        event.speciali.length;
+        event.activeSpeciali.length;
   }
 
   static const double _kFineGaraNearStartMeters = 100.0;
@@ -2529,7 +2544,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   /// GARA quando il pilota è tornato al punto di partenza.
   bool _allSpecialsStarted(GpsService gps, EventModel? event) {
     final activeSpecials =
-        event?.speciali.where((s) => !s.annullata) ?? const Iterable.empty();
+        event?.activeSpeciali.where((s) => !s.annullata) ?? const Iterable.empty();
     if (activeSpecials.isEmpty) return false;
     final startedIds = gps.specialEntries.map((e) => e.specialeId).toSet();
     return activeSpecials.every((s) => startedIds.contains(s.id));
@@ -2544,8 +2559,8 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           _eventTrackPoints.first.longitude);
       if (d <= _kFineGaraNearStartMeters) return true;
     }
-    if (event != null && event.speciali.isNotEmpty) {
-      final ps1Start = event.speciali.first.waypointInizio;
+    if (event != null && event.activeSpeciali.isNotEmpty) {
+      final ps1Start = event.activeSpeciali.first.waypointInizio;
       final d = LocationUtils.haversineDistance(
           curPos.latitude, curPos.longitude, ps1Start.lat, ps1Start.lng);
       if (d <= _kFineGaraNearStartMeters) return true;
@@ -2911,6 +2926,41 @@ class _WaitingBanner extends StatelessWidget {
               'In attesa del via dell\'organizzatore',
               style: TextStyle(
                   color: AppColors.warning,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RouteChangedRecentlyBanner extends StatelessWidget {
+  final String label;
+  final DateTime changedAt;
+  const _RouteChangedRecentlyBanner(
+      {required this.label, required this.changedAt});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = '${changedAt.hour.toString().padLeft(2, '0')}:'
+        '${changedAt.minute.toString().padLeft(2, '0')}';
+    return Container(
+      width: double.infinity,
+      color: AppColors.error.withValues(alpha: 0.12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: Row(
+        children: [
+          const Icon(Icons.warning_amber_rounded,
+              color: AppColors.error, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Il percorso è stato cambiato alle $t — è ora in vigore '
+              '"$label". Ricontrolla la mappa prima di partire.',
+              style: const TextStyle(
+                  color: AppColors.error,
                   fontWeight: FontWeight.w600,
                   fontSize: 13),
             ),
