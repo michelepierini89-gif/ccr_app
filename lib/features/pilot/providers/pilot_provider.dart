@@ -29,6 +29,20 @@ final cpDisputesStreamProvider =
   return ref.watch(firestoreServiceProvider).getCpDisputesStream(eventId);
 });
 
+/// Fix 4 (09/08/2026) — SOLO le dispute del pilota corrente per l'evento:
+/// unica query che la regola Firestore (`cp_disputes`) concede a un
+/// pilota non-admin (vedi `FirestoreService.getMyCpDisputesStream`). Usare
+/// SEMPRE questo provider lato pilota, mai [cpDisputesStreamProvider]
+/// (riservato all'admin).
+final myCpDisputesStreamProvider =
+    StreamProvider.family<List<CpDisputeModel>, String>((ref, eventId) {
+  final uid = ref.watch(authStateProvider).valueOrNull?.uid;
+  if (uid == null) return Stream.value(const <CpDisputeModel>[]);
+  return ref
+      .watch(firestoreServiceProvider)
+      .getMyCpDisputesStream(eventId, uid);
+});
+
 final myRegistrationsProvider =
     StreamProvider<List<RegistrationModel>>((ref) async* {
   final user = ref.watch(authStateProvider).valueOrNull;

@@ -620,7 +620,10 @@ class _SpecialRow extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
             ),
           ),
-          if (!special.isInvalidTiming && !special.controlPointsOk)
+          if (!special.isInvalidTiming &&
+              !special.skipped &&
+              !special.notDetected &&
+              !special.controlPointsOk)
             GestureDetector(
               onTap: () => _showMissedCpsDialog(context),
               child: const Padding(
@@ -684,7 +687,18 @@ class _SpecialRow extends StatelessWidget {
         style: style,
       ));
     }
-    if (special.hasTimingWarning) {
+    // Fix 3 (09/08/2026) — dicitura distinta per salto volontario vs
+    // speciale non rilevata (nessun dato GPS reale): "stima recovery"
+    // resta solo dove un recovery reale è avvenuto su dati effettivamente
+    // presenti (hasTimingWarning esclude ormai entrambi i casi sotto).
+    if (special.skipped) {
+      widgets.add(const Text('⏭ Salto volontario — penalità applicata',
+          style: style));
+    } else if (special.notDetected) {
+      widgets.add(const Text(
+          '⚠ Tempo forfettario applicato — speciale non rilevata',
+          style: style));
+    } else if (special.hasTimingWarning) {
       widgets.add(const Text('⚡ stima recovery', style: style));
     }
     return widgets;

@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../utils/time_format_utils.dart';
 import 'event_model.dart';
 
 /// Tabella punti universale per posizione (1-based).
@@ -140,6 +141,14 @@ class SpecialTempo {
   final List<SpeedZoneViolationInfo> speedZoneViolations; // violazioni zona velocità, solo admin
   final int speedZonePenaltySeconds; // quota di penaltySeconds dovuta alle zone velocità
   final bool skipped; // pilota ha saltato volontariamente questa PS
+  // Fix 3 (09/08/2026) — true se questa PS non ha un dato REALE (porta o
+  // raggio) né per l'inizio né per la fine: GpsService non ha trovato
+  // alcun punto GPS di supporto (timingMethod=='forfait' su almeno un
+  // estremo), quindi [tempo] è la stima forfettaria (peggior tempo tra i
+  // piloti + 30 minuti, PASSO 2 di ClassificaEngine.compute), MAI un
+  // tempo interpolato da un dato inesistente. Distinto da [skipped] (salto
+  // volontario esplicito): stessa formula di penalità, dicitura UI diversa.
+  final bool notDetected;
   // Precisione del rilevamento di inizio/fine ('gate'/'radius'/'recovery'),
   // vedi WaypointPassageRecord.timingMethod — mostrato come badge discreto
   // solo lato admin in TimingScreen.
@@ -161,6 +170,7 @@ class SpecialTempo {
     this.rawStartTime,
     this.rawEndTime,
     this.skipped = false,
+    this.notDetected = false,
     this.speedZoneViolations = const [],
     this.speedZonePenaltySeconds = 0,
     this.startTimingMethod = 'radius',
@@ -182,27 +192,26 @@ class SpecialTempo {
         speedZoneViolations: speedZoneViolations,
         speedZonePenaltySeconds: speedZonePenaltySeconds,
         skipped: skipped,
+        notDetected: notDetected,
         startTimingMethod: startTimingMethod,
         endTimingMethod: endTimingMethod,
         isOfficialTime: isOfficialTime,
       );
 
-  String get tempoFormatted {
-    final m = tempo.inMinutes;
-    final s = tempo.inSeconds % 60;
-    final cs = (tempo.inMilliseconds % 1000) ~/ 10;
-    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}.${cs.toString().padLeft(2, '0')}';
-  }
+  String get tempoFormatted => TimeFormatUtils.formatRaceTime(tempo);
 
   /// Tempo PS calcolato da timestamp implausibili (es. recovery corrotto):
   /// non viene mostrato, sostituito dalla penalità massima.
   bool get isInvalidTiming => timingError == 'rilevamento_non_valido';
 
   /// Tempo PS calcolato ma con affidabilità ridotta (fine speciale non
-  /// rilevata, chiusa con stima di recovery o forzata da FINE GARA): il
-  /// tempo resta visibile, ma va segnalato all'admin per un'eventuale
-  /// penalità manuale.
-  bool get hasTimingWarning => timingError != null && !isInvalidTiming;
+  /// rilevata, chiusa con stima di recovery REALE — dati GPS effettivamente
+  /// presenti — o forzata da FINE GARA): il tempo resta visibile, ma va
+  /// segnalato all'admin per un'eventuale penalità manuale. Fix 3 — esclude
+  /// [skipped] e [notDetected], che hanno la propria dicitura dedicata e
+  /// non un tempo calcolato da dati reali.
+  bool get hasTimingWarning =>
+      timingError != null && !isInvalidTiming && !skipped && !notDetected;
 }
 
 class ClassificaEntry {
@@ -244,11 +253,8 @@ class ClassificaEntry {
   bool get hasStarted => specialiCompletati.isNotEmpty || isLive;
 
   String get tempoTotaleFormatted {
-    if (tempoTotale == Duration.zero) return '--:--.--.--';
-    final m = tempoTotale.inMinutes;
-    final s = tempoTotale.inSeconds % 60;
-    final cs = (tempoTotale.inMilliseconds % 1000) ~/ 10;
-    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}.${cs.toString().padLeft(2, '0')}';
+    if (tempoTotale == Duration.zero) return '--:--.--';
+    return TimeFormatUtils.formatRaceTime(tempoTotale);
   }
 }
 

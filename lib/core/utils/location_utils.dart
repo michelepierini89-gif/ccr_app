@@ -59,6 +59,38 @@ class LocationUtils {
     return [east, north];
   }
 
+  /// Distanza minima (metri) tra (pointLat,pointLng) e il SEGMENTO
+  /// [aLat,aLng]->[bLat,bLng] — non solo tra il punto e i suoi estremi.
+  /// Proietta tutto in coordinate locali (vedi [toLocalMeters]) centrate su
+  /// A, calcola la proiezione perpendicolare del punto sul segmento e la
+  /// clampa a [0,1] se cade fuori dagli estremi (Fix 1, checkpoint su
+  /// traiettoria — 09/08/2026).
+  static double distanceToSegmentMeters(
+    double pointLat,
+    double pointLng,
+    double aLat,
+    double aLng,
+    double bLat,
+    double bLng,
+  ) {
+    final p = toLocalMeters(aLat, aLng, pointLat, pointLng);
+    final b = toLocalMeters(aLat, aLng, bLat, bLng);
+    final abx = b[0], aby = b[1];
+    final apx = p[0], apy = p[1];
+    final abLenSq = abx * abx + aby * aby;
+    if (abLenSq < 1e-9) {
+      // A e B coincidono: la distanza è semplicemente quella dal punto A.
+      return sqrt(apx * apx + apy * apy);
+    }
+    var t = (apx * abx + apy * aby) / abLenSq;
+    t = t.clamp(0.0, 1.0);
+    final closestX = abx * t;
+    final closestY = aby * t;
+    final dx = apx - closestX;
+    final dy = apy - closestY;
+    return sqrt(dx * dx + dy * dy);
+  }
+
   static String formatTimestamp(DateTime dt) {
     final ms = dt.millisecondsSinceEpoch % 1000;
     final tenths = (ms / 100).floor();

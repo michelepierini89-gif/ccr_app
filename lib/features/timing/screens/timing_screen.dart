@@ -15,6 +15,7 @@ import '../../../core/services/track_smoother.dart';
 import '../../../core/services/waypoint_detector.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/csv_export.dart';
+import '../../../core/utils/time_format_utils.dart';
 import '../../admin/providers/admin_provider.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../classifica/providers/classifica_provider.dart';
@@ -41,6 +42,21 @@ class _OfficialRecalcResult {
       liveDurationMs == null ? null : officialDurationMs - liveDurationMs!;
 }
 
+/// Fix 5 (09/08/2026) — perché un pilota NON compare nei risultati del
+/// ricalcolo: distingue esplicitamente "nessuna traccia salvata" da
+/// "traccia presente ma troppo rada/corta per il ricalcolo" da "traccia
+/// presente ma nessuna porta/raggio agganciato su nessuna PS" — prima di
+/// questo fix tutti e tre i casi producevano lo stesso messaggio generico
+/// "nessuna traccia GPS completa disponibile", anche quando la traccia
+/// esisteva davvero (bug: veniva salvata in un campo che poteva superare
+/// il limite Firestore di 1 MiB e falliva in silenzio, vedi
+/// FirestoreService.saveFullPilotTrack).
+class _RecalcSkip {
+  final String pilotName;
+  final String reason;
+  const _RecalcSkip({required this.pilotName, required this.reason});
+}
+
 /// Carica la traccia GPX/KML di riferimento dell'evento (stessa polyline
 /// usata in gara per costruire le porte virtuali — vedi WaypointDetector).
 Future<List<LatLng>> _loadEventReferenceTrack(EventModel event) async {
@@ -61,8 +77,8 @@ Future<List<LatLng>> _loadEventReferenceTrack(EventModel event) async {
 /// con [TrackSmoother], riesegue il rilevamento porte virtuali e salva i
 /// tempi ufficiali risultanti — separati dai tempi live, mai sovrascritti.
 /// Ritorna la lista dei confronti live/ufficiale per la UI di riepilogo.
-Future<List<_OfficialRecalcResult>> _recalculateOfficialTimes(
-    WidgetRef ref, EventModel event) async {
+Future<({List<_OfficialRecalcResult> results, List<_RecalcSkip> skipped})>
+    _recalculateOfficialTimes(WidgetRef ref, EventModel event) async {
   final svc = ref.read(firestoreServiceProvider);
   final referenceTrack = await _loadEventReferenceTrack(event);
   final specials = event.speciali.where((s) => !s.annullata).toList();
@@ -83,14 +99,35 @@ Future<List<_OfficialRecalcResult>> _recalculateOfficialTimes(
   final livePassages = await svc.getPassagesOnce(event.id);
 
   final results = <_OfficialRecalcResult>[];
+  final skipped = <_RecalcSkip>[];
 
   for (final reg in approved) {
     final samples = await svc.getFullPilotTrack(event.id, reg.userId);
-    if (samples.length < 2) continue;
+    if (samples.isEmpty) {
+      skipped.add(_RecalcSkip(
+        pilotName: reg.nomeCompleto,
+        reason: 'nessuna traccia GPS completa salvata per questo pilota',
+      ));
+      continue;
+    }
+    if (samples.length < 2) {
+      skipped.add(_RecalcSkip(
+        pilotName: reg.nomeCompleto,
+        reason: 'traccia salvata ma con un solo punto GPS',
+      ));
+      continue;
+    }
     final smoothed = TrackSmoother.smooth(samples);
     final officialBySpecial =
         WaypointDetector.rerunGateRadiusDetection(smoothed, gatedBySpecial);
-    if (officialBySpecial.isEmpty) continue;
+    if (officialBySpecial.isEmpty) {
+      skipped.add(_RecalcSkip(
+        pilotName: reg.nomeCompleto,
+        reason: '${samples.length} punti GPS salvati, ma nessuna porta/'
+            'raggio agganciato su nessuna speciale',
+      ));
+      continue;
+    }
 
     await svc.saveOfficialTimes(
       event.id,
@@ -135,7 +172,7 @@ Future<List<_OfficialRecalcResult>> _recalculateOfficialTimes(
     }
   }
 
-  return results;
+  return (results: results, skipped: skipped);
 }
 
 class _RecalculateOfficialTimesButton extends ConsumerStatefulWidget {
@@ -185,12 +222,13 @@ class _RecalculateOfficialTimesButtonState
     try {
       final event = await ref.read(eventProvider(widget.eventId).future);
       if (event == null) return;
-      final results = await _recalculateOfficialTimes(ref, event);
+      final outcome = await _recalculateOfficialTimes(ref, event);
       if (!mounted) return;
       ref.invalidate(classificaProvider(widget.eventId));
       await showDialog<void>(
         context: context,
-        builder: (ctx) => _OfficialRecalcResultsDialog(results: results),
+        builder: (ctx) => _OfficialRecalcResultsDialog(
+            results: outcome.results, skipped: outcome.skipped),
       );
     } catch (e) {
       if (mounted) {
@@ -224,7 +262,9 @@ class _RecalculateOfficialTimesButtonState
 
 class _OfficialRecalcResultsDialog extends StatelessWidget {
   final List<_OfficialRecalcResult> results;
-  const _OfficialRecalcResultsDialog({required this.results});
+  final List<_RecalcSkip> skipped;
+  const _OfficialRecalcResultsDialog(
+      {required this.results, this.skipped = const []});
 
   String _fmtMs(int ms) {
     final sign = ms < 0 ? '-' : '+';
@@ -232,13 +272,8 @@ class _OfficialRecalcResultsDialog extends StatelessWidget {
     return '$sign${(abs / 1000).toStringAsFixed(2)}s';
   }
 
-  String _fmtDuration(int ms) {
-    final d = Duration(milliseconds: ms);
-    final m = d.inMinutes;
-    final s = d.inSeconds % 60;
-    final cs = (d.inMilliseconds % 1000) ~/ 10;
-    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}.${cs.toString().padLeft(2, '0')}';
-  }
+  String _fmtDuration(int ms) =>
+      TimeFormatUtils.formatRaceTime(Duration(milliseconds: ms));
 
   @override
   Widget build(BuildContext context) {
@@ -248,16 +283,17 @@ class _OfficialRecalcResultsDialog extends StatelessWidget {
           style: const TextStyle(color: AppColors.textPrimary, fontSize: 16)),
       content: SizedBox(
         width: 480,
-        child: results.isEmpty
-            ? const Text(
-                'Nessun tempo ricalcolato: nessuna traccia GPS completa '
-                'disponibile per i piloti di questo evento.',
-                style: TextStyle(color: AppColors.textSecondary))
-            : SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: results
-                      .map((r) => Padding(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (results.isEmpty)
+                const Text(
+                    'Nessun tempo ricalcolato per nessun pilota — vedi il '
+                    'motivo specifico per ciascuno qui sotto.',
+                    style: TextStyle(color: AppColors.textSecondary)),
+              ...results.map((r) => Padding(
                             padding: const EdgeInsets.symmetric(vertical: 4),
                             child: Row(
                               children: [
@@ -303,10 +339,28 @@ class _OfficialRecalcResultsDialog extends StatelessWidget {
                                 ),
                               ],
                             ),
-                          ))
-                      .toList(),
-                ),
-              ),
+                          )),
+              // Fix 5 — motivo esplicito per ogni pilota escluso dal
+              // ricalcolo, invece del generico "nessuna traccia GPS
+              // completa disponibile" indipendentemente dalla causa reale.
+              if (skipped.isNotEmpty) ...[
+                if (results.isNotEmpty) const SizedBox(height: 12),
+                Text('${skipped.length} pilota/i esclusi dal ricalcolo:',
+                    style: const TextStyle(
+                        color: AppColors.warning,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold)),
+                const SizedBox(height: 4),
+                ...skipped.map((s) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Text('• ${s.pilotName}: ${s.reason}',
+                          style: const TextStyle(
+                              color: AppColors.textSecondary, fontSize: 12)),
+                    )),
+              ],
+            ],
+          ),
+        ),
       ),
       actions: [
         TextButton(
@@ -378,16 +432,30 @@ class _AdminTimingView extends ConsumerWidget {
 
   String _buildCsv() {
     final buf = StringBuffer();
-    buf.writeln('Posizione,Squadra,Piloti,Speciali completate,Tempo totale');
+    // Fix 2 (09/08/2026) — colonna "Tempo (ms)" aggiunta per l'elaborazione
+    // esterna, accanto al tempo leggibile (che ora usa il formato con le
+    // ore da TimeFormatUtils.formatRaceTime, vedi tempoTotaleFormatted/
+    // tempoFormatted).
+    buf.writeln(
+        'Posizione,Squadra,Piloti,Speciali completate,Tempo totale,Tempo totale (ms),CP');
     for (final e in entries) {
       final piloti = e.membriNomi.join(' / ');
       final pos = e.ritirato
           ? (e.retiredReason == 'timeout' ? 'RIT(T)' : 'RIT')
           : (e.posizione == 0 ? 'NC' : '${e.posizione}');
       buf.writeln(
-          '$pos,"${e.teamNome}","$piloti",${e.specialiCompletati.length}/${e.totaleSpeciali},${e.tempoTotaleFormatted}');
+          '$pos,"${e.teamNome}","$piloti",${e.specialiCompletati.length}/${e.totaleSpeciali},${e.tempoTotaleFormatted},${e.tempoTotale.inMilliseconds},');
       for (final s in e.specialiCompletati) {
-        buf.writeln(',,,${s.specialeNome},${s.tempoFormatted},${s.controlPointsOk ? "CP OK" : "CP MANCANTI"}');
+        // Fix 3 — stato esplicito distinto da "CP MANCANTI": un salto
+        // volontario o un forfait per PS non rilevata non sono checkpoint
+        // mancati, sono l'intera PS non misurata.
+        final stato = s.skipped
+            ? 'SALTO VOLONTARIO'
+            : s.notDetected
+                ? 'FORFAIT — NON RILEVATA'
+                : (s.controlPointsOk ? 'CP OK' : 'CP MANCANTI');
+        buf.writeln(
+            ',,,${s.specialeNome},${s.tempoFormatted},${s.tempo.inMilliseconds},$stato');
       }
     }
     return buf.toString();
@@ -1051,7 +1119,13 @@ class _SpecialTimingRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final isInvalid = special.isInvalidTiming;
     final hasWarning = special.hasTimingWarning;
-    final hasTimingError = isInvalid || hasWarning;
+    // Fix 3 (09/08/2026) — salto volontario e speciale non rilevata hanno
+    // dicitura dedicata (sotto, come le zone velocità), non il badge
+    // generico "VERIFICA" — vedi SpecialTempo.hasTimingWarning, che ora
+    // esclude entrambi i casi.
+    final isSkipped = special.skipped;
+    final isNotDetected = special.notDetected;
+    final hasTimingError = isInvalid || hasWarning || isSkipped || isNotDetected;
 
     final showSpeedZoneBadges = showAdminDetails &&
         !isInvalid &&
@@ -1127,7 +1201,7 @@ class _SpecialTimingRow extends StatelessWidget {
               ),
             ),
           ],
-          if (!isInvalid && !special.controlPointsOk) ...[
+          if (!isInvalid && !isSkipped && !isNotDetected && !special.controlPointsOk) ...[
             const SizedBox(width: 8),
             Container(
               padding:
@@ -1149,6 +1223,25 @@ class _SpecialTimingRow extends StatelessWidget {
           ],
         ],
           ),
+          if (isSkipped)
+            const Padding(
+              padding: EdgeInsets.only(top: 4, left: 24),
+              child: Text('⏭ Salto volontario — penalità applicata',
+                  style: TextStyle(
+                      color: AppColors.warning,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold)),
+            )
+          else if (isNotDetected)
+            const Padding(
+              padding: EdgeInsets.only(top: 4, left: 24),
+              child: Text(
+                  '⚠ Tempo forfettario applicato — speciale non rilevata',
+                  style: TextStyle(
+                      color: AppColors.warning,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold)),
+            ),
           if (showSpeedZoneBadges)
             Padding(
               padding: const EdgeInsets.only(top: 4, left: 24),

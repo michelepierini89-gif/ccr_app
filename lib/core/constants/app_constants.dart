@@ -1,9 +1,13 @@
 class AppConstants {
   AppConstants._();
   static const double waypointRadiusMeters = 10.0;
-  // Checkpoints (WaypointType.intermedio) use a wider radius: they are boolean
-  // pass/fail only and do not affect special timing, so a larger radius is safe.
-  static const double waypointCheckpointRadiusMeters = 20.0;
+  // Checkpoints (SpecialModel.controlPoints) use a wider radius: they are
+  // boolean pass/fail only and do not affect special timing, so a larger
+  // radius is safe. Fix 1 (09/08/2026) — bumped 20→35m and moved detection
+  // from point-only+double-confirm to trajectory (segment) distance, see
+  // WaypointDetector.detectCheckpointPassage. Overridable per-CP via
+  // WaypointModel.checkpointRadiusMeters.
+  static const double waypointCheckpointRadiusMeters = 35.0;
   // Zone a velocità controllata: inizio/fine sono solo indicativi (nessun
   // impatto su timing PS o validazione CP), ma un mancato rilevamento
   // dell'uscita blocca il banner live per il resto della sessione — raggio

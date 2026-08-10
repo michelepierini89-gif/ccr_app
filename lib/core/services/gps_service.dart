@@ -197,6 +197,21 @@ class GpsService extends ChangeNotifier {
   final Map<String, String> _fineToSpecial = {};
   final Set<String> _passedWaypoints = {};
 
+  // Fix 1 (09/08/2026) — checkpoint su traiettoria: _waypoints è diviso in
+  // due liste disgiunte, ricostruite ad ogni _resetSessionState. I
+  // checkpoint (SpecialModel.controlPoints) usano SOLO
+  // WaypointDetector.detectCheckpointPassage (segmento, no doppia
+  // conferma); tutto il resto (inizio/fine PS, zone velocità) resta sul
+  // percorso esistente porta+raggio con doppia conferma. _cpMinDistance/
+  // _cpMinDistanceMethod tracciano, per ogni checkpoint non ancora passato,
+  // la distanza minima vista finora e il metodo con cui è stata misurata —
+  // usati per il log diagnostico di fine sessione (Parte 5), indipendente
+  // dal fatto che il CP sia stato agganciato o meno.
+  List<WaypointModel> _checkpointWaypoints = [];
+  List<WaypointModel> _nonCheckpointWaypoints = [];
+  final Map<String, double> _cpMinDistance = {};
+  final Map<String, String> _cpMinDistanceMethod = {};
+
   // Fix 4 — polyline di riferimento tenuta anche dopo attachGates (che la
   // usa solo transitoriamente): serve a stimare la distanza tra un cluster
   // di jump scartati e il percorso atteso (vedi _flushJumpCluster).
@@ -379,6 +394,12 @@ class GpsService extends ChangeNotifier {
       : Duration.zero;
   List<WaypointModel> get remainingWaypoints =>
       _waypoints.where((w) => !_passedWaypoints.contains(w.id)).toList();
+
+  /// Fix 1 — true se [waypointId] risulta passato in questa sessione. Usato
+  /// dal banco di replay per contare i checkpoint agganciati per pilota
+  /// (Parte 1, confronto prima/dopo il fix del rilevamento su traiettoria).
+  bool isWaypointPassed(String waypointId) =>
+      _passedWaypoints.contains(waypointId);
 
   /// Traccia grezza completa (posizione Kalman-filtrata + accuracy raw +
   /// timestamp) della sessione corrente, un campione per ogni fix
@@ -930,6 +951,34 @@ class GpsService extends ChangeNotifier {
     _jumpClusterBuffer.clear();
   }
 
+  /// Fix 1 — callback di [WaypointDetector.detectCheckpointPassage]:
+  /// aggiorna la distanza minima vista finora per [waypointId], per il log
+  /// diagnostico di fine sessione (Parte 5), a prescindere dal fatto che il
+  /// CP sia stato agganciato in questa chiamata.
+  void _recordCheckpointDistanceSample(
+      String waypointId, double distanceMeters, String method) {
+    final best = _cpMinDistance[waypointId];
+    if (best == null || distanceMeters < best) {
+      _cpMinDistance[waypointId] = distanceMeters;
+      _cpMinDistanceMethod[waypointId] = method;
+    }
+  }
+
+  /// Fix 1 — righe di log diagnostico di fine sessione per ogni checkpoint
+  /// configurato in questa sessione: distanza minima raggiunta dalla
+  /// traiettoria, se è stato registrato, e con quale metodo (punto o
+  /// segmento) è stata misurata quella distanza minima. Chiamato sia da
+  /// [stopRecording] sia da [endReplaySession] — prima che il logger venga
+  /// chiuso/il replay smontato.
+  void _logCheckpointDiagnostics() {
+    for (final wp in _checkpointWaypoints) {
+      final minDist = _cpMinDistance[wp.id];
+      final method = _cpMinDistanceMethod[wp.id];
+      final registered = _passedWaypoints.contains(wp.id);
+      _diagLogger?.logCheckpointSummary(wp.id, minDist, registered, method);
+    }
+  }
+
   /// Registra un passaggio waypoint confermato da [WaypointDetector]:
   /// aggiorna i passaggi, l'apertura/chiusura delle speciali e persiste su
   /// Firestore (con fallback su coda offline). Usata sia per i punti che
@@ -1042,6 +1091,9 @@ class GpsService extends ChangeNotifier {
       final zoneId = _zoneEndToZone[wp.id]!;
       final entryTs = _zoneEntryTimestamps.remove(zoneId);
       _checkSpeedZoneViolation(zoneId, entryTs, passageTs);
+      // Fix 7 (09/08/2026) — annuncio di uscita mancante: simmetrico a
+      // announceSpeedZoneEntry sopra, stessa priorità/categoria.
+      _voiceAlerts?.announceSpeedZoneExit(zoneId);
     } else {
       // Nessuna delle mappe sopra: waypoint intermedio "puro", cioè un
       // checkpoint obbligatorio (non zona velocità) — Blocco D4.
@@ -1472,6 +1524,15 @@ class GpsService extends ChangeNotifier {
   /// (Parte 1, banco di replay): stessa identica logica, nessuna
   /// duplicazione. Non tocca `_activeEventId`/`_activeUserId`/`_writesBlocked`
   /// (identità di sessione, solo live) né alcun side-effect esterno.
+  /// Solo per il banco di replay (Parte 1) — riproduce ESATTAMENTE il
+  /// comportamento dei checkpoint prima del Fix 1 (09/08/2026): raggio
+  /// fisso storico (20m, il valore in produzione prima di questo fix) +
+  /// doppia conferma su due fix consecutivi, via lo stesso
+  /// `WaypointDetector.detectPassage` usato per inizio/fine PS. Serve
+  /// esclusivamente al confronto "quanti CP agganciati prima/dopo" richiesto
+  /// sul replay — mai usato nel percorso live.
+  static const double kLegacyCheckpointRadiusMeters = 20.0;
+
   void _resetSessionState({
     required List<WaypointModel> waypoints,
     List<SpecialModel> specials = const [],
@@ -1479,6 +1540,7 @@ class GpsService extends ChangeNotifier {
     List<DangerPointModel> dangerPoints = const [],
     List<SpeedZoneModel> speedZones = const [],
     List<LatLng> referenceTrack = const [],
+    bool legacyCheckpointDetection = false,
   }) {
     _specials = specials;
     _inizioToSpecial.clear();
@@ -1541,6 +1603,32 @@ class GpsService extends ChangeNotifier {
       onUnreliableBearing: (w, variationDeg) =>
           _diagLogger?.logUnreliableGateBearing(w.id, variationDeg),
     );
+
+    // Fix 1 — checkpoint (controlPoints di ogni speciale) isolati dal resto
+    // dei waypoint: sono l'unico caso rilevato su traiettoria/segmento
+    // invece che con porta+raggio.
+    final checkpointIds = <String>{
+      for (final s in specials) ...s.controlPoints.map((cp) => cp.id),
+    };
+    if (legacyCheckpointDetection) {
+      // Confronto before/after (Parte 1): i CP restano nel percorso
+      // porta+raggio esistente, con la soglia storica invece del nuovo
+      // default — detectGateCrossing li ignora comunque (mai gated), quindi
+      // finiscono sempre nel fallback a raggio con doppia conferma.
+      _checkpointWaypoints = [];
+      _nonCheckpointWaypoints = _waypoints;
+      for (final id in checkpointIds) {
+        _zoneRadiusOverrides[id] = kLegacyCheckpointRadiusMeters;
+      }
+    } else {
+      _checkpointWaypoints =
+          _waypoints.where((w) => checkpointIds.contains(w.id)).toList();
+      _nonCheckpointWaypoints =
+          _waypoints.where((w) => !checkpointIds.contains(w.id)).toList();
+    }
+    _cpMinDistance.clear();
+    _cpMinDistanceMethod.clear();
+
     _passedWaypoints.clear();
     _bestPassageByWaypoint.clear();
     _jumpClusterBuffer.clear();
@@ -1684,6 +1772,10 @@ class GpsService extends ChangeNotifier {
     List<DangerPointModel> dangerPoints = const [],
     List<SpeedZoneModel> speedZones = const [],
     List<LatLng> referenceTrack = const [],
+    // Fix 1 (09/08/2026) — solo per il confronto before/after nel banco di
+    // replay (vedi TrackReplayService, kLegacyCheckpointRadiusMeters): mai
+    // true nel percorso live.
+    bool legacyCheckpointDetection = false,
   }) {
     _resetSessionState(
       waypoints: waypoints,
@@ -1692,6 +1784,7 @@ class GpsService extends ChangeNotifier {
       dangerPoints: dangerPoints,
       speedZones: speedZones,
       referenceTrack: referenceTrack,
+      legacyCheckpointDetection: legacyCheckpointDetection,
     );
     _replayMode = true;
     _isRecording = true;
@@ -1713,6 +1806,7 @@ class GpsService extends ChangeNotifier {
   /// mai stato avviato).
   void endReplaySession() {
     _flushJumpCluster();
+    _logCheckpointDiagnostics();
     _isRecording = false;
     _mode = GpsMode.idle;
     _replayMode = false;
@@ -1876,10 +1970,28 @@ class GpsService extends ChangeNotifier {
       );
       if (effectiveAccuracy <= kMaxAccuracyDetectionMeters) {
         final detection = _waypointDetector.detectPassage(
-            rawLatLng, now, _waypoints, _passedWaypoints,
+            rawLatLng, now, _nonCheckpointWaypoints, _passedWaypoints,
             radiusOverrides: _zoneRadiusOverrides);
         if (detection != null) {
           await _handleWaypointDetection(detection);
+          if (_disposed) return;
+        }
+        // Fix 1 — checkpoint su questo fix scartato dal display: nessun
+        // punto precedente affidabile da usare per un segmento in questo
+        // ramo (il fix corrente stesso è sotto la sola soglia detection,
+        // più larga di quella display), quindi solo distanza puntuale.
+        final cpDetection = _waypointDetector.detectCheckpointPassage(
+          null,
+          rawLatLng,
+          null,
+          now,
+          _checkpointWaypoints,
+          _passedWaypoints,
+          onDistanceSample: _recordCheckpointDistanceSample,
+        );
+        if (cpDetection != null) {
+          await _handleWaypointDetection(cpDetection,
+              timingMethod: cpDetection.detectionMethod ?? 'cp_point');
         }
       }
       if (_disposed) return;
@@ -2081,10 +2193,30 @@ class GpsService extends ChangeNotifier {
       // non della seconda. Provato solo se la porta non ha già rilevato un
       // attraversamento in questo fix.
       detection ??= _waypointDetector.detectPassage(
-          filteredPos, now, _waypoints, _passedWaypoints,
+          filteredPos, now, _nonCheckpointWaypoints, _passedWaypoints,
           radiusOverrides: _zoneRadiusOverrides);
       if (detection != null) {
         await _handleWaypointDetection(detection, timingMethod: timingMethod);
+        if (_disposed) return;
+      }
+
+      // Fix 1 — checkpoint su traiettoria: testato SEMPRE (indipendente dal
+      // blocco sopra, mai lo stesso waypoint id), usando il segmento
+      // punto-precedente->punto-corrente Kalman-filtrato, entrambi già
+      // passati dai filtri accuracy/jump (STEP 1/2) — protezione ghost
+      // point per costruzione, non serve un controllo esplicito qui.
+      final cpDetection = _waypointDetector.detectCheckpointPassage(
+        previousFilteredPosForGate,
+        filteredPos,
+        previousFilteredTsForGate,
+        now,
+        _checkpointWaypoints,
+        _passedWaypoints,
+        onDistanceSample: _recordCheckpointDistanceSample,
+      );
+      if (cpDetection != null) {
+        await _handleWaypointDetection(cpDetection,
+            timingMethod: cpDetection.detectionMethod ?? 'cp_point');
         if (_disposed) return;
       }
 
@@ -2351,6 +2483,7 @@ class GpsService extends ChangeNotifier {
     _lastFirestoreUpdateTs = null;
     _imu.stop();
     WakelockPlus.disable().ignore();
+    _logCheckpointDiagnostics();
     _diagLogger?.logLifecycle('foreground_service_stop');
     unawaited(_diagLogger?.stopSession());
     _safeNotify();

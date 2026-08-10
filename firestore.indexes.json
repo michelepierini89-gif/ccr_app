@@ -23,6 +23,14 @@
         { "fieldPath": "stato", "order": "ASCENDING" },
         { "fieldPath": "data", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "disputes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "pilotId", "order": "ASCENDING" },
+        { "fieldPath": "timestamp", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

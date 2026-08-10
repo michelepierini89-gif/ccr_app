@@ -78,6 +78,15 @@ class ReplayConfigResult {
   final int gateCount;
   final int radiusFallbackCount;
   final List<String> radiusFallbackReasons;
+  // Fix 1 (09/08/2026) — numero di checkpoint (SpecialModel.controlPoints)
+  // agganciati su [cpTotal] configurati, e distanza minima raggiunta per
+  // ciascuno (id waypoint -> metri, null se mai calcolata) — per il
+  // confronto "quanti CP prima/dopo il fix" richiesto sul replay
+  // dell'evento reale.
+  final int cpPassedCount;
+  final int cpTotal;
+  final Map<String, double?> cpMinDistanceMeters;
+  final Set<String> cpPassedIds;
 
   const ReplayConfigResult({
     required this.configNome,
@@ -85,6 +94,10 @@ class ReplayConfigResult {
     required this.gateCount,
     required this.radiusFallbackCount,
     required this.radiusFallbackReasons,
+    this.cpPassedCount = 0,
+    this.cpTotal = 0,
+    this.cpMinDistanceMeters = const {},
+    this.cpPassedIds = const {},
   });
 
   factory ReplayConfigResult.empty(String configNome) => ReplayConfigResult(
@@ -160,6 +173,11 @@ class TrackReplayService {
     required SharedPreferences prefs,
     ReplaySpeed speed = ReplaySpeed.fast,
     void Function(int index, int total)? onProgress,
+    // Fix 1 (09/08/2026) — true riproduce il comportamento CHECKPOINT
+    // storico (raggio 20m + doppia conferma, come prima del fix) invece del
+    // nuovo rilevamento su traiettoria: usato solo dal confronto
+    // before/after, mai dalle run normali del banco di replay.
+    bool legacyCheckpointDetection = false,
   }) async {
     if (samples.length < 2) return ReplayConfigResult.empty(configNome);
 
@@ -176,6 +194,7 @@ class TrackReplayService {
 
     gps.startReplaySession(
       waypoints: _allWaypoints(specials),
+      legacyCheckpointDetection: legacyCheckpointDetection,
       specials: specials,
       referenceTrack: referenceTrack,
       sessionStart: samples.first.timestamp,
@@ -208,8 +227,11 @@ class TrackReplayService {
     }
     await gps.closeAllOpenSpecialsAt(samples.last.timestamp);
 
-    final result = _buildFullPipelineResult(configNome, specials, gps, diag);
+    // Fix 1 — endReplaySession() emette il riepilogo diagnostico dei
+    // checkpoint (vedi GpsService._logCheckpointDiagnostics): va chiamato
+    // PRIMA di leggere diag.captured, non dopo.
     gps.endReplaySession();
+    final result = _buildFullPipelineResult(configNome, specials, gps, diag);
     gps.dispose();
     return result;
   }
@@ -227,7 +249,29 @@ class TrackReplayService {
     var radiusFallbackCount = 0;
     final radiusFallbackReasons = <String>[];
 
+    // Fix 1 — conteggio CP agganciati via GpsService.isWaypointPassed,
+    // valido in ENTRAMBE le modalità (legacy incluso, dove
+    // _checkpointWaypoints resta vuoto e quindi non emette alcun log
+    // 'checkpoint'/'riepilogo' — vedi sotto). Il log diagnostico stesso
+    // (distanza minima per CP) è disponibile SOLO nella modalità nuova, e
+    // va letto separatamente per non falsare il conteggio in modalità
+    // legacy.
+    final cpIds = <String>{
+      for (final s in specials)
+        if (!s.annullata) ...s.controlPoints.map((cp) => cp.id),
+    };
+    final cpTotal = cpIds.length;
+    final cpPassedIds = cpIds.where(gps.isWaypointPassed).toSet();
+    final cpPassedCount = cpPassedIds.length;
+    final cpMinDistanceMeters = <String, double?>{};
+
     for (final e in diag.captured) {
+      if (e.categoria == 'checkpoint' && e.evento == 'riepilogo') {
+        final wpId = e.campi[0] as String;
+        final minDist = double.tryParse('${e.campi[1]}');
+        cpMinDistanceMeters[wpId] = minDist;
+        continue;
+      }
       if (e.categoria != 'timing') continue;
       if (e.evento == 'porta') {
         gateCount++;
@@ -279,6 +323,10 @@ class TrackReplayService {
       gateCount: gateCount,
       radiusFallbackCount: radiusFallbackCount,
       radiusFallbackReasons: radiusFallbackReasons,
+      cpPassedCount: cpPassedCount,
+      cpTotal: cpTotal,
+      cpMinDistanceMeters: cpMinDistanceMeters,
+      cpPassedIds: cpPassedIds,
     );
   }
 

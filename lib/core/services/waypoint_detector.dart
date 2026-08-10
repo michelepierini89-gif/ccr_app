@@ -65,11 +65,19 @@ class WaypointPassageResult {
   // waypoint. Null per i passaggi rilevati a raggio.
   final double? fractionT;
   final double? distanceMeters;
+  // Fix 1 (09/08/2026) — impostato SOLO dai passaggi rilevati da
+  // [WaypointDetector.detectCheckpointPassage]: 'cp_segment' se la distanza
+  // minima è stata misurata sul segmento prev->curr, 'cp_point' se è stata
+  // misurata solo sul fix corrente (nessun segmento affidabile
+  // disponibile). Null per gli altri metodi (gate/gate_gap/radius), che
+  // restano determinati dal chiamante come prima.
+  final String? detectionMethod;
   const WaypointPassageResult({
     required this.waypoint,
     required this.timestamp,
     this.fractionT,
     this.distanceMeters,
+    this.detectionMethod,
   });
 }
 
@@ -380,6 +388,95 @@ class WaypointDetector {
       }
     }
     return null;
+  }
+
+  /// Fix 1 (09/08/2026) — oltre questo gap (secondi) tra il fix precedente
+  /// e quello corrente, il fix precedente è troppo vecchio per costruire un
+  /// segmento affidabile (probabile perdita di segnale): un segmento
+  /// fittizio di centinaia di metri potrebbe "toccare" checkpoint mai
+  /// realmente avvicinati dal pilota. In quel caso si ricade sulla sola
+  /// distanza puntuale dal fix corrente.
+  static const int kMaxSegmentGapSeconds = 10;
+
+  /// Rileva il passaggio da un CHECKPOINT (waypoint intermedio non gated,
+  /// vedi `SpecialModel.controlPoints`) testando la TRAIETTORIA percorsa,
+  /// non solo il campione GPS corrente: ad ogni nuovo fix accettato, per
+  /// ogni checkpoint non ancora passato, calcola la distanza minima tra il
+  /// checkpoint e il SEGMENTO che unisce [prev] e [curr] (proiezione
+  /// perpendicolare con clamp agli estremi, vedi
+  /// [LocationUtils.distanceToSegmentMeters]) — così un passaggio più
+  /// vicino avvenuto TRA due fix consecutivi non risulta più mancato.
+  ///
+  /// Il segmento viene costruito solo se [prev]/[prevTs] sono forniti e il
+  /// gap con [currTs] non supera [kMaxSegmentGapSeconds] (protezione ghost
+  /// point: [prev] deve essere un fix già passato dai filtri accuracy/jump
+  /// esistenti — vedi `GpsService._onPosition`); altrimenti si usa solo la
+  /// distanza puntuale da [curr].
+  ///
+  /// A differenza di [detectPassage], un CP NON richiede doppia conferma su
+  /// due fix consecutivi: è un booleano senza impatto sul timing, quindi un
+  /// singolo passaggio entro soglia è sufficiente. [onDistanceSample], se
+  /// fornito, viene chiamato per OGNI checkpoint non ancora passato ad ogni
+  /// invocazione (anche quando la soglia non è superata) con la distanza
+  /// misurata e il metodo usato — per il log diagnostico di fine sessione
+  /// (distanza minima raggiunta per CP, anche se mai agganciato).
+  ///
+  /// Ritorna il primo checkpoint trovato entro soglia in questa chiamata, o
+  /// null. [WaypointPassageResult.timestamp] è sempre [currTs] (nessuna
+  /// interpolazione: non serve un istante preciso per un booleano).
+  WaypointPassageResult? detectCheckpointPassage(
+    LatLng? prev,
+    LatLng curr,
+    DateTime? prevTs,
+    DateTime currTs,
+    List<WaypointModel> checkpoints,
+    Set<String> alreadyPassed, {
+    void Function(String waypointId, double distanceMeters, String method)?
+        onDistanceSample,
+  }) {
+    final canUseSegment = prev != null &&
+        prevTs != null &&
+        currTs.difference(prevTs).inSeconds <= kMaxSegmentGapSeconds;
+
+    WaypointPassageResult? found;
+    for (final wp in checkpoints) {
+      if (alreadyPassed.contains(wp.id)) continue;
+      final String method;
+      final double distance;
+      if (canUseSegment) {
+        method = 'cp_segment';
+        distance = LocationUtils.distanceToSegmentMeters(
+          wp.lat,
+          wp.lng,
+          prev.latitude,
+          prev.longitude,
+          curr.latitude,
+          curr.longitude,
+        );
+      } else {
+        method = 'cp_point';
+        distance = LocationUtils.haversineDistance(
+          curr.latitude,
+          curr.longitude,
+          wp.lat,
+          wp.lng,
+        );
+      }
+      onDistanceSample?.call(wp.id, distance, method);
+      if (found == null) {
+        final threshold = wp.checkpointRadiusMeters ??
+            AppConstants.waypointCheckpointRadiusMeters;
+        if (distance <= threshold) {
+          found = WaypointPassageResult(
+            waypoint: wp,
+            timestamp: currTs,
+            distanceMeters: distance,
+            detectionMethod: method,
+          );
+        }
+      }
+    }
+    return found;
   }
 
   static double? nearestWaypointDistance(

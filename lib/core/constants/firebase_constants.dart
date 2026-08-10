@@ -18,4 +18,11 @@ class FirebaseConstants {
   static const String speedZoneViolations = 'speedZoneViolations';
   static const String cpDisputes = 'cp_disputes';
   static const String disputes = 'disputes';
+  // Fix 5 (09/08/2026) — sottocollezione di chunk per pilotTrackFull: un
+  // singolo campo array sul documento tracking/{eventId}/pilots/{userId}
+  // può superare il limite Firestore di 1 MiB per documento su gare lunghe
+  // (es. il test 100km del 09/08), causando un fallimento SILENZIOSO del
+  // salvataggio (catturato dal catch generico attorno alla chiamata) —
+  // vedi FirestoreService.saveFullPilotTrack/getFullPilotTrack.
+  static const String fullTrackChunks = 'fullTrackChunks';
 }

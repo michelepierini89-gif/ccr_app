@@ -251,41 +251,114 @@ class FirestoreService {
                 .toList(),
           }, SetOptions(merge: true));
 
+  /// Fix 5 (09/08/2026) — campioni per chunk della sottocollezione
+  /// [FirebaseConstants.fullTrackChunks]: a questa dimensione un chunk resta
+  /// largamente sotto il limite Firestore di 1 MiB per documento anche nel
+  /// caso peggiore (accuracy con molti decimali). Un batch write può
+  /// contenere al più 500 operazioni: con gare fino a 4-5 ore a 250ms in
+  /// speciale, il numero di chunk resta comunque a una piccola frazione di
+  /// quel limite.
+  static const int _fullTrackChunkSize = 2000;
+
   /// Persiste la traccia grezza completa (posizione + accuracy + timestamp
   /// per ogni fix accettato), separata dal semplice `pilotTrack` (solo
   /// lat/lng, usato per il replay della polyline): serve da input al
-  /// ricalcolo post-gara con [TrackSmoother] (Blocco B). Timestamp salvato
-  /// come millisecondi epoch (int), non Timestamp Firestore, per
-  /// semplicità di parsing lato client dentro un campo array.
+  /// ricalcolo post-gara con [TrackSmoother] (Blocco B).
+  ///
+  /// Fix 5 — PRIMA di questo fix, `samples` veniva scritto come un unico
+  /// campo array sul documento `tracking/{eventId}/pilots/{userId}`: su una
+  /// gara lunga (es. il test 100km del 09/08) questo campo, sommato al
+  /// resto del documento, può superare il limite Firestore di 1 MiB per
+  /// documento — il `.set()` fallisce, l'eccezione viene ingoiata dal
+  /// `catch` generico attorno alla chiamata (in `gps_recording_screen.dart`)
+  /// e la traccia risulta silenziosamente assente, mentre `pilotTrack`
+  /// (molto più piccolo: solo lat/lng) continua a salvarsi correttamente —
+  /// esattamente il sintomo osservato ("la mappa disegna la traccia, il
+  /// ricalcolo dice che non c'è"). Ora `samples` viene spezzato in chunk in
+  /// una sottocollezione dedicata, ciascuno ben sotto il limite.
+  ///
+  /// Cancella prima eventuali chunk di un salvataggio precedente per lo
+  /// stesso pilota (idempotente: un secondo salvataggio con meno campioni
+  /// non lascia chunk residui più vecchi e più lunghi).
   Future<void> saveFullPilotTrack(
-          String eventId, String userId, List<RawTrackSample> samples) =>
-      _db
-          .collection(FirebaseConstants.tracking)
-          .doc(eventId)
-          .collection(FirebaseConstants.pilots)
-          .doc(userId)
-          .set({
-            'pilotTrackFull': samples
-                .map((s) => {
-                      'lat': s.lat,
-                      'lng': s.lng,
-                      'accuracy': s.accuracy,
-                      'ts': s.timestamp.millisecondsSinceEpoch,
-                    })
-                .toList(),
-          }, SetOptions(merge: true));
-
-  /// Legge la traccia grezza completa salvata da [saveFullPilotTrack] per
-  /// [userId] nell'evento [eventId], o lista vuota se assente (es. pilota
-  /// registrato prima dell'introduzione di questo campo, o mai concluso).
-  Future<List<RawTrackSample>> getFullPilotTrack(
-      String eventId, String userId) async {
-    final doc = await _db
+      String eventId, String userId, List<RawTrackSample> samples) async {
+    final chunksRef = _db
         .collection(FirebaseConstants.tracking)
         .doc(eventId)
         .collection(FirebaseConstants.pilots)
         .doc(userId)
+        .collection(FirebaseConstants.fullTrackChunks);
+
+    final existing = await chunksRef.get();
+    if (existing.docs.isNotEmpty || samples.isNotEmpty) {
+      final batch = _db.batch();
+      for (final doc in existing.docs) {
+        batch.delete(doc.reference);
+      }
+      for (var i = 0; i < samples.length; i += _fullTrackChunkSize) {
+        final end = (i + _fullTrackChunkSize < samples.length)
+            ? i + _fullTrackChunkSize
+            : samples.length;
+        final chunk = samples.sublist(i, end);
+        batch.set(chunksRef.doc(i.toString().padLeft(8, '0')), {
+          'samples': chunk
+              .map((s) => {
+                    'lat': s.lat,
+                    'lng': s.lng,
+                    'accuracy': s.accuracy,
+                    'ts': s.timestamp.millisecondsSinceEpoch,
+                  })
+              .toList(),
+        });
+      }
+      await batch.commit();
+    }
+
+    // Campo legacy sul documento pilota: mantenuto vuoto/rimosso per non
+    // lasciare doppioni, ma senza toccare gli altri campi del documento
+    // (raceStatus, pilotTrack, waypointPassati, ...).
+    await _db
+        .collection(FirebaseConstants.tracking)
+        .doc(eventId)
+        .collection(FirebaseConstants.pilots)
+        .doc(userId)
+        .set({'pilotTrackFull': FieldValue.delete()}, SetOptions(merge: true));
+  }
+
+  /// Legge la traccia grezza completa salvata da [saveFullPilotTrack] per
+  /// [userId] nell'evento [eventId], o lista vuota se assente (es. pilota
+  /// mai concluso una sessione). Fix 5 — legge dalla sottocollezione a
+  /// chunk (nome doc ordinabile lessicograficamente, zero-padded);
+  /// fallback sul vecchio campo singolo `pilotTrackFull` per le tracce
+  /// salvate prima di questo fix e ancora presenti (sotto 1 MiB, quindi mai
+  /// state colpite dal bug).
+  Future<List<RawTrackSample>> getFullPilotTrack(
+      String eventId, String userId) async {
+    final pilotDocRef = _db
+        .collection(FirebaseConstants.tracking)
+        .doc(eventId)
+        .collection(FirebaseConstants.pilots)
+        .doc(userId);
+
+    final chunks = await pilotDocRef
+        .collection(FirebaseConstants.fullTrackChunks)
+        .orderBy(FieldPath.documentId)
         .get();
+    if (chunks.docs.isNotEmpty) {
+      final result = <RawTrackSample>[];
+      for (final doc in chunks.docs) {
+        final raw = doc.data()['samples'] as List<dynamic>? ?? const [];
+        result.addAll(raw.map((e) => RawTrackSample(
+              lat: (e['lat'] as num).toDouble(),
+              lng: (e['lng'] as num).toDouble(),
+              accuracy: (e['accuracy'] as num).toDouble(),
+              timestamp: DateTime.fromMillisecondsSinceEpoch(e['ts'] as int),
+            )));
+      }
+      return result;
+    }
+
+    final doc = await pilotDocRef.get();
     final raw = doc.data()?['pilotTrackFull'] as List<dynamic>?;
     if (raw == null) return [];
     return raw
@@ -701,6 +774,8 @@ class FirestoreService {
     });
   }
 
+  /// Solo admin (vedi firestore.rules — bypass globale): tutte le dispute
+  /// dell'evento, per la banner/lista di gestione.
   Stream<List<CpDisputeModel>> getCpDisputesStream(String eventId) => _db
       .collection(FirebaseConstants.cpDisputes)
       .doc(eventId)
@@ -709,6 +784,24 @@ class FirestoreService {
       .snapshots()
       .map((s) =>
           s.docs.map((d) => CpDisputeModel.fromFirestore(d)).toList());
+
+  /// Fix 4 (09/08/2026) — SOLO le dispute di [pilotId] per [eventId]: la
+  /// regola Firestore per un pilota non-admin richiede una query
+  /// esplicitamente ristretta al proprio `pilotId` (una lettura
+  /// dell'intera collezione senza filtro verrebbe negata, non
+  /// silenziosamente troncata). Usata dalla UI pilota (stato della propria
+  /// segnalazione), mai dall'admin (che usa [getCpDisputesStream]).
+  Stream<List<CpDisputeModel>> getMyCpDisputesStream(
+          String eventId, String pilotId) =>
+      _db
+          .collection(FirebaseConstants.cpDisputes)
+          .doc(eventId)
+          .collection(FirebaseConstants.disputes)
+          .where('pilotId', isEqualTo: pilotId)
+          .orderBy('timestamp', descending: true)
+          .snapshots()
+          .map((s) =>
+              s.docs.map((d) => CpDisputeModel.fromFirestore(d)).toList());
 
   /// Risolve una segnalazione CP. Se accolta, registra un passaggio
   /// sintetico per ogni CP contestato con timestamp a metà tra inizio e

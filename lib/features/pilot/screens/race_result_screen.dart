@@ -17,6 +17,7 @@ import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/gpx_utils.dart';
+import '../../../core/utils/time_format_utils.dart';
 import '../../admin/providers/admin_provider.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../classifica/providers/classifica_provider.dart';
@@ -467,10 +468,10 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
     if (missedCps.isEmpty || event == null || userId == null) {
       return const SizedBox.shrink();
     }
-    final disputesAsync = ref.watch(cpDisputesStreamProvider(event.id));
-    final myDisputes = (disputesAsync.valueOrNull ?? [])
-        .where((d) => d.pilotId == userId)
-        .toList();
+    // Fix 4 — query già ristretta al proprio pilotId lato server (vedi
+    // myCpDisputesStreamProvider): nessun filtro client-side da rifare.
+    final disputesAsync = ref.watch(myCpDisputesStreamProvider(event.id));
+    final myDisputes = disputesAsync.valueOrNull ?? const <CpDisputeModel>[];
     final latest = myDisputes.isNotEmpty ? myDisputes.first : null;
 
     final (String statusText, Color statusColor, bool canSend) =
@@ -713,7 +714,10 @@ class _SpecialRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final done = tempo != null;
-    final hasMissedCp = done && !tempo!.controlPointsOk;
+    final hasMissedCp = done &&
+        !tempo!.controlPointsOk &&
+        !tempo!.skipped &&
+        !tempo!.notDetected;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
@@ -786,7 +790,27 @@ class _SpecialRow extends StatelessWidget {
                       ),
                     ),
                   ),
-                if (done && tempo!.hasTimingWarning)
+                // Fix 3 (09/08/2026) — dicitura distinta per salto
+                // volontario vs speciale non rilevata (nessun dato GPS
+                // reale): "stima recovery" resta solo dove un recovery
+                // reale è avvenuto su dati effettivamente presenti.
+                if (done && tempo!.skipped)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 2),
+                    child: Text(
+                      '⏭ Salto volontario — penalità applicata',
+                      style: TextStyle(color: AppColors.warning, fontSize: 11),
+                    ),
+                  )
+                else if (done && tempo!.notDetected)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 2),
+                    child: Text(
+                      '⚠ Tempo forfettario applicato — speciale non rilevata',
+                      style: TextStyle(color: AppColors.warning, fontSize: 11),
+                    ),
+                  )
+                else if (done && tempo!.hasTimingWarning)
                   const Padding(
                     padding: EdgeInsets.only(top: 2),
                     child: Text(
@@ -917,12 +941,7 @@ class _StatsRow extends StatelessWidget {
     );
   }
 
-  String _formatDuration(Duration d) {
-    final m = d.inMinutes;
-    final s = d.inSeconds % 60;
-    final cs = (d.inMilliseconds % 1000) ~/ 10;
-    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}.${cs.toString().padLeft(2, '0')}';
-  }
+  String _formatDuration(Duration d) => TimeFormatUtils.formatRaceTime(d);
 }
 
 class _StatChip extends StatelessWidget {

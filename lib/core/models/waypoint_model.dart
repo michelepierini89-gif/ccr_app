@@ -169,6 +169,16 @@ class WaypointModel {
   /// tornanti, tratti che si incrociano). Persistito su Firestore.
   final double? gateHalfWidthMeters;
 
+  /// Soglia di rilevamento personalizzata per questo checkpoint, in metri
+  /// (Fix 1 — 09/08/2026): null usa il default globale
+  /// (`AppConstants.waypointCheckpointRadiusMeters`, 35 m). Rilevante solo
+  /// per i waypoint checkpoint (`SpecialModel.controlPoints`), rilevati su
+  /// traiettoria da `WaypointDetector.detectCheckpointPassage` — un CP è un
+  /// booleano, non c'è timing da proteggere, quindi una soglia ampia non ha
+  /// controindicazioni sulla precisione. Regolabile dall'admin nell'editor
+  /// speciali. Persistito su Firestore.
+  final double? checkpointRadiusMeters;
+
   const WaypointModel({
     required this.id,
     required this.nome,
@@ -177,6 +187,7 @@ class WaypointModel {
     required this.type,
     this.gate,
     this.gateHalfWidthMeters,
+    this.checkpointRadiusMeters,
   });
 
   LatLng get latLng => LatLng(lat, lng);
@@ -189,6 +200,7 @@ class WaypointModel {
         type: type,
         gate: gate,
         gateHalfWidthMeters: gateHalfWidthMeters,
+        checkpointRadiusMeters: checkpointRadiusMeters,
       );
 
   WaypointModel copyWithGateHalfWidth(double? meters) => WaypointModel(
@@ -199,6 +211,18 @@ class WaypointModel {
         type: type,
         gate: gate,
         gateHalfWidthMeters: meters,
+        checkpointRadiusMeters: checkpointRadiusMeters,
+      );
+
+  WaypointModel copyWithCheckpointRadius(double? meters) => WaypointModel(
+        id: id,
+        nome: nome,
+        lat: lat,
+        lng: lng,
+        type: type,
+        gate: gate,
+        gateHalfWidthMeters: gateHalfWidthMeters,
+        checkpointRadiusMeters: meters,
       );
 
   factory WaypointModel.fromMap(Map<String, dynamic> m) => WaypointModel(
@@ -211,6 +235,8 @@ class WaypointModel {
           orElse: () => WaypointType.intermedio,
         ),
         gateHalfWidthMeters: (m['gateHalfWidthMeters'] as num?)?.toDouble(),
+        checkpointRadiusMeters:
+            (m['checkpointRadiusMeters'] as num?)?.toDouble(),
       );
 
   Map<String, dynamic> toMap() => {
@@ -221,5 +247,7 @@ class WaypointModel {
         'type': type.name,
         if (gateHalfWidthMeters != null)
           'gateHalfWidthMeters': gateHalfWidthMeters,
+        if (checkpointRadiusMeters != null)
+          'checkpointRadiusMeters': checkpointRadiusMeters,
       };
 }

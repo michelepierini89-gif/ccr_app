@@ -90,6 +90,13 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
   double? _editingInizioGateWidth;
   double? _editingFineGateWidth;
   List<int> _editingControlIdxs = [];
+  // Fix 1 (09/08/2026) — soglia di rilevamento per-CP (metri), parallela a
+  // _editingControlIdxs per indice j: null usa il default globale
+  // (AppConstants.waypointCheckpointRadiusMeters). Ogni sito che
+  // aggiunge/rimuove un elemento da _editingControlIdxs deve fare lo
+  // stesso qui, nello stesso ordine, per mantenere l'invariante di
+  // lunghezza uguale.
+  List<double?> _editingControlRadii = [];
   _SelectionMode _selectionMode = _SelectionMode.none;
   int _activeControlPointIdx = -1;
 
@@ -212,7 +219,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
   }
 
   WaypointModel _waypointFromIdx(int idx, WaypointType type,
-      {double? gateHalfWidthMeters}) {
+      {double? gateHalfWidthMeters, double? checkpointRadiusMeters}) {
     final pt = widget.parsedTrack.points[idx];
     return WaypointModel(
       id: 'track_pt_$idx',
@@ -222,6 +229,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
       lng: pt.longitude,
       type: type,
       gateHalfWidthMeters: gateHalfWidthMeters,
+      checkpointRadiusMeters: checkpointRadiusMeters,
     );
   }
 
@@ -245,6 +253,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
       _editingInizioGateWidth = null;
       _editingFineGateWidth = null;
       _editingControlIdxs = [];
+      _editingControlRadii = [];
       _selectionMode = _SelectionMode.none;
       _activeControlPointIdx = -1;
     });
@@ -265,6 +274,8 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
       _editingFineGateWidth = s.waypointFine.gateHalfWidthMeters;
       _editingControlIdxs =
           s.controlPoints.map(_ensureTrackIdx).toList();
+      _editingControlRadii =
+          s.controlPoints.map((cp) => cp.checkpointRadiusMeters).toList();
       _selectionMode = _SelectionMode.none;
       _activeControlPointIdx = -1;
     });
@@ -279,6 +290,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
       _editingInizioGateWidth = null;
       _editingFineGateWidth = null;
       _editingControlIdxs = [];
+      _editingControlRadii = [];
       _selectionMode = _SelectionMode.none;
       _activeControlPointIdx = -1;
       _cancelZoneEditing();
@@ -318,10 +330,15 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
         gateHalfWidthMeters: _editingInizioGateWidth);
     final fine = _waypointFromIdx(_editingFineIdx, WaypointType.fine,
         gateHalfWidthMeters: _editingFineGateWidth);
-    final controlPoints = _editingControlIdxs
-        .where((idx) => idx >= 0 && idx < ptCount)
-        .map((idx) => _waypointFromIdx(idx, WaypointType.intermedio))
-        .toList();
+    final controlPoints = <WaypointModel>[];
+    for (var i = 0; i < _editingControlIdxs.length; i++) {
+      final idx = _editingControlIdxs[i];
+      if (idx < 0 || idx >= ptCount) continue;
+      final radius =
+          i < _editingControlRadii.length ? _editingControlRadii[i] : null;
+      controlPoints.add(_waypointFromIdx(idx, WaypointType.intermedio,
+          checkpointRadiusMeters: radius));
+    }
 
     final special = SpecialModel(
       id: _editingIndex >= 0
@@ -495,6 +512,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
             _editingControlIdxs[_activeControlPointIdx] = clampedIdx;
           } else {
             _editingControlIdxs.add(clampedIdx);
+            _editingControlRadii.add(null);
           }
           break;
         case _SelectionMode.zoneStart:
@@ -1747,6 +1765,70 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
     );
   }
 
+  /// Fix 1 (09/08/2026) — soglia di rilevamento per un singolo checkpoint,
+  /// in metri: un CP è un booleano, non c'è timing da proteggere, quindi
+  /// una soglia ampia non ha controindicazioni sulla precisione (a
+  /// differenza della porta virtuale di inizio/fine PS).
+  Widget _buildCheckpointRadiusControl({
+    required Color color,
+    required double? value,
+    required ValueChanged<double?> onChanged,
+  }) {
+    final effective = value ?? AppConstants.waypointCheckpointRadiusMeters;
+    return Padding(
+      padding: const EdgeInsets.only(top: 2, bottom: 2),
+      child: Row(
+        children: [
+          Icon(Icons.adjust, size: 12, color: color.withValues(alpha: 0.7)),
+          const SizedBox(width: 4),
+          Text(
+            'Soglia: ${effective.toStringAsFixed(0)} m'
+            '${value == null ? ' (default)' : ''}',
+            style:
+                const TextStyle(fontSize: 10, color: AppColors.textSecondary),
+          ),
+          const SizedBox(width: 2),
+          Tooltip(
+            message:
+                'Distanza massima dalla traiettoria percorsa per considerare '
+                'il checkpoint agganciato. Un CP non influenza il tempo: una '
+                'soglia ampia riduce i falsi mancati senza controindicazioni. '
+                'Default 35 m.',
+            child: Icon(Icons.info_outline,
+                size: 12, color: AppColors.textSecondary),
+          ),
+          Expanded(
+            child: SliderTheme(
+              data: SliderThemeData(
+                activeTrackColor: color,
+                inactiveTrackColor: AppColors.border,
+                thumbColor: color,
+                trackHeight: 2,
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+              ),
+              child: Slider(
+                value: effective.clamp(15.0, 80.0),
+                min: 15,
+                max: 80,
+                divisions: 13,
+                label: '${effective.toStringAsFixed(0)} m',
+                onChanged: (v) => onChanged(v.roundToDouble()),
+              ),
+            ),
+          ),
+          if (value != null)
+            IconButton(
+              icon: const Icon(Icons.restore, size: 14),
+              tooltip: 'Ripristina default (35 m)',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+              onPressed: () => onChanged(null),
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildControlPointsSection(
       Color editColor, List<LatLng> pts, bool hasPts) {
     final contrast = _contrastColor(editColor);
@@ -1784,6 +1866,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
                 onPressed: () {
                   setState(() {
                     _editingControlIdxs.add(cpLo);
+                    _editingControlRadii.add(null);
                   });
                 },
                 icon: Icon(Icons.add_location, size: 14, color: contrast),
@@ -1936,6 +2019,17 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
                           ),
                         ],
                       ),
+                      _buildCheckpointRadiusControl(
+                        color: contrast,
+                        value: j < _editingControlRadii.length
+                            ? _editingControlRadii[j]
+                            : null,
+                        onChanged: (v) => setState(() {
+                          if (j < _editingControlRadii.length) {
+                            _editingControlRadii[j] = v;
+                          }
+                        }),
+                      ),
                     ],
                   ),
                 ),
@@ -1947,6 +2041,7 @@ class _SpecialsEditorScreenState extends ConsumerState<SpecialsEditorScreen> {
                       const BoxConstraints(minWidth: 28, minHeight: 28),
                   onPressed: () => setState(() {
                     _editingControlIdxs.removeAt(j);
+                    _editingControlRadii.removeAt(j);
                     if (_activeControlPointIdx >=
                         _editingControlIdxs.length) {
                       _activeControlPointIdx = -1;

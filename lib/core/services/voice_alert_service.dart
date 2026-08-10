@@ -75,9 +75,16 @@ class VoiceAlertService {
   static const double minSpeechRate = 0.4;
   static const double maxSpeechRate = 1.0;
 
-  /// Soglie di avvicinamento fisse (metri), in ordine decrescente —
-  /// l'ordine è significativo per [_consumeClosestThreshold].
-  static const List<int> approachThresholds = [1000, 500, 100];
+  /// Soglie di ATTIVAZIONE (metri), in ordine decrescente — l'ordine è
+  /// significativo per [_consumeClosestThreshold]. Fix 7 (09/08/2026):
+  /// anticipate rispetto alle soglie "storiche" (1000/500/100, ancora
+  /// usate come TESTO parlato in [distanceLabelForThreshold]) perché il tempo di
+  /// pronuncia dell'annuncio consumava quasi tutto l'anticipo reale a
+  /// 100m — l'istante in cui l'annuncio PARTE è ora ~100m prima (200m
+  /// invece di 100m), ma il riferimento verbale resta lo stesso
+  /// ("tra cento metri" ecc.): decisione esplicita dell'utente, non un
+  /// arrotondamento.
+  static const List<int> approachThresholds = [1200, 650, 200];
 
   /// Il punto ristoro usa solo 1000m/500m (priorità BASSA, niente avviso
   /// imminente a 100m).
@@ -252,10 +259,16 @@ class VoiceAlertService {
 
   // ── Soglie di distanza (D3) ──────────────────────────────────────────────
 
-  static String _distanceLabel(int thresholdM) => switch (thresholdM) {
-        1000 => 'un chilometro',
-        500 => 'cinquecento metri',
-        100 => 'cento metri',
+  // Fix 7 — mappa la soglia di ATTIVAZIONE al testo parlato "storico":
+  // l'istante dell'annuncio cambia (vedi [approachThresholds], anticipate),
+  // il riferimento verbale al pilota resta identico. Gestisce sia le nuove
+  // soglie anticipate (1200/650/200, usate da PS/pericoli/zone velocità)
+  // sia quelle storiche invariate (1000/500, il punto ristoro non è stato
+  // anticipato — fuori scope di questo fix).
+  static String distanceLabelForThreshold(int thresholdM) => switch (thresholdM) {
+        1200 || 1000 => 'un chilometro',
+        650 || 500 => 'cinquecento metri',
+        200 => 'cento metri',
         _ => '$thresholdM metri',
       };
 
@@ -292,14 +305,14 @@ class VoiceAlertService {
   void checkDangerApproach(String dangerId, String description, double distanceM) {
     final t = _consumeClosestThreshold('danger_$dangerId', distanceM, approachThresholds);
     if (t == null) return;
-    _announce('Attenzione, $description tra ${_distanceLabel(t)}',
+    _announce('Attenzione, $description tra ${distanceLabelForThreshold(t)}',
         VoiceAlertPriority.alta, VoiceAlertCategory.pericoli);
   }
 
   void checkSpecialStartApproach(String specialId, int numero, double distanceM) {
     final t = _consumeClosestThreshold('specialStart_$specialId', distanceM, approachThresholds);
     if (t == null) return;
-    _announce('Inizio prova speciale $numero tra ${_distanceLabel(t)}',
+    _announce('Inizio prova speciale $numero tra ${distanceLabelForThreshold(t)}',
         VoiceAlertPriority.media, VoiceAlertCategory.proveSpeciali);
   }
 
@@ -312,7 +325,7 @@ class VoiceAlertService {
   void checkSpecialEndApproach(String specialId, int numero, double distanceM) {
     final t = _consumeClosestThreshold('specialEnd_$specialId', distanceM, approachThresholds);
     if (t == null) return;
-    _announce('Fine prova speciale $numero tra ${_distanceLabel(t)}',
+    _announce('Fine prova speciale $numero tra ${distanceLabelForThreshold(t)}',
         VoiceAlertPriority.alta, VoiceAlertCategory.proveSpeciali);
   }
 
@@ -330,7 +343,7 @@ class VoiceAlertService {
     final t = _consumeClosestThreshold('speedZone_$zoneId', distanceM, approachThresholds);
     if (t == null) return;
     _announce(
-        'Zona a velocità controllata tra ${_distanceLabel(t)}, '
+        'Zona a velocità controllata tra ${distanceLabelForThreshold(t)}, '
         'limite ${limitKmh.round()} chilometri orari',
         VoiceAlertPriority.media,
         VoiceAlertCategory.zoneVelocita);
@@ -344,6 +357,14 @@ class VoiceAlertService {
         VoiceAlertCategory.zoneVelocita);
   }
 
+  /// Fix 7 (09/08/2026) — annuncio di uscita, mancante finora: simmetrico
+  /// a [announceSpeedZoneEntry], stessa priorità/categoria.
+  void announceSpeedZoneExit(String zoneId) {
+    if (!_consumeOnce('speedZoneExit_$zoneId')) return;
+    _announce('Fine zona a velocità controllata', VoiceAlertPriority.media,
+        VoiceAlertCategory.zoneVelocita);
+  }
+
   void announceCheckpointPassed(String checkpointId) {
     if (!_consumeOnce('checkpoint_$checkpointId')) return;
     _announce('Punto di controllo registrato', VoiceAlertPriority.media,
@@ -353,7 +374,7 @@ class VoiceAlertService {
   void checkFuelPointApproach(String fuelId, double distanceM) {
     final t = _consumeClosestThreshold('fuel_$fuelId', distanceM, fuelApproachThresholds);
     if (t == null) return;
-    _announce('Punto ristoro tra ${_distanceLabel(t)}', VoiceAlertPriority.bassa,
+    _announce('Punto ristoro tra ${distanceLabelForThreshold(t)}', VoiceAlertPriority.bassa,
         VoiceAlertCategory.puntoRistoro);
   }
 

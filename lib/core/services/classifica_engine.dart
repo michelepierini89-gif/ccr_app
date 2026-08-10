@@ -138,24 +138,39 @@ class ClassificaEngine {
       );
     }).toList();
 
-    // PASSO 2: penalità forfettaria PS saltate = peggiore tempo registrato
-    // tra tutti i piloti per quella PS + 30 minuti.
-    final hasSkipped = computed.any((c) => c.speciali.any((st) => st.skipped));
-    if (hasSkipped) {
+    final specialiValide =
+        event.speciali.where((s) => !s.annullata).length;
+
+    // PASSO 2: penalità forfettaria PS saltate O non rilevate = peggiore
+    // tempo registrato tra tutti i piloti per quella PS + 30 minuti (Fix 3,
+    // 09/08/2026 — unificato: [skipped] è il salto esplicito del pilota,
+    // [notDetected] è l'assenza di dati GPS reali, stessa formula per
+    // entrambi). Se NESSUN pilota ha un tempo reale per quella PS, la base
+    // è il tempo limite gara diviso il numero di speciali (invece del
+    // vecchio 90 min fisso) — e si ricalcola automaticamente ad ogni nuova
+    // esecuzione di compute() (chiamata reattiva ad ogni update Firestore),
+    // quando altri piloti completano la PS.
+    final hasForfeit =
+        computed.any((c) => c.speciali.any((st) => st.skipped || st.notDetected));
+    if (hasForfeit) {
       final worstBySp = <String, Duration>{};
       for (final c in computed) {
         for (final st in c.speciali) {
-          if (st.skipped) continue;
+          if (st.skipped || st.notDetected) continue;
           if (st.timingError == 'rilevamento_non_valido') continue;
           final prev = worstBySp[st.specialeId];
           if (prev == null || st.tempo > prev) worstBySp[st.specialeId] = st.tempo;
         }
       }
+      final defaultBase = specialiValide > 0
+          ? Duration(
+              minutes: (event.maxRaceTimeMinutes / specialiValide).round())
+          : const Duration(minutes: 90);
       computed = computed.map((c) {
-        if (!c.speciali.any((st) => st.skipped)) return c;
+        if (!c.speciali.any((st) => st.skipped || st.notDetected)) return c;
         final updated = c.speciali.map((st) {
-          if (!st.skipped) return st;
-          final worst = worstBySp[st.specialeId] ?? const Duration(minutes: 90);
+          if (!st.skipped && !st.notDetected) return st;
+          final worst = worstBySp[st.specialeId] ?? defaultBase;
           final forfeit = worst + const Duration(minutes: 30);
           return st.copyWith(tempo: forfeit, penaltySeconds: forfeit.inSeconds);
         }).toList();
@@ -172,9 +187,6 @@ class ClassificaEngine {
         );
       }).toList();
     }
-
-    final specialiValide =
-        event.speciali.where((s) => !s.annullata).length;
 
     if (event.tipologiaClassifica == TipologiaClassifica.punteggioSpeciale) {
       return _rankByPoints(computed, event, penalties);
@@ -221,6 +233,30 @@ class ClassificaEngine {
           controlPointsOk: false,
           skipped: true,
           timingError: 'speciale_saltata',
+        ));
+        continue;
+      }
+
+      // FIX 3 (09/08/2026) — se inizio o fine non hanno un dato REALE
+      // (porta o raggio) ma solo una stima a tempo fisso di GpsService
+      // (timingMethod=='forfait': _closeOpenSpecial o
+      // _tryRecoverSkippedSpecials senza alcun punto GPS trovato entro il
+      // raggio di recovery), NON interpolare un tempo dalla differenza tra
+      // due timestamp di cui almeno uno non misura nulla di reale — quel
+      // numero non ha significato. Applica invece la stessa penalità
+      // forfettaria del salto volontario (peggior tempo tra i piloti su
+      // questa PS + 30 minuti, PASSO 2 sotto), con dicitura UI distinta.
+      if (start.timingMethod == 'forfait' || end.timingMethod == 'forfait') {
+        result.add(SpecialTempo(
+          specialeId: special.id,
+          specialeNome: special.nome,
+          ordine: special.ordine,
+          tempo: Duration.zero,
+          controlPointsOk: false,
+          notDetected: true,
+          timingError: 'speciale_non_rilevata',
+          startTimingMethod: start.timingMethod,
+          endTimingMethod: end.timingMethod,
         ));
         continue;
       }

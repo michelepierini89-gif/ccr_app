@@ -312,6 +312,26 @@ class DiagnosticLogger {
         distanceToReferenceTrackMeters?.toStringAsFixed(1),
       ]);
 
+  /// Fix 1 (09/08/2026) — riepilogo di fine sessione per un checkpoint:
+  /// distanza minima raggiunta dalla traiettoria durante l'intera sessione
+  /// (null se mai calcolata, cioè nessun fix valido ricevuto dopo i primi
+  /// 10s), se è stato registrato come passato, e con quale metodo (punto o
+  /// segmento) è stata misurata quella distanza minima. campo1:
+  /// waypointId, campo2: distanzaMinimaMetri, campo3: registrato
+  /// (si/no), campo4: metodo (cp_point|cp_segment).
+  void logCheckpointSummary(
+    String waypointId,
+    double? minDistanceMeters,
+    bool registered,
+    String? method,
+  ) =>
+      log('checkpoint', 'riepilogo', [
+        waypointId,
+        minDistanceMeters?.toStringAsFixed(1),
+        registered ? 'si' : 'no',
+        method,
+      ]);
+
   // ── IMU (campo1: headingDisplay, campo2: headingGps) ────────────────────
 
   /// Throttled internamente a 1 riga ogni 5s (spec 4A) — chiamare da un

@@ -558,6 +558,19 @@ class _TrackReplayScreenState extends ConsumerState<TrackReplayScreen> {
                 DataCell(Text(c == cfg ? '${cfg.gateCount}' : '')),
               const DataCell(Text('')),
             ]),
+            // Fix 1 (09/08/2026) — checkpoint agganciati su totale
+            // configurati, per confrontare prima/dopo il fix del
+            // rilevamento su traiettoria.
+            if (cfg.cpTotal > 0)
+              DataRow(cells: [
+                DataCell(Text('${cfg.configNome} — checkpoint agganciati',
+                    style: const TextStyle(
+                        color: AppColors.textSecondary, fontSize: 11))),
+                for (final c in results)
+                  DataCell(Text(
+                      c == cfg ? '${cfg.cpPassedCount}/${cfg.cpTotal}' : '')),
+                const DataCell(Text('')),
+              ]),
           ],
         ],
       ),

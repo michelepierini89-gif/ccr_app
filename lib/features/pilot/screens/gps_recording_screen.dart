@@ -26,7 +26,9 @@ import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/firebase_error_handler.dart';
+import '../../../core/utils/heading_display_utils.dart';
 import '../../../core/utils/location_utils.dart';
+import '../../../core/utils/time_format_utils.dart';
 import '../../map/danger_marker_icon.dart';
 import '../../map/widgets/speed_zone_layer.dart';
 import '../../map/widgets/track_layer.dart';
@@ -1335,16 +1337,18 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
             _programmaticMove = true;
             _mapController.move(curPos, _mapZoom);
             if (_headingMode) {
-              // displayHeadingDeg already in degrees [0,360) — no radians conversion needed
-              _mapController.rotate(-displayHeadingDeg);
+              _mapController.rotate(HeadingDisplayUtils.mapRotationDeg(
+                  _headingMode, displayHeadingDeg));
             }
           });
         }
 
-        // NORD mode: arrow rotates by displayHeadingDeg (converted to radians for Transform.rotate)
-        // HEADING mode: map already rotated → arrow fixed pointing up (angle 0)
-        // No double-rotation: either the map rotates OR the arrow rotates, never both.
-        final arrowAngle = _headingMode ? 0.0 : displayHeadingDeg * pi / 180;
+        // Fix 6 — calcolo estratto in HeadingDisplayUtils (funzioni pure,
+        // testate in isolamento): NORD, la freccia ruota di
+        // displayHeadingDeg; HEADING, la mappa è già ruotata e la freccia
+        // resta fissa (angolo 0). Mai entrambe contemporaneamente.
+        final arrowAngle =
+            HeadingDisplayUtils.arrowAngleRad(_headingMode, displayHeadingDeg);
         final hasPos = liveData != null || pos != null;
         // Velocità geometrica (distanza/tempo tra punti GPS accettati),
         // coerente col filtro jump — non position.speed, inaffidabile.
@@ -1758,9 +1762,16 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                     ),
                   ),
                 ),
-              // Debug overlay: bearing, rotazione mappa e velocità (solo debug)
-              if (kDebugMode)
-                Positioned(
+              // Fix 6 (09/08/2026) — debug overlay SEMPRE visibile (anche in
+              // release: gli unici test reali su strada usano l'APK
+              // release, non un build debug) con tutti i valori in gioco
+              // per la modalità mappa rotante: heading display (quello
+              // effettivamente usato per freccia/mappa), bearing GPS
+              // grezzo, rotazione applicata alla mappa, angolo applicato
+              // alla freccia e la modalità corrente — per diagnosticare sul
+              // campo un eventuale disallineamento senza dover riprodurre
+              // il problema nel codice.
+              Positioned(
                   bottom: 80,
                   left: 8,
                   child: Container(
@@ -1771,9 +1782,16 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
+                          'MODE:${_headingMode ? "HEADING" : "NORD"} '
                           'GY:${imu.fusedHeadingDeg.toStringAsFixed(0)}° '
                           'GPS:${gps.bearingDeg.toStringAsFixed(0)}° '
-                          'M:${(_headingMode ? -displayHeadingDeg : 0.0).toStringAsFixed(0)}° '
+                          'DISP:${displayHeadingDeg.toStringAsFixed(0)}°',
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 11),
+                        ),
+                        Text(
+                          'MAP:${HeadingDisplayUtils.mapRotationDeg(_headingMode, displayHeadingDeg).toStringAsFixed(0)}° '
+                          'ARROW:${(arrowAngle * 180 / pi).toStringAsFixed(0)}° '
                           'V:${imu.fusedSpeedKmh.toStringAsFixed(0)}km/h',
                           style: const TextStyle(
                               color: Colors.white, fontSize: 11),
@@ -2095,12 +2113,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     return LocationUtils.formatTimestamp(passage.timestamp);
   }
 
-  static String _formatElapsed(Duration d) {
-    final m = d.inMinutes;
-    final s = d.inSeconds % 60;
-    final tenths = (d.inMilliseconds % 1000) ~/ 100;
-    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}.$tenths';
-  }
+  static String _formatElapsed(Duration d) => TimeFormatUtils.formatRaceTime(d);
 
   static const _trackColorOptions = [
     Colors.blue,

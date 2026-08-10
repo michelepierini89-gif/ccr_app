@@ -57,3 +57,10 @@ windows/
 
 # Firebase Functions generated manifest (regenerate with FUNCTIONS_MANIFEST_OUTPUT_PATH)
 functions/functions.yaml
+
+# Node/Firebase CLI local artifacts (root-level, non fanno parte dell'app Flutter)
+node_modules/
+.firebase/
+
+# Artefatti di build Android generati da flutter/gradle
+android/build/
