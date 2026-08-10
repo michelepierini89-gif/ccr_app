@@ -13,7 +13,15 @@ import '../models/classifica_model.dart';
 import 'track_smoother.dart';
 
 class FirestoreService {
-  FirebaseFirestore get _db => FirebaseFirestore.instance;
+  /// [firestore] è iniettabile solo per i test (es. `FakeFirebaseFirestore`
+  /// da `fake_cloud_firestore` — vedi
+  /// `test/core/services/firestore_track_save_test.dart`); tutti i call
+  /// site di produzione usano il costruttore senza argomenti e ottengono
+  /// `FirebaseFirestore.instance` come sempre.
+  FirestoreService({FirebaseFirestore? firestore}) : _dbOverride = firestore;
+
+  final FirebaseFirestore? _dbOverride;
+  FirebaseFirestore get _db => _dbOverride ?? FirebaseFirestore.instance;
 
   // Events
   Future<String> createEvent(EventModel event) async {
@@ -280,6 +288,18 @@ class FirestoreService {
   /// Cancella prima eventuali chunk di un salvataggio precedente per lo
   /// stesso pilota (idempotente: un secondo salvataggio con meno campioni
   /// non lascia chunk residui più vecchi e più lunghi).
+  ///
+  /// Fix (10/08/2026) — cancellazione e scrittura in DUE commit sequenziali
+  /// separati, non nello stesso batch: un salvataggio successivo genera
+  /// sempre chunk con lo stesso schema di id zero-padded (`00000000`,
+  /// `00002000`, ...), quindi un secondo salvataggio riusa quasi sempre
+  /// almeno l'id del primo chunk. `delete()` e `set()` sullo STESSO
+  /// riferimento documento all'interno di un unico `WriteBatch` hanno
+  /// semantica d'ordine non affidabile in pratica (verificato con un test
+  /// di integrazione: il risultato osservato era che il documento restava
+  /// cancellato invece di contenere il nuovo `set`) — separarli in due
+  /// commit elimina l'ambiguità alla radice invece di dipendere da un
+  /// comportamento non garantito.
   Future<void> saveFullPilotTrack(
       String eventId, String userId, List<RawTrackSample> samples) async {
     final chunksRef = _db
@@ -290,17 +310,21 @@ class FirestoreService {
         .collection(FirebaseConstants.fullTrackChunks);
 
     final existing = await chunksRef.get();
-    if (existing.docs.isNotEmpty || samples.isNotEmpty) {
-      final batch = _db.batch();
+    if (existing.docs.isNotEmpty) {
+      final deleteBatch = _db.batch();
       for (final doc in existing.docs) {
-        batch.delete(doc.reference);
+        deleteBatch.delete(doc.reference);
       }
+      await deleteBatch.commit();
+    }
+    if (samples.isNotEmpty) {
+      final writeBatch = _db.batch();
       for (var i = 0; i < samples.length; i += _fullTrackChunkSize) {
         final end = (i + _fullTrackChunkSize < samples.length)
             ? i + _fullTrackChunkSize
             : samples.length;
         final chunk = samples.sublist(i, end);
-        batch.set(chunksRef.doc(i.toString().padLeft(8, '0')), {
+        writeBatch.set(chunksRef.doc(i.toString().padLeft(8, '0')), {
           'samples': chunk
               .map((s) => {
                     'lat': s.lat,
@@ -311,7 +335,7 @@ class FirestoreService {
               .toList(),
         });
       }
-      await batch.commit();
+      await writeBatch.commit();
     }
 
     // Campo legacy sul documento pilota: mantenuto vuoto/rimosso per non
@@ -370,6 +394,28 @@ class FirestoreService {
             ))
         .toList();
   }
+
+  /// Fix (10/08/2026) — best-effort: chiamato dal `catch` che avvolge i
+  /// salvataggi traccia a fine sessione, quando quei salvataggi falliscono.
+  /// È un `.set()` piccolo (poche decine di byte, mai vicino al limite
+  /// 1 MiB che ha causato il bug originale), quindi ha buone probabilità di
+  /// riuscire anche quando il salvataggio della traccia intera fallisce —
+  /// ma il chiamante lo avvolge comunque nel proprio try/catch: se anche
+  /// questo fallisce (es. nessuna connessione affatto), l'unica
+  /// testimonianza resta il log diagnostico locale
+  /// ([DiagnosticLogger.logTrackSaveError]), scritto sempre prima.
+  Future<void> flagTrackSaveError(
+          String eventId, String userId, String reason) =>
+      _db
+          .collection(FirebaseConstants.tracking)
+          .doc(eventId)
+          .collection(FirebaseConstants.pilots)
+          .doc(userId)
+          .set({
+            'trackSaveError': true,
+            'trackSaveErrorReason': reason,
+            'trackSaveErrorAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
 
   /// Salva i tempi ufficiali di [userId] ricalcolati post-gara (Blocco B),
   /// uno per speciale, in campi separati dai tempi live — la classifica

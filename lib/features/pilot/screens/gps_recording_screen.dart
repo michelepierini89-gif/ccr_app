@@ -379,7 +379,14 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
               .read(firestoreServiceProvider)
               .saveFullPilotTrack(eid, user.uid, fullSamples);
         }
-      } catch (_) {}
+      } catch (e) {
+        _diagLogger.logTrackSaveError('timeout', e);
+        try {
+          await ref
+              .read(firestoreServiceProvider)
+              .flagTrackSaveError(eid, user.uid, e.toString());
+        } catch (_) {}
+      }
     }
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -587,7 +594,14 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                 .read(firestoreServiceProvider)
                 .saveFullPilotTrack(finEventId, finUserId, finFullSamples);
           }
-        } catch (_) {}
+        } catch (e) {
+          _diagLogger.logTrackSaveError('fine_gara', e);
+          try {
+            await ref
+                .read(firestoreServiceProvider)
+                .flagTrackSaveError(finEventId, finUserId, e.toString());
+          } catch (_) {}
+        }
       }
       await gps.stopRecording();
       setState(() => _elapsed = Duration.zero);
@@ -724,7 +738,14 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
               .read(firestoreServiceProvider)
               .saveFullPilotTrack(eventId, user.uid, fullSamples);
         }
-      } catch (_) {}
+      } catch (e) {
+        _diagLogger.logTrackSaveError('ritiro', e);
+        try {
+          await ref
+              .read(firestoreServiceProvider)
+              .flagTrackSaveError(eventId, user.uid, e.toString());
+        } catch (_) {}
+      }
     }
 
     if (mounted) {

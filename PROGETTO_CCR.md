@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 09 agosto 2026 (Step 38 completato)  
+**Data aggiornamento:** 10 agosto 2026 (Step 40 completato)  
 **Branch:** main  
 **Versione:** 1.0.2+3
 
@@ -1631,6 +1631,73 @@ id/nome arbitrario.
 
 ---
 
+### Step 39 — Checkpoint su traiettoria, chunking pilotTrackFull, 7 fix dal test 100km (09 agosto 2026) ✅
+
+**Contesto:** sessione interrotta prima del commit/deploy — recuperata e completata il 10/08/2026 (vedi Step 40) insieme alle verifiche promesse e mai riportate. Commit `ae57475`.
+
+**Fix 1 — Checkpoint su traiettoria (`waypoint_detector.dart`, `gps_service.dart`, `waypoint_model.dart`):** i checkpoint (`SpecialModel.controlPoints`) usano ora `WaypointDetector.detectCheckpointPassage` — segmento punto-precedente→punto-corrente Kalman-filtrato, soglia 35m (era raggio puntuale 20m + doppia conferma), soglia configurabile per singolo CP (`WaypointModel.checkpointRadiusMeters`). Inizio/fine PS e zone velocità restano sul percorso porta+raggio esistente. Log diagnostico di fine sessione per ogni CP configurato (distanza minima raggiunta, agganciato o meno, metodo).
+
+**Fix 2 — Formattazione tempo unificata (`time_format_utils.dart`, nuovo):** unica funzione condivisa per `mm:ss.cc`, usata da classifica/timing/riepilogo gara; nuova colonna "Tempo (ms)" nell'export CSV per l'elaborazione a valle.
+
+**Fix 3 — Dicitura salto volontario vs speciale non rilevata (`classifica_model.dart`, `classifica_engine.dart`, `classifica_screen.dart`):** distingue esplicitamente in UI/classifica il caso "PS saltata dal pilota" (bottone SALTA SPECIALE) dal caso "PS non rilevata dal GPS" (recovery/forfait) — prima usavano la stessa dicitura generica.
+
+**Fix 4 — Query dispute CP filtrata per pilota (`firestore_service.dart`):** `myCpDisputesStreamProvider`/query dedicata SOLO alle dispute del pilota corrente per l'evento (prima leggeva tutte le dispute dell'evento lato client).
+
+**Fix 5 — Chunking `pilotTrackFull` (`firestore_service.dart`, `firebase_constants.dart`) — root cause della perdita dati del test 100km:** `saveFullPilotTrack` scriveva `samples` come un unico campo array sul documento pilota; su una gara lunga questo può superare il limite Firestore di 1 MiB, il `.set()` falliva e l'eccezione veniva ingoiata da un `catch` generico — la traccia risultava silenziosamente assente. Riscritto per spezzare `samples` in chunk da 2000 campioni nella sottocollezione `fullTrackChunks`; `getFullPilotTrack` legge prima i chunk, fallback sul vecchio campo singolo per le tracce salvate prima del fix. **Scritto ma non verificato end-to-end in questa sessione — vedi Step 40.**
+
+**Fix 6 — `HeadingDisplayUtils` (`heading_display_utils.dart`, nuovo):** le due rotazioni (angolo freccia, rotazione mappa) estratte da `gps_recording_screen.dart` a funzioni pure testabili in isolamento. Overlay debug reso sempre visibile (prima solo `kDebugMode`).
+
+**Fix 7 — Annuncio vocale di uscita zona velocità (`voice_alert_service.dart`, `gps_service.dart`):** mancava il simmetrico dell'annuncio di ingresso in zona a velocità controllata.
+
+**Nuovi test:** `checkpoint_trajectory_test.dart` (confronto Fix 1 legacy/nuovo su traccia reale sintetica), `classifica_engine_forfait_test.dart`, `voice_alert_thresholds_test.dart`, `heading_display_utils_test.dart`.
+
+**Deploy (completato il 10/08, vedi Step 40):**
+- `flutter analyze`: 0 issues
+- `flutter test`: 68/68 verdi
+- `flutter build web --release` + `firebase deploy --only hosting,firestore` ✅
+- `git push origin main` ✅
+
+---
+
+### Step 40 — Verifiche mancanti dallo Step 39, salvataggio traccia verificato end-to-end, audit sorgenti posizione (10 agosto 2026) ✅
+
+**Obiettivo:** completare le 3 verifiche promesse e mai riportate dello Step 39, poi mettere alla prova il fix del limite 1 MiB (mai testato end-to-end) prima di fidarsene, poi rispondere alla domanda di fondo sulla degradazione della traccia in curva: quale sorgente di posizione alimenta cosa. Il resto della Parte 2 (modello di moto adattivo, griglia parametrica) è stato **deliberatamente sospeso**: la traccia del test 100km del 09/08 non ha timestamp reali utilizzabili (uno dei due piloti senza traccia affatto, l'altro solo con `pilotTrack` senza timestamp) — una griglia costruita su quei dati avrebbe prodotto numeri privi di significato. Resta in sospeso finché non ci sarà una traccia reale con timestamp veri da un nuovo test, ora garantiti dal fix verificato in questa sessione.
+
+**Verifiche Step 39 (su dati reali dell'evento "Carring Clo 2 HB", 09/08/2026, tramite nuovo `tools/firestore-cli.js`):**
+- **Checkpoint:** replay `TrackReplayService.runFullPipeline` sul pilota con traccia disponibile (11237 punti, timestamp sintetici 1s — l'altro pilota non ha alcuna traccia salvata, vedi sotto): **18/28 CP col vecchio metodo → 26/28 col Fix 1**, +8 recuperati. I 2 residui: uno a 490m (taglio di percorso reale), uno a 37m (appena oltre la soglia 35m).
+- **pilotTrackFull:** assente per ENTRAMBI i piloti (né chunk né campo legacy) — confermato che il bug pre-Fix-5 ha effettivamente inghiottito la traccia grezza di quel test. Il ricalcolo "Tempi ufficiali" salterebbe entrambi i piloti con "nessuna traccia GPS completa salvata".
+- **HeadingDisplayUtils:** le funzioni estratte sono matematicamente identiche al codice inline sostituito — nessuna doppia rotazione trovata, il codice era già corretto prima e dopo.
+
+**1 — Salvataggio traccia a chunk verificato end-to-end (`test/core/services/firestore_track_save_test.dart`, nuovo, con `fake_cloud_firestore`):**
+- Test con tracce da 13000 e 18000 punti (ordine di grandezza/estremo del test 100km): scrittura in più chunk confermata, nessun chunk sopra 1 MiB, rilettura identica (ordine + timestamp) al campione originale.
+- **Bug reale trovato dal test, non del fake:** `saveFullPilotTrack` cancellava i chunk del salvataggio precedente e scriveva i nuovi nello STESSO `WriteBatch` — un secondo salvataggio genera quasi sempre chunk con lo stesso schema di id (`00000000`, `00002000`, ...), quindi `delete()` e `set()` sullo stesso riferimento documento finivano nello stesso batch. Verificato che il risultato osservabile è "documento cancellato" invece di "nuovo contenuto" — semantica d'ordine non affidabile per scritture duplicate sullo stesso doc in un unico batch. Fix: cancellazione e scrittura separate in due commit sequenziali, che elimina l'ambiguità alla radice.
+- `FirestoreService` ora accetta un `FirebaseFirestore` iniettabile nel costruttore (default `FirebaseFirestore.instance`, nessun impatto sui call site di produzione) per rendere possibile questo genere di test.
+
+**2 — Salvaguardia runtime su fallimento (`diagnostic_logger.dart`, `firestore_service.dart`, `gps_recording_screen.dart`, `race_result_screen.dart`):** i 3 punti che salvano la traccia a fine sessione (FINE GARA, RITIRO, timeout) avevano `catch (_) {}` — esattamente il pattern che ha causato la perdita silenziosa dei dati del test 100km. Ora: `DiagnosticLogger.logTrackSaveError` (locale, sempre scritto per primo, unica garanzia se anche il resto fallisce) + tentativo best-effort di scrivere un flag `trackSaveError`/`trackSaveErrorReason` su Firestore (`FirestoreService.flagTrackSaveError`, un `.set()` piccolo, difficilmente colpito dallo stesso limite) + banner rosso nel riepilogo post-gara (`race_result_screen.dart`) se il flag è presente.
+
+**3 — Timestamp reali (chiarimento, nessun bug trovato):** `pilotTrack` (il campo semplice usato per la polyline) non ha MAI portato timestamp per punto, per design — non è un difetto, non è mai stato pensato per il replay. I timestamp reali per fix sono catturati correttamente in memoria durante la sessione (`GpsService._recoveryTimestamps`, un `DateTime.now()` per ogni fix accettato) e destinati a `pilotTrackFull`/`fullTrackChunks` — per il test del 09/08 sono andati persi insieme al resto per il bug del Fix 5, non per un problema di design nella cattura. Il test del punto 1 conferma che, col fix verificato, il round-trip dei timestamp è esatto al millisecondo.
+
+**Parte 2A — Audit sorgenti posizione (nessuna modifica necessaria, separazione già corretta):**
+- Traccia salvata su Firestore (`pilotTrack`): `GpsService._trackPoints`, popolato con `filteredPos` (Kalman) — `gps_service.dart:2371`.
+- `pilotTrackFull`/chunk: `_recoveryTrack`, stesso `filteredPos` — `gps_service.dart:2146`.
+- Polyline blu in navigazione: `gps.localTrack` (= `_trackPoints`) — `gps_recording_screen.dart:1586-1589`.
+- Porte: `WaypointDetector.detectGateCrossing` su `filteredPos` — `gps_service.dart:2170-2177`.
+- Checkpoint: `WaypointDetector.detectCheckpointPassage` su segmento `filteredPos` — `gps_service.dart:2208-2216`.
+- Recovery (inizio/fine PS saltate): `_trySpecialStartRecovery`/`_trySpecialEndRecovery` su `filteredPos` — `gps_service.dart:2224-2226`.
+- Distanza totale: accumulata da `_trackPoints` (`filteredPos`) — `gps_service.dart:2367-2371`.
+- Freccia/rotazione mappa: `curPos = _imuPosition ?? _displayPos ?? rawPos` (IMU con dead reckoning ammesso) — `gps_recording_screen.dart:1348`. Collegamento IMU↔GPS verificato **a senso unico**: `GpsService` chiama solo `_imu.start()/stop()/updateWithGps(filteredPos, ...)` (`gps_service.dart:2406`, GPS ancora l'IMU), non legge mai nulla da `ImuFusionService` per la propria logica — commento già presente nel codice conferma l'invariante.
+- **Nota minore (fuori dall'elenco richiesto):** `_canFinishNearStart`/`_isNearStartPoint` (`gps_recording_screen.dart:2538-2563`, gate del bottone FINE GARA "sei tornato vicino alla partenza") usa `curPos`, quindi può essere IMU-influenzato — non tocca dati registrati/timing, solo l'abilitazione di un bottone con soglia già ampia per tolleranza. Segnalato, non corretto: non rientra nell'elenco traccia/polyline/porte/checkpoint/recovery/distanza.
+
+**Conclusione per la Parte 2 sospesa:** la separazione dei dati è già corretta — se la degradazione in curva osservata nel test 100km è reale, la causa è nel modello di moto rettilineo uniforme del Kalman (o nei suoi filtri di accuracy/jump), non in una contaminazione da IMU/dead reckoning. Resta da confermare con dati veri (timestamp reali) da un nuovo test.
+
+**Deploy:**
+- `flutter analyze`: 0 issues
+- `flutter test`: 72/72 verdi
+- `firebase deploy --only hosting` ✅
+- `git push origin main` ✅
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**
@@ -1650,6 +1717,8 @@ id/nome arbitrario.
 **Validazione banco di replay (Step 37 — Parte 1E, dati sintetici finora):**
 - Rieseguire il confronto raggio/porta/RTS su una gara futura con `pilotTrackFull` reale (timestamp + accuracy veri, non sintetici) per validare i valori assoluti di durata, non solo il confronto qualitativo tra metodi
 - Verificare se la perdita di 2 PS su 5 passando da porta+raggio a porta+RTS (vista nella validazione sintetica) si ripete su dati con cadenza di campionamento reale (250ms in speciale) invece del 1s sintetico usato
+
+**BLOCCATO — qualità traccia in curva, griglia parametrica (Parte 2 sospesa allo Step 40):** l'app nativa produce una traccia meno aderente al percorso reale della web app, soprattutto in curva (sospetto: modello di moto rettilineo uniforme del Kalman — la separazione dati è già verificata corretta, vedi Step 40 Parte 2A). Serve un **nuovo test su strada** con il fix del salvataggio a chunk (ora verificato end-to-end) per avere `pilotTrackFull` con timestamp REALI per entrambi i dispositivi — la traccia del 09/08 non è utilizzabile (un pilota senza traccia, l'altro senza timestamp). Con quei dati, restano da fare: stima velocità angolare da bearing GPS, sigmaAccel adattivo alla curvatura, valutazione modello CTRV, dead reckoning progressivamente ridotto in curva, controllo di coerenza bussola, metriche di scostamento dalla KML + griglia parametrica nel banco di replay, esecuzione sui dati reali con raccomandazione sui default (da NON fissare senza prima riportare i numeri).
 
 **Limiti noti dallo Step 38 (diagnosticati, non risolti — nessuna azione pianificata, solo da tenere a mente):**
 - `_trySpecialStartRecovery`/`_trySpecialEndRecovery`: il tentativo "one-shot" può consumarsi troppo presto durante l'avvicinamento a un waypoint (quando la distanza è ancora calando verso il target, non ancora al minimo), fallendo il lookback e non venendo mai ritentato — osservato su PS4 INIZIO. Il Fix 1 (precedenza) ne limita il danno quando una porta successiva recupera il dato, ma il meccanismo in sé resta fragile. Una revisione (es. tentare al momento di massimo avvicinamento, non al primo ingresso in raggio) richiede test approfonditi su altre gare prima di toccare una logica già più volte tarata sul campo.

@@ -458,6 +458,42 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
     }
   }
 
+  /// Fix (10/08/2026) — il campo `trackSaveError` (scritto da
+  /// `FirestoreService.flagTrackSaveError`, best-effort, dal `catch` che
+  /// avvolge i salvataggi traccia a fine sessione) è l'unico modo per il
+  /// pilota di sapere che la propria traccia non è stata salvata
+  /// correttamente — prima di questo fix l'errore era completamente
+  /// silenzioso lato pilota (vedi Step 39/Parte 1b: la traccia del test
+  /// 100km del 09/08 è andata persa così, senza alcun avviso).
+  Widget _buildTrackSaveErrorBanner(Map<String, dynamic>? statusData) {
+    if (statusData?['trackSaveError'] != true) return const SizedBox.shrink();
+    final reason = statusData?['trackSaveErrorReason'] as String?;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.error.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.error.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.error_outline, color: AppColors.error, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Traccia non salvata correttamente. La mappa e/o il ricalcolo '
+              'tempi ufficiali potrebbero non essere disponibili per questa '
+              'gara.${reason != null ? '\nMotivo: $reason' : ''}',
+              style: const TextStyle(color: AppColors.error, fontSize: 12),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildCpDisputeBanner(
     BuildContext context,
     EventModel? event,
@@ -575,6 +611,7 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
             _StatusHeader(entry: myEntry),
             const SizedBox(height: 16),
           ],
+          _buildTrackSaveErrorBanner(statusData),
           _buildCpDisputeBanner(context, event, userId, myReg, missedCps),
           if (speciali.isNotEmpty) ...[
             const Text(

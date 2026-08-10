@@ -332,6 +332,18 @@ class DiagnosticLogger {
         method,
       ]);
 
+  /// Fix (10/08/2026) — il salvataggio di `pilotTrack`/`pilotTrackFull` a
+  /// fine sessione (FINE GARA/RITIRO/timeout) era avvolto in un
+  /// `catch (_) {}` che ingoiava silenziosamente qualunque errore — causa
+  /// reale della perdita della traccia del test 100km del 09/08 (limite
+  /// 1 MiB, oggi corretto con la sottocollezione a chunk). Chiamato PRIMA
+  /// del tentativo di scrivere il flag `trackSaveError` su Firestore (che
+  /// può a sua volta fallire): questa riga resta l'unica testimonianza
+  /// garantita se anche quello fallisce. campo1: fase
+  /// (fine_gara|ritiro|timeout), campo2: errore.
+  void logTrackSaveError(String fase, Object error) =>
+      log('traccia', 'salvataggio_fallito', [fase, error.toString()]);
+
   // ── IMU (campo1: headingDisplay, campo2: headingGps) ────────────────────
 
   /// Throttled internamente a 1 riga ogni 5s (spec 4A) — chiamare da un
