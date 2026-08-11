@@ -34,6 +34,9 @@ dependencies:
   flutter_compass: ^0.8.0
   flutter_tts: ^4.2.0
   share_plus: ^11.0.0
+  image_picker: ^1.1.2
+  image: ^4.3.0
+  cached_network_image: ^3.4.1
 
 dev_dependencies:
   flutter_test:
@@ -45,3 +48,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/icons/
+    - assets/docs/

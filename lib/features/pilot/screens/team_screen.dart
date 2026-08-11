@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../core/models/registration_model.dart';
 import '../../../core/models/team_model.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/widgets/user_avatar_by_id.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../admin/providers/admin_provider.dart';
 
@@ -194,10 +196,18 @@ class _TeamScreenState extends ConsumerState<TeamScreen> {
       }
     }
 
+    RegistrationModel? memberReg(String memberId) {
+      try {
+        return regs.firstWhere((r) => r.userId == memberId);
+      } catch (_) {
+        return null;
+      }
+    }
+
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(title: const Text('Squadra')),
-      body: teamsAsync.when(
+      body: SafeArea(bottom: true, child: teamsAsync.when(
         loading: () => const Center(
             child: CircularProgressIndicator(color: AppColors.accent)),
         error: (e, _) => Center(
@@ -300,14 +310,12 @@ class _TeamScreenState extends ConsumerState<TeamScreen> {
                                 vertical: 4),
                             child: Row(
                               children: [
-                                Icon(
-                                  id == _userId
-                                      ? Icons.person_pin
-                                      : Icons.person,
-                                  color: id == _userId
-                                      ? AppColors.accent
-                                      : AppColors.textSecondary,
-                                  size: 16,
+                                UserAvatarById(
+                                  userId: id,
+                                  fallbackNome: memberReg(id)?.nome ?? '',
+                                  fallbackCognome:
+                                      memberReg(id)?.cognome ?? '',
+                                  size: 24,
                                 ),
                                 const SizedBox(width: 8),
                                 Text(
@@ -467,6 +475,7 @@ class _TeamScreenState extends ConsumerState<TeamScreen> {
             ),
           );
         },
+      ),
       ),
     );
   }

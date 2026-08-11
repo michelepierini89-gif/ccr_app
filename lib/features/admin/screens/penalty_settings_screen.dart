@@ -146,7 +146,7 @@ class _PenaltySettingsScreenState
           onPressed: () => context.pop(),
         ),
       ),
-      body: _loading
+      body: SafeArea(bottom: true, child: _loading
           ? const Center(
               child: CircularProgressIndicator(color: AppColors.accent))
           : _errorMsg != null
@@ -336,6 +336,7 @@ class _PenaltySettingsScreenState
                     ],
                   ),
                 ),
+      ),
     );
   }
 }

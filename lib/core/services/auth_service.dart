@@ -20,6 +20,14 @@ class AuthService {
       password: password,
     );
     final model = await getUserModel(cred.user!.uid);
+    // Account disabilitato dall'admin (Step 42, elenco utenti): il
+    // documento Firestore resta, l'accesso no — a differenza del
+    // 'user-disabled' nativo di Firebase Auth (che richiede l'Admin SDK),
+    // questo è un flag applicativo controllato dall'admin senza backend.
+    if (model != null && !model.attivo) {
+      await _auth.signOut();
+      throw Exception('Account disabilitato. Contatta l\'organizzatore.');
+    }
     return model!;
   }
 

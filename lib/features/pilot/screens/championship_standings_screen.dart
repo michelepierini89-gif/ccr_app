@@ -47,7 +47,7 @@ class ChampionshipStandingsScreen extends ConsumerWidget {
           ),
         ],
       ),
-      body: champAsync.when(
+      body: SafeArea(bottom: true, child: champAsync.when(
         loading: () => const Center(
             child: CircularProgressIndicator(color: AppColors.accent)),
         error: (e, _) => Center(
@@ -175,6 +175,7 @@ class ChampionshipStandingsScreen extends ConsumerWidget {
             },
           );
         },
+      ),
       ),
     );
   }

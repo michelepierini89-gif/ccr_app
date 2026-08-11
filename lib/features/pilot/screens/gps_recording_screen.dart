@@ -986,8 +986,10 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
       backgroundColor: AppColors.cardBackground,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
-      builder: (ctx) => Padding(
-        padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
+      builder: (ctx) => SafeArea(
+        top: false,
+        child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1028,6 +1030,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
               ),
             ),
           ],
+        ),
         ),
       ),
     );
@@ -1193,8 +1196,11 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                             appBar: AppBar(
                                 title: const Text('I miei tempi')),
                             backgroundColor: AppColors.background,
-                            body: TimingScreen(
-                                eventId: eventId, adminView: false),
+                            body: SafeArea(
+                              bottom: true,
+                              child: TimingScreen(
+                                  eventId: eventId, adminView: false),
+                            ),
                           ),
                         ),
                       ),
@@ -2236,8 +2242,10 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       builder: (sheetCtx) {
         return StatefulBuilder(builder: (sheetCtx, setSheetState) {
-          return Padding(
-            padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
+          return SafeArea(
+            top: false,
+            child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
             child: SingleChildScrollView(
               child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -2521,6 +2529,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                 ),
               ],
               ),
+            ),
             ),
           );
         });

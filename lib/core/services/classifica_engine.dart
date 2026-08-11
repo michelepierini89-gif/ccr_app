@@ -309,13 +309,21 @@ class ClassificaEngine {
       }
 
       final missed = <int>[];
+      final disputeValidated = <int>[];
       for (int i = 0; i < special.controlPoints.length; i++) {
         final cp = special.controlPoints[i];
-        final passed = passages.any((p) =>
+        final cpPassages = passages.where((p) =>
             p.waypointId == cp.id &&
             p.timestamp.isAfter(start.timestamp) &&
             p.timestamp.isBefore(end.timestamp));
-        if (!passed) missed.add(i + 1);
+        if (cpPassages.isEmpty) {
+          missed.add(i + 1);
+        } else if (cpPassages.any((p) => p.timingMethod == 'dispute')) {
+          // Step 42 — passaggio sintetico da resolveCpDisputeEntries: il CP
+          // conta come passato, ma va distinto in UI da uno rilevato dal
+          // GPS in gara (vedi TimingScreen).
+          disputeValidated.add(i + 1);
+        }
       }
 
       // Zone a velocità controllata: ogni violazione della zona appartenente
@@ -367,6 +375,7 @@ class ClassificaEngine {
         tempo: tempo,
         controlPointsOk: missed.isEmpty,
         missedCpPositions: missed,
+        disputeValidatedPositions: disputeValidated,
         penaltySeconds: penaltySeconds,
         speedZoneViolations: speedZoneViolationInfos,
         speedZonePenaltySeconds: speedZonePenaltySeconds,
@@ -447,6 +456,7 @@ class ClassificaEngine {
         entryId: c.entry.entryId,
         teamNome: c.entry.teamNome,
         membriNomi: c.entry.membriNomi,
+        membriIds: c.entry.memberIds,
         specialiCompletati: c.speciali,
         totaleSpeciali: c.totaleSpeciali,
         tempoTotale: c.tempoTotale,
@@ -630,6 +640,7 @@ class ClassificaEngine {
         entryId: c.entry.entryId,
         teamNome: c.entry.teamNome,
         membriNomi: c.entry.membriNomi,
+        membriIds: c.entry.memberIds,
         specialiCompletati: c.speciali,
         totaleSpeciali: c.totaleSpeciali,
         tempoTotale: c.tempoTotale,

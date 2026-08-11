@@ -128,6 +128,12 @@ class EventModel {
   /// ha mai cambiato percorso.
   final List<RouteChangeLogEntry> routeChangeLog;
 
+  /// Disposizioni particolari della manifestazione (ritrovo, orari, pranzo,
+  /// rinvio maltempo) — testo libero multilinea impostato dall'admin,
+  /// mostrato nel Regolamento lato pilota (Step 42) prima del regolamento
+  /// generale, sezione omessa se vuoto/null.
+  final String? disposizioniParticolari;
+
   const EventModel({
     required this.id,
     required this.nome,
@@ -152,6 +158,7 @@ class EventModel {
     this.maxRaceTimeMinutes = 270,
     this.dangerPointsRouteA = const [],
     this.speedZonesRouteA = const [],
+    this.disposizioniParticolari,
   });
 
   factory EventModel.fromFirestore(DocumentSnapshot doc) {
@@ -200,6 +207,7 @@ class EventModel {
       speedZonesRouteA: (d['speedZones'] as List<dynamic>? ?? [])
           .map((e) => SpeedZoneModel.fromMap(e as Map<String, dynamic>))
           .toList(),
+      disposizioniParticolari: d['disposizioniParticolari'] as String?,
     );
   }
 
@@ -228,6 +236,7 @@ class EventModel {
         'startEnabled': startEnabled,
         'startingOrder': startingOrder.map((s) => s.toMap()).toList(),
         'maxRaceTimeMinutes': maxRaceTimeMinutes,
+        'disposizioniParticolari': disposizioniParticolari,
       };
 
   // ── Percorso attivo — SEMPRE usare questi getter fuori dall'editor/
@@ -291,6 +300,8 @@ class EventModel {
     int? maxRaceTimeMinutes,
     List<DangerPointModel>? dangerPointsRouteA,
     List<SpeedZoneModel>? speedZonesRouteA,
+    String? disposizioniParticolari,
+    bool clearDisposizioniParticolari = false,
   }) =>
       EventModel(
         id: id,
@@ -320,5 +331,8 @@ class EventModel {
         maxRaceTimeMinutes: maxRaceTimeMinutes ?? this.maxRaceTimeMinutes,
         dangerPointsRouteA: dangerPointsRouteA ?? this.dangerPointsRouteA,
         speedZonesRouteA: speedZonesRouteA ?? this.speedZonesRouteA,
+        disposizioniParticolari: clearDisposizioniParticolari
+            ? null
+            : (disposizioniParticolari ?? this.disposizioniParticolari),
       );
 }

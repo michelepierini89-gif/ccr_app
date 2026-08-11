@@ -19,6 +19,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/csv_export.dart';
 import '../../../core/utils/time_format_utils.dart';
 import '../../admin/providers/admin_provider.dart';
+import '../../admin/screens/cp_dispute_review_screen.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../classifica/providers/classifica_provider.dart';
 import '../../pilot/providers/pilot_provider.dart';
@@ -581,7 +582,8 @@ class _AdminTimingView extends ConsumerWidget {
             backgroundColor: AppColors.cardBackground,
             onRefresh: onRefresh,
             child: ListView.builder(
-              padding: const EdgeInsets.only(top: 8, bottom: 24),
+              padding: EdgeInsets.fromLTRB(
+                  0, 8, 0, 24 + MediaQuery.paddingOf(context).bottom),
               itemCount: entries.length,
               itemBuilder: (ctx, i) =>
                   _TimingEntryCard(entry: entries[i]),
@@ -633,10 +635,14 @@ class _CpDisputesBanner extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final disputesAsync = ref.watch(cpDisputesStreamProvider(eventId));
-    final pending = (disputesAsync.valueOrNull ?? [])
-        .where((d) => d.status == CpDisputeStatus.pending)
-        .toList();
+    final pending =
+        (disputesAsync.valueOrNull ?? []).where((d) => d.hasPending).toList();
     if (pending.isEmpty) return const SizedBox.shrink();
+
+    final totalPendingCps = pending.fold<int>(
+        0,
+        (sum, d) =>
+            sum + d.missedCps.where((c) => c.status == CpDisputeStatus.pending).length);
 
     return Container(
       width: double.infinity,
@@ -648,7 +654,7 @@ class _CpDisputesBanner extends ConsumerWidget {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              '${pending.length} segnalazioni CP da verificare',
+              '$totalPendingCps CP da verificare (${pending.length} segnalazioni)',
               style: const TextStyle(
                   color: AppColors.warning,
                   fontSize: 13,
@@ -656,137 +662,17 @@ class _CpDisputesBanner extends ConsumerWidget {
             ),
           ),
           TextButton(
-            onPressed: () => showDialog(
-              context: context,
-              builder: (_) =>
-                  _CpDisputesDialog(eventId: eventId, disputes: pending),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => CpDisputeReviewScreen(eventId: eventId),
+              ),
             ),
             child: const Text('Vedi',
                 style: TextStyle(color: AppColors.warning)),
           ),
         ],
       ),
-    );
-  }
-}
-
-class _CpDisputesDialog extends ConsumerWidget {
-  final String eventId;
-  final List<CpDisputeModel> disputes;
-  const _CpDisputesDialog({required this.eventId, required this.disputes});
-
-  Future<void> _resolve(BuildContext context, WidgetRef ref,
-      CpDisputeModel dispute, bool accept) async {
-    final event = await ref.read(eventProvider(eventId).future);
-    if (event == null) return;
-    try {
-      await ref.read(firestoreServiceProvider).resolveCpDispute(
-            event: event,
-            disputeId: dispute.id,
-            accept: accept,
-            pilotId: dispute.pilotId,
-            missedCps: dispute.missedCps,
-          );
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(accept
-              ? 'Segnalazione accolta: penalità rimossa'
-              : 'Segnalazione rifiutata'),
-          backgroundColor:
-              accept ? AppColors.success : AppColors.textSecondary,
-        ));
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Errore: $e'),
-          backgroundColor: AppColors.error,
-        ));
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return AlertDialog(
-      backgroundColor: AppColors.cardBackground,
-      title: const Text('Segnalazioni CP da verificare',
-          style: TextStyle(color: AppColors.textPrimary)),
-      content: SizedBox(
-        width: 400,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: disputes
-                .map((d) => Container(
-                      margin: const EdgeInsets.only(bottom: 10),
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: AppColors.background,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: AppColors.border),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '${d.pilotName} — ${d.teamName}',
-                            style: const TextStyle(
-                                color: AppColors.textPrimary,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 13),
-                          ),
-                          const SizedBox(height: 4),
-                          ...d.missedCps.map((cp) => Text(
-                                '• ${cp.specialeNome} — P${cp.position} (${cp.cpNome})',
-                                style: const TextStyle(
-                                    color: AppColors.textSecondary,
-                                    fontSize: 12),
-                              )),
-                          if (d.pilotNote != null &&
-                              d.pilotNote!.isNotEmpty) ...[
-                            const SizedBox(height: 4),
-                            Text('Nota: ${d.pilotNote}',
-                                style: const TextStyle(
-                                    color: AppColors.textSecondary,
-                                    fontSize: 12,
-                                    fontStyle: FontStyle.italic)),
-                          ],
-                          const SizedBox(height: 8),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.end,
-                            children: [
-                              TextButton(
-                                onPressed: () =>
-                                    _resolve(context, ref, d, false),
-                                child: const Text('Rifiuta',
-                                    style: TextStyle(
-                                        color: AppColors.textSecondary)),
-                              ),
-                              const SizedBox(width: 4),
-                              ElevatedButton(
-                                onPressed: () =>
-                                    _resolve(context, ref, d, true),
-                                style: ElevatedButton.styleFrom(
-                                    backgroundColor: AppColors.success),
-                                child: const Text('Accetta'),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ))
-                .toList(),
-          ),
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Chiudi',
-              style: TextStyle(color: AppColors.accent)),
-        ),
-      ],
     );
   }
 }
@@ -854,7 +740,8 @@ class _PilotTimingView extends ConsumerWidget {
       onRefresh: onRefresh,
       child: SingleChildScrollView(
       physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.all(16),
+      padding: EdgeInsets.fromLTRB(
+          16, 16, 16, 16 + MediaQuery.paddingOf(context).bottom),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1278,26 +1165,33 @@ class _SpecialTimingRow extends StatelessWidget {
               ),
             ),
           ],
-          if (!isInvalid && !isSkipped && !isNotDetected && !special.controlPointsOk) ...[
-            const SizedBox(width: 8),
-            Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: AppColors.warning.withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(
-                    color: AppColors.warning.withValues(alpha: 0.5)),
-              ),
-              child: const Text(
-                'CP!',
-                style: TextStyle(
-                    color: AppColors.warning,
-                    fontSize: 9,
-                    fontWeight: FontWeight.bold),
+          // Fix incoerenza triangoli multipli (Step 42): il badge "CP!" qui
+          // era ridondante con l'icona warning_amber_rounded già mostrata a
+          // inizio riga per lo stesso identico caso (controlPointsOk
+          // false, nessun altro problema) — un solo segnale basta.
+          if (showAdminDetails && special.disputeValidatedPositions.isNotEmpty)
+            Tooltip(
+              message: 'CP convalidati da disputa accolta: '
+                  '${special.disputeValidatedPositions.map((p) => 'P$p').join(', ')}',
+              child: Container(
+                margin: const EdgeInsets.only(left: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: AppColors.accent.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(6),
+                  border:
+                      Border.all(color: AppColors.accent.withValues(alpha: 0.5)),
+                ),
+                child: const Text(
+                  'CP DA DISPUTA',
+                  style: TextStyle(
+                      color: AppColors.accent,
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold),
+                ),
               ),
             ),
-          ],
         ],
           ),
           if (isSkipped)

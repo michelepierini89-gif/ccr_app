@@ -218,7 +218,8 @@ class _TrackReplayScreenState extends ConsumerState<TrackReplayScreen> {
         iconTheme: const IconThemeData(color: AppColors.textPrimary),
       ),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
+        padding: EdgeInsets.fromLTRB(
+            16, 16, 16, 16 + MediaQuery.paddingOf(context).bottom),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [

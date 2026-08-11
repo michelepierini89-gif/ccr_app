@@ -30,6 +30,9 @@ import 'features/admin/screens/track_replay_screen.dart';
 import 'features/admin/screens/diagnostic_log_analyzer_screen.dart';
 import 'features/classifica/screens/classifica_screen.dart';
 import 'features/map/screens/offline_maps_screen.dart';
+import 'features/pilot/screens/regolamento_screen.dart';
+import 'features/pilot/screens/guida_screen.dart';
+import 'features/admin/screens/users_list_screen.dart';
 
 final _routerProvider = Provider<GoRouter>((ref) {
   return GoRouter(
@@ -86,6 +89,10 @@ final _routerProvider = Provider<GoRouter>((ref) {
             builder: (context, state) => const DiagnosticLogAnalyzerScreen(),
           ),
           GoRoute(
+            path: 'users',
+            builder: (context, state) => const UsersListScreen(),
+          ),
+          GoRoute(
             path: 'championships',
             builder: (context, state) => const ChampionshipScreen(),
             routes: [
@@ -121,7 +128,9 @@ final _routerProvider = Provider<GoRouter>((ref) {
                   final eventId = state.pathParameters['id']!;
                   return Scaffold(
                     appBar: AppBar(title: const Text('Iscrizioni')),
-                    body: RegistrationsScreen(eventId: eventId),
+                    body: SafeArea(
+                        bottom: true,
+                        child: RegistrationsScreen(eventId: eventId)),
                   );
                 },
               ),
@@ -131,7 +140,9 @@ final _routerProvider = Provider<GoRouter>((ref) {
                   final eventId = state.pathParameters['id']!;
                   return Scaffold(
                     appBar: AppBar(title: const Text('Live Tracking')),
-                    body: LiveTrackingScreen(eventId: eventId),
+                    body: SafeArea(
+                        bottom: true,
+                        child: LiveTrackingScreen(eventId: eventId)),
                   );
                 },
               ),
@@ -186,6 +197,13 @@ final _routerProvider = Provider<GoRouter>((ref) {
                   return RaceResultScreen(eventId: eventId);
                 },
               ),
+              GoRoute(
+                path: 'regolamento',
+                builder: (context, state) {
+                  final eventId = state.pathParameters['id']!;
+                  return RegolamentoScreen(eventId: eventId);
+                },
+              ),
             ],
           ),
           GoRoute(
@@ -209,6 +227,14 @@ final _routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: 'offline-maps',
             builder: (context, state) => const OfflineMapsScreen(),
+          ),
+          GoRoute(
+            path: 'regolamento',
+            builder: (context, state) => const RegolamentoScreen(),
+          ),
+          GoRoute(
+            path: 'guida',
+            builder: (context, state) => const GuidaScreen(),
           ),
         ],
       ),

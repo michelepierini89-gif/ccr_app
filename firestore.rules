@@ -23,9 +23,14 @@ service cloud.firestore {
     }
 
     // ── Users ─────────────────────────────────────────────────────────────────
-    // Ogni utente legge/scrive solo il proprio profilo
+    // Lettura per qualunque utente autenticato (Step 42: l'avatar profilo
+    // va mostrato anche di compagni di squadra e altri concorrenti, nelle
+    // iscrizioni, in squadra e in classifica — stesso livello di apertura
+    // già usato per eventi/iscrizioni/squadre in questo file). Scrittura
+    // resta riservata al proprietario del profilo.
     match /users/{userId} {
-      allow read, write: if isOwner(userId);
+      allow read: if isAuthenticated();
+      allow write: if isOwner(userId);
     }
 
     // ── User notifications ────────────────────────────────────────────────────

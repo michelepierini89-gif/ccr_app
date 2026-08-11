@@ -28,7 +28,7 @@ class PilotStatsScreen extends ConsumerWidget {
           ),
         ],
       ),
-      body: statsAsync.when(
+      body: SafeArea(bottom: true, child: statsAsync.when(
         loading: () => const _StatsSkeleton(),
         error: (e, _) => Center(
           child: Padding(
@@ -149,6 +149,7 @@ class PilotStatsScreen extends ConsumerWidget {
             ],
           );
         },
+      ),
       ),
     );
   }

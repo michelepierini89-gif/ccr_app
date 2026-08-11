@@ -682,7 +682,7 @@ class _EventManagementScreenState
               ],
             ),
           ),
-          body: Column(
+          body: SafeArea(bottom: true, child: Column(
             children: [
               Container(
                 color: AppColors.cardBackground,
@@ -884,6 +884,7 @@ class _EventManagementScreenState
               ),
             ],
           ),
+          ),
         );
       },
     );
@@ -937,6 +938,8 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
   Timer? _squadraDebounce;
   Timer? _tipologiaDebounce;
   Timer? _maxRaceDebounce;
+  Timer? _disposizioniDebounce;
+  final _disposizioniController = TextEditingController();
 
   /// Percorso alternativo — la variante SELEZIONATA nell'editor (mai quella
   /// attiva per la gara, vedi doc su [_TracciatoTab.editingRouteId]). Null
@@ -952,6 +955,7 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
     _tipologia = widget.event.tipologiaClassifica;
     _maxRaceTimeH = widget.event.maxRaceTimeMinutes ~/ 60;
     _maxRaceTimeM = widget.event.maxRaceTimeMinutes % 60;
+    _disposizioniController.text = widget.event.disposizioniParticolari ?? '';
     _totalLength = _computeTotalLength();
   }
 
@@ -985,6 +989,12 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
         });
       }
     }
+    if (_disposizioniDebounce == null || !_disposizioniDebounce!.isActive) {
+      final incoming = widget.event.disposizioniParticolari ?? '';
+      if (incoming != _disposizioniController.text) {
+        _disposizioniController.text = incoming;
+      }
+    }
   }
 
   @override
@@ -992,6 +1002,8 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
     _squadraDebounce?.cancel();
     _tipologiaDebounce?.cancel();
     _maxRaceDebounce?.cancel();
+    _disposizioniDebounce?.cancel();
+    _disposizioniController.dispose();
     super.dispose();
   }
 
@@ -1423,6 +1435,26 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
     });
   }
 
+  void _onDisposizioniChanged() {
+    _disposizioniDebounce?.cancel();
+    _disposizioniDebounce = Timer(const Duration(milliseconds: 800), () {
+      final text = _disposizioniController.text.trim();
+      ref
+          .read(firestoreServiceProvider)
+          .updateEvent(widget.event.copyWith(
+              disposizioniParticolari: text.isEmpty ? null : text,
+              clearDisposizioniParticolari: text.isEmpty))
+          .catchError((e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(FirebaseErrorHandler.getMessage(e)),
+            backgroundColor: AppColors.error,
+          ));
+        }
+      });
+    });
+  }
+
   void _onTipologiaChanged(TipologiaClassifica t) {
     setState(() => _tipologia = t);
     _tipologiaDebounce?.cancel();
@@ -1840,6 +1872,43 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
           '${_maxRaceTimeH}h ${_maxRaceTimeM.toString().padLeft(2, '0')}min'
           ' — ${_maxRaceTimeH * 60 + _maxRaceTimeM} min totali',
           style: const TextStyle(color: AppColors.accent, fontSize: 11),
+        ),
+
+        // ── Disposizioni particolari (Step 42) ──
+        const SizedBox(height: 20),
+        _SectionLabel('Disposizioni particolari'),
+        const SizedBox(height: 4),
+        const Text(
+          'Ritrovo, orari, pranzo, rinvio maltempo… Comparirà nel '
+          'Regolamento lato pilota, prima del regolamento generale. '
+          'Lascia vuoto per non mostrare nulla.',
+          style: TextStyle(color: AppColors.textSecondary, fontSize: 11),
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _disposizioniController,
+          maxLines: 5,
+          minLines: 3,
+          style: const TextStyle(color: AppColors.textPrimary, fontSize: 13),
+          decoration: InputDecoration(
+            hintText: 'Es. Ritrovo ore 8:00 presso il bar Da Mario…',
+            hintStyle: const TextStyle(color: AppColors.textSecondary),
+            filled: true,
+            fillColor: AppColors.cardBackground,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: AppColors.border),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: AppColors.border),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: AppColors.accent, width: 2),
+            ),
+          ),
+          onChanged: (_) => _onDisposizioniChanged(),
         ),
 
         // ── Specials list ──

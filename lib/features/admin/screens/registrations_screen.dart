@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../../../core/models/registration_model.dart';
 import '../../../core/models/team_model.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/widgets/user_avatar_by_id.dart';
 import '../providers/admin_provider.dart';
 
 class RegistrationsScreen extends ConsumerWidget {
@@ -204,7 +205,8 @@ class _RegistrationListState extends ConsumerState<_RegistrationList> {
       });
 
     return ListView.builder(
-      padding: const EdgeInsets.all(16),
+      padding: EdgeInsets.fromLTRB(
+          16, 16, 16, 16 + MediaQuery.paddingOf(context).bottom),
       itemCount: sortedKeys.length,
       itemBuilder: (context, i) {
         final key = sortedKeys[i];
@@ -301,8 +303,13 @@ class _RegistrationListState extends ConsumerState<_RegistrationList> {
         children: [
           Row(
             children: [
-              const Icon(Icons.person, color: AppColors.textSecondary, size: 16),
-              const SizedBox(width: 6),
+              UserAvatarById(
+                userId: reg.userId,
+                fallbackNome: reg.nome,
+                fallbackCognome: reg.cognome,
+                size: 24,
+              ),
+              const SizedBox(width: 8),
               Expanded(
                 child: Text(
                   reg.nomeCompleto,

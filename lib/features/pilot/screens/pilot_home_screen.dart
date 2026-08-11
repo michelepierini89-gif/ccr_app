@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:image_picker/image_picker.dart';
+import '../../../core/models/user_model.dart';
 import '../../../core/providers/offline_provider.dart';
 import '../../../core/services/gps_service.dart';
+import '../../../core/services/profile_image_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/location_utils.dart';
+import '../../../core/widgets/ccr_avatar.dart';
 import '../../../core/widgets/notification_listener_widget.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../admin/providers/admin_provider.dart';
@@ -487,12 +491,123 @@ final _allChampionshipsProvider = StreamProvider<List<ChampionshipModel>>((ref) 
   return ref.watch(firestoreServiceProvider).getChampionships();
 });
 
-class _ProfilePage extends ConsumerWidget {
+class _ProfilePage extends ConsumerStatefulWidget {
   final VoidCallback onLogout;
   const _ProfilePage({required this.onLogout});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_ProfilePage> createState() => _ProfilePageState();
+}
+
+class _ProfilePageState extends ConsumerState<_ProfilePage> {
+  final _imageService = ProfileImageService();
+  bool _uploading = false;
+
+  Future<void> _changePhoto(UserModel user) async {
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      backgroundColor: AppColors.cardBackground,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined,
+                  color: AppColors.accent),
+              title: const Text('Scegli dalla galleria',
+                  style: TextStyle(color: AppColors.textPrimary)),
+              onTap: () => Navigator.of(ctx).pop(ImageSource.gallery),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_camera_outlined,
+                  color: AppColors.accent),
+              title: const Text('Scatta una foto',
+                  style: TextStyle(color: AppColors.textPrimary)),
+              onTap: () => Navigator.of(ctx).pop(ImageSource.camera),
+            ),
+            if (user.photoUrl != null)
+              ListTile(
+                leading: const Icon(Icons.delete_outline,
+                    color: AppColors.error),
+                title: const Text('Rimuovi immagine',
+                    style: TextStyle(color: AppColors.error)),
+                onTap: () => Navigator.of(ctx).pop(),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (source == null) {
+      // "Rimuovi immagine" selezionato (pop senza valore) — o dialog chiuso.
+      if (user.photoUrl == null || !mounted) return;
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppColors.cardBackground,
+          title: const Text('Rimuovere l\'immagine profilo?',
+              style: TextStyle(color: AppColors.textPrimary)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Annulla',
+                  style: TextStyle(color: AppColors.textSecondary)),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+              child: const Text('Rimuovi'),
+            ),
+          ],
+        ),
+      );
+      if (confirm != true) return;
+      setState(() => _uploading = true);
+      try {
+        await ref
+            .read(firestoreServiceProvider)
+            .saveUserPhotoUrl(user.id, null);
+        await _imageService.deleteIfExists(user.photoUrl);
+        ref.invalidate(currentUserModelProvider);
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Errore rimozione immagine: $e'),
+            backgroundColor: AppColors.error,
+          ));
+        }
+      } finally {
+        if (mounted) setState(() => _uploading = false);
+      }
+      return;
+    }
+
+    setState(() => _uploading = true);
+    try {
+      final bytes = await _imageService.pickAndProcess(source);
+      if (bytes == null) return;
+      final newUrl = await _imageService.upload(user.id, bytes);
+      await ref
+          .read(firestoreServiceProvider)
+          .saveUserPhotoUrl(user.id, newUrl);
+      await _imageService.deleteIfExists(user.photoUrl);
+      ref.invalidate(currentUserModelProvider);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Errore aggiornamento immagine: $e'),
+          backgroundColor: AppColors.error,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _uploading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final userAsync = ref.watch(currentUserModelProvider);
 
     return userAsync.when(
@@ -514,21 +629,50 @@ class _ProfilePage extends ConsumerWidget {
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               const SizedBox(height: 32),
-              Container(
-                width: 80,
-                height: 80,
-                decoration: const BoxDecoration(
-                  color: AppColors.accent,
-                  shape: BoxShape.circle,
-                ),
-                child: Center(
-                  child: Text(
-                    '${user.nome.isNotEmpty ? user.nome[0] : ''}${user.cognome.isNotEmpty ? user.cognome[0] : ''}',
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 32,
-                        fontWeight: FontWeight.bold),
-                  ),
+              GestureDetector(
+                onTap: _uploading ? null : () => _changePhoto(user),
+                child: Stack(
+                  children: [
+                    CcrAvatar(
+                      photoUrl: user.photoUrl,
+                      nome: user.nome,
+                      cognome: user.cognome,
+                      size: 80,
+                    ),
+                    if (_uploading)
+                      const Positioned.fill(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: Colors.black45,
+                            shape: BoxShape.circle,
+                          ),
+                          child: Center(
+                            child: SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2.5, color: Colors.white),
+                            ),
+                          ),
+                        ),
+                      )
+                    else
+                      Positioned(
+                        right: 0,
+                        bottom: 0,
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: BoxDecoration(
+                            color: AppColors.accent,
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                                color: AppColors.background, width: 2),
+                          ),
+                          child: const Icon(Icons.camera_alt,
+                              size: 14, color: Colors.white),
+                        ),
+                      ),
+                  ],
                 ),
               ),
               const SizedBox(height: 16),
@@ -596,12 +740,46 @@ class _ProfilePage extends ConsumerWidget {
                   ),
                 ),
               ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: OutlinedButton.icon(
+                  onPressed: () => context.push('/pilot/regolamento'),
+                  icon: const Icon(Icons.description_outlined,
+                      color: AppColors.textSecondary),
+                  label: const Text('Regolamento',
+                      style: TextStyle(color: AppColors.textSecondary)),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: AppColors.border),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: OutlinedButton.icon(
+                  onPressed: () => context.push('/pilot/guida'),
+                  icon: const Icon(Icons.help_outline,
+                      color: AppColors.textSecondary),
+                  label: const Text('Guida all\'uso',
+                      style: TextStyle(color: AppColors.textSecondary)),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: AppColors.border),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+              ),
               const SizedBox(height: 16),
               SizedBox(
                 width: double.infinity,
                 height: 50,
                 child: OutlinedButton.icon(
-                  onPressed: onLogout,
+                  onPressed: widget.onLogout,
                   icon: const Icon(Icons.logout, color: AppColors.error),
                   label: const Text('Logout',
                       style: TextStyle(color: AppColors.error)),

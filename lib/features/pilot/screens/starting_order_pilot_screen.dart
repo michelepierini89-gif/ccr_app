@@ -32,7 +32,7 @@ class StartingOrderPilotScreen extends ConsumerWidget {
         ),
         iconTheme: const IconThemeData(color: AppColors.textPrimary),
       ),
-      body: eventAsync.when(
+      body: SafeArea(bottom: true, child: eventAsync.when(
         loading: () =>
             const Center(child: CircularProgressIndicator(color: AppColors.accent)),
         error: (e, _) => Center(
@@ -86,6 +86,7 @@ class StartingOrderPilotScreen extends ConsumerWidget {
             ],
           );
         },
+      ),
       ),
     );
   }

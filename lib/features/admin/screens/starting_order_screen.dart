@@ -281,7 +281,7 @@ class _StartingOrderScreenState extends ConsumerState<StartingOrderScreen> {
         title: const Text('Ordine di partenza'),
         backgroundColor: AppColors.cardBackground,
       ),
-      body: _loading
+      body: SafeArea(bottom: true, child: _loading
           ? const Center(
               child: CircularProgressIndicator(color: AppColors.accent))
           : _loadError != null
@@ -389,6 +389,7 @@ class _StartingOrderScreenState extends ConsumerState<StartingOrderScreen> {
                         ],
                       ],
                     ),
+      ),
     );
   }
 

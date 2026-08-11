@@ -216,6 +216,14 @@ exports.onRouteChanged = onDocumentUpdated(
 );
 
 // ── Trigger 4: segnalazione CP risolta dall'admin ────────────────────────────
+// Step 42 — decisione granulare per singolo CP: ogni voce di `missedCps` ha
+// il proprio `status` ('pending'/'accepted'/'rejected'), non più un unico
+// stato per l'intera segnalazione. Il trigger confronta le voci prima/dopo
+// per capire se QUESTO aggiornamento ha deciso almeno un CP (prima
+// 'pending', dopo 'accepted' o 'rejected') — così spara anche per
+// decisioni parziali/miste, che prima (basandosi solo sul rollup
+// `status` a livello di documento) non facevano scattare alcuna notifica
+// se il rollup restava 'pending' per via di voci ancora indecise.
 exports.onCpDisputeResolved = onDocumentUpdated(
   {
     document: 'cp_disputes/{eventId}/disputes/{disputeId}',
@@ -224,8 +232,17 @@ exports.onCpDisputeResolved = onDocumentUpdated(
   async (event) => {
     const before = event.data.before.data();
     const after = event.data.after.data();
-    if (!before || !after || before.status === after.status) return;
-    if (after.status !== 'accepted' && after.status !== 'rejected') return;
+    if (!before || !after) return;
+
+    const beforeByCpId = new Map(
+      (before.missedCps || []).map((c) => [c.cpId, c.status])
+    );
+    const decidedNow = (after.missedCps || []).filter(
+      (c) =>
+        (c.status === 'accepted' || c.status === 'rejected') &&
+        beforeByCpId.get(c.cpId) !== c.status
+    );
+    if (decidedNow.length === 0) return;
 
     const pilotId = after.pilotId;
     if (!pilotId) return;
@@ -235,17 +252,21 @@ exports.onCpDisputeResolved = onDocumentUpdated(
     const fcmToken = userDoc.data()?.fcmToken;
     if (!fcmToken) return;
 
-    const accepted = after.status === 'accepted';
+    const allCps = after.missedCps || [];
+    const acceptedCount = allCps.filter((c) => c.status === 'accepted').length;
+    const rejectedCount = allCps.filter((c) => c.status === 'rejected').length;
+    const anyAccepted = acceptedCount > 0;
 
     await getMessaging().send({
       token: fcmToken,
       notification: {
-        title: accepted ? '✅ Segnalazione CP accolta' : '❌ Segnalazione CP rifiutata',
-        body: accepted
-          ? 'La tua segnalazione sui checkpoint mancati è stata accolta: la penalità è stata rimossa.'
-          : 'La tua segnalazione sui checkpoint mancati è stata rifiutata.',
+        title: anyAccepted ? '✅ Segnalazione CP verificata' : '❌ Segnalazione CP verificata',
+        body: `L'organizzatore ha verificato la tua segnalazione: ${acceptedCount} CP accolti, ${rejectedCount} rifiutati.`,
       },
-      data: { type: accepted ? 'cpDisputeAccepted' : 'cpDisputeRejected', eventId: event.params.eventId },
+      data: {
+        type: anyAccepted ? 'cpDisputeAccepted' : 'cpDisputeRejected',
+        eventId: event.params.eventId,
+      },
       android: { priority: 'high' },
       apns: { payload: { aps: { sound: 'default' } } },
     });

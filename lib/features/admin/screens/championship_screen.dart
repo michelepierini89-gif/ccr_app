@@ -109,7 +109,7 @@ class ChampionshipScreen extends ConsumerWidget {
         icon: const Icon(Icons.add),
         label: const Text('Nuovo'),
       ),
-      body: listAsync.when(
+      body: SafeArea(bottom: true, child: listAsync.when(
         loading: () =>
             const Center(child: CircularProgressIndicator(color: AppColors.accent)),
         error: (e, _) => Center(
@@ -217,6 +217,7 @@ class ChampionshipScreen extends ConsumerWidget {
             },
           );
         },
+      ),
       ),
     );
   }
@@ -440,7 +441,7 @@ class _ChampionshipManagementScreenState
             ),
         ],
       ),
-      body: champAsync.when(
+      body: SafeArea(bottom: true, child: champAsync.when(
         loading: () => const Center(
             child: CircularProgressIndicator(color: AppColors.accent)),
         error: (e, _) => Center(
@@ -635,6 +636,7 @@ class _ChampionshipManagementScreenState
           );
         },
       ),
+      ),
     );
   }
 
@@ -701,7 +703,7 @@ class _ChampionshipAdminStandingsScreenState
           ),
         ],
       ),
-      body: champAsync.when(
+      body: SafeArea(bottom: true, child: champAsync.when(
         loading: () => const Center(
             child: CircularProgressIndicator(color: AppColors.accent)),
         error: (e, _) => Center(
@@ -799,6 +801,7 @@ class _ChampionshipAdminStandingsScreenState
             },
           );
         },
+      ),
       ),
     );
   }

@@ -4,6 +4,7 @@ import '../../../core/models/classifica_model.dart';
 import '../../../core/models/event_model.dart';
 import '../../../core/models/penalty_settings_model.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/widgets/user_avatar_by_id.dart';
 import '../../admin/providers/admin_provider.dart';
 import '../providers/classifica_provider.dart';
 
@@ -50,7 +51,7 @@ class ClassificaScreen extends ConsumerWidget {
             ),
         ],
       ),
-      body: body,
+      body: SafeArea(bottom: true, child: body),
     );
   }
 }
@@ -101,7 +102,8 @@ class _ClassificaList extends StatelessWidget {
     final retired = entries.where((e) => e.ritirato).toList();
 
     return ListView(
-      padding: const EdgeInsets.only(top: 8, bottom: 32),
+      padding: EdgeInsets.fromLTRB(
+          0, 8, 0, 32 + MediaQuery.paddingOf(context).bottom),
       children: [
         // Live update indicator
         Padding(
@@ -222,7 +224,10 @@ class _EntryCardState extends State<_EntryCard> {
                       posizione: e.posizione,
                       color: _posColor,
                       ritirato: e.ritirato),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 8),
+                  _MemberAvatarsStack(
+                      memberIds: e.membriIds, membriNomi: e.membriNomi),
+                  const SizedBox(width: 8),
 
                   // Name block
                   Expanded(
@@ -422,6 +427,76 @@ class _EntryCardState extends State<_EntryCard> {
 
 // ── Sub-widgets ────────────────────────────────────────────────────────────────
 
+/// Avatar dei componenti della squadra, sovrapposti (Step 42) — al più 3
+/// visibili, il resto riassunto in un badge "+N" per non affollare la riga.
+class _MemberAvatarsStack extends StatelessWidget {
+  final Set<String> memberIds;
+  final List<String> membriNomi;
+  static const _size = 24.0;
+  static const _overlap = 14.0;
+
+  const _MemberAvatarsStack(
+      {required this.memberIds, required this.membriNomi});
+
+  @override
+  Widget build(BuildContext context) {
+    final ids = memberIds.toList();
+    if (ids.isEmpty) return const SizedBox.shrink();
+    final shown = ids.take(3).toList();
+    final extra = ids.length - shown.length;
+    return SizedBox(
+      width: _size + (shown.length - 1) * _overlap + (extra > 0 ? 16 : 0),
+      height: _size,
+      child: Stack(
+        children: [
+          for (int i = 0; i < shown.length; i++)
+            Positioned(
+              left: i * _overlap,
+              child: Container(
+                decoration: const BoxDecoration(
+                  shape: BoxShape.circle,
+                  border:
+                      Border.fromBorderSide(BorderSide(
+                          color: AppColors.cardBackground, width: 2)),
+                ),
+                child: UserAvatarById(
+                  userId: shown[i],
+                  fallbackNome: i < membriNomi.length
+                      ? membriNomi[i].split(' ').first
+                      : '',
+                  fallbackCognome: i < membriNomi.length &&
+                          membriNomi[i].split(' ').length > 1
+                      ? membriNomi[i].split(' ').last
+                      : '',
+                  size: _size,
+                ),
+              ),
+            ),
+          if (extra > 0)
+            Positioned(
+              left: shown.length * _overlap,
+              child: Container(
+                width: _size,
+                height: _size,
+                decoration: BoxDecoration(
+                  color: AppColors.border,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: AppColors.cardBackground, width: 2),
+                ),
+                alignment: Alignment.center,
+                child: Text('+$extra',
+                    style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold)),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 class _PosBadge extends StatelessWidget {
   final int posizione;
   final Color color;
@@ -520,7 +595,7 @@ class _SpecialiProgress extends StatelessWidget {
         ),
         const SizedBox(width: 6),
         Text(
-          '$completati/$totale SS',
+          '$completati/$totale PS',
           style: TextStyle(color: color, fontSize: 11),
         ),
       ],
@@ -585,123 +660,127 @@ class _SpecialRow extends StatelessWidget {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Row(
-        children: [
-          const SizedBox(width: 48), // align with card content
-          Container(
-            width: 28,
-            height: 28,
-            decoration: BoxDecoration(
-              color: AppColors.accent.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(
-                  color: AppColors.accent.withValues(alpha: 0.3)),
-            ),
-            child: Center(
-              child: Text(
-                'SS${special.ordine + 1}',
-                style: const TextStyle(
-                    color: AppColors.accent,
-                    fontSize: 9,
-                    fontWeight: FontWeight.bold),
-              ),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              special.specialeNome,
-              style: const TextStyle(
-                  color: AppColors.textSecondary, fontSize: 12),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          if (!special.isInvalidTiming &&
-              !special.skipped &&
-              !special.notDetected &&
-              !special.controlPointsOk)
-            GestureDetector(
-              onTap: () => _showMissedCpsDialog(context),
-              child: const Padding(
-                padding: EdgeInsets.only(right: 6),
-                child: Icon(Icons.warning_amber_rounded,
-                    color: AppColors.warning, size: 14),
-              ),
-            ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (special.isInvalidTiming)
-                const Text(
-                  '⚠ non valido',
-                  style: TextStyle(
-                    color: AppColors.warning,
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                  ),
-                )
-              else
-                Text(
-                  special.tempoFormatted,
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
-                    fontSize: 13,
-                    fontWeight: FontWeight.bold,
-                    fontFamily: 'monospace',
-                  ),
-                ),
-              ..._buildPenaltyReasons(special),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// Motivo esplicito di ogni penalità invece del generico "+Xm PEN":
+  /// Un solo motivo testuale per anomalia — niente più "⚠"/emoji ripetuti
+  /// davanti a ciascuna riga: il triangolo unico in [_anomalyNotes] basta a
+  /// segnalare che c'è un problema, il testo qui sotto dice solo quale.
   /// CP mancati e zona velocità sono componenti indipendenti di
   /// [special.penaltySeconds] (vedi ClassificaEngine._computeSpeciali), un
   /// tempo PS con recovery impreciso (hasTimingWarning) non ha una
   /// penalità in secondi ma va segnalato comunque come stima.
-  List<Widget> _buildPenaltyReasons(SpecialTempo special) {
-    const style = TextStyle(
-        color: AppColors.warning, fontSize: 9, fontWeight: FontWeight.bold);
-    final widgets = <Widget>[];
+  List<String> _anomalyNotes(SpecialTempo special) {
+    final notes = <String>[];
+    if (special.isInvalidTiming) {
+      notes.add('rilevamento non valido');
+    }
+    if (special.skipped) {
+      notes.add('salto volontario — penalità applicata');
+    } else if (special.notDetected) {
+      notes.add('tempo forfettario applicato — speciale non rilevata');
+    }
     final cpSeconds = special.penaltySeconds - special.speedZonePenaltySeconds;
     if (special.missedCpPositions.isNotEmpty && cpSeconds > 0) {
-      widgets.add(Text(
-        '⚠ +${PenaltySettingsModel.formatSeconds(cpSeconds)}: '
-        '${special.missedCpPositions.length} CP mancati',
-        style: style,
-      ));
+      notes.add('+${PenaltySettingsModel.formatSeconds(cpSeconds)}: '
+          '${special.missedCpPositions.length} CP mancati');
     }
     if (special.speedZonePenaltySeconds > 0) {
-      widgets.add(Text(
-        '🐌 +${PenaltySettingsModel.formatSeconds(special.speedZonePenaltySeconds)}: '
-        'limite zona superato',
-        style: style,
-      ));
+      notes.add('🐌 +${PenaltySettingsModel.formatSeconds(special.speedZonePenaltySeconds)}: '
+          'limite zona superato');
     }
-    // Fix 3 (09/08/2026) — dicitura distinta per salto volontario vs
-    // speciale non rilevata (nessun dato GPS reale): "stima recovery"
-    // resta solo dove un recovery reale è avvenuto su dati effettivamente
-    // presenti (hasTimingWarning esclude ormai entrambi i casi sotto).
-    if (special.skipped) {
-      widgets.add(const Text('⏭ Salto volontario — penalità applicata',
-          style: style));
-    } else if (special.notDetected) {
-      widgets.add(const Text(
-          '⚠ Tempo forfettario applicato — speciale non rilevata',
-          style: style));
-    } else if (special.hasTimingWarning) {
-      widgets.add(const Text('⚡ stima recovery', style: style));
+    if (!special.skipped && !special.notDetected && special.hasTimingWarning) {
+      notes.add('stima recovery');
     }
-    return widgets;
+    return notes;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final notes = _anomalyNotes(special);
+    final hasAnomaly = notes.isNotEmpty;
+    final tappable = !special.isInvalidTiming &&
+        !special.skipped &&
+        !special.notDetected &&
+        !special.controlPointsOk;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const SizedBox(width: 48), // align with card content
+              Container(
+                width: 28,
+                height: 28,
+                decoration: BoxDecoration(
+                  color: AppColors.accent.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                      color: AppColors.accent.withValues(alpha: 0.3)),
+                ),
+                child: Center(
+                  child: Text(
+                    'PS${special.ordine + 1}',
+                    style: const TextStyle(
+                        color: AppColors.accent,
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  special.specialeNome,
+                  style: const TextStyle(
+                      color: AppColors.textSecondary, fontSize: 12),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                // Rilevamento non valido: il tempo memorizzato è solo la
+                // penalità massima applicata, non un tempo di gara reale —
+                // mostrarlo confonderebbe il pilota (vedi nota in fondo).
+                special.isInvalidTiming ? '—' : special.tempoFormatted,
+                style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ],
+          ),
+          // Riga anomalie: un solo triangolo (tappabile solo se ci sono CP
+          // mancati da dettagliare) seguito dalle note unite da " · ".
+          if (hasAnomaly)
+            Padding(
+              padding: const EdgeInsets.only(left: 58, top: 3),
+              child: GestureDetector(
+                onTap: tappable ? () => _showMissedCpsDialog(context) : null,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.warning_amber_rounded,
+                        color: AppColors.warning, size: 13),
+                    const SizedBox(width: 5),
+                    Expanded(
+                      child: Text(
+                        notes.join(' · '),
+                        style: const TextStyle(
+                            color: AppColors.warning,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 }
 

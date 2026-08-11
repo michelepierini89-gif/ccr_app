@@ -10,6 +10,7 @@ import '../models/registration_model.dart';
 import '../models/team_model.dart';
 import '../models/gps_point_model.dart';
 import '../models/classifica_model.dart';
+import '../models/user_model.dart';
 import 'track_smoother.dart';
 
 class FirestoreService {
@@ -811,6 +812,40 @@ class FirestoreService {
         SetOptions(merge: true),
       );
 
+  Future<void> saveUserPhotoUrl(String userId, String? photoUrl) =>
+      _db.collection(FirebaseConstants.users).doc(userId).set(
+        {'photoUrl': photoUrl},
+        SetOptions(merge: true),
+      );
+
+  /// Tutti gli utenti registrati all'app (Step 42, elenco admin) — distinto
+  /// dalle iscrizioni ai singoli eventi.
+  Stream<List<UserModel>> getAllUsersStream() => _db
+      .collection(FirebaseConstants.users)
+      .snapshots()
+      .map((s) => s.docs.map((d) => UserModel.fromFirestore(d)).toList());
+
+  Future<void> setUserAttivo(String userId, bool attivo) =>
+      _db.collection(FirebaseConstants.users).doc(userId).set(
+        {'attivo': attivo},
+        SetOptions(merge: true),
+      );
+
+  /// Numero di eventi a cui [userId] ha partecipato (iscrizioni approvate),
+  /// usato dall'elenco utenti admin (Step 42). L'id del documento
+  /// `events/{eventId}/iscritti/{userId}` È lo userId (vedi
+  /// [RegistrationModel.fromFirestore]: `userId: doc.id`), quindi il filtro
+  /// è su `FieldPath.documentId()` — nessun campo `userId` salvato nel
+  /// documento. Filtro `stato` applicato lato client per evitare di
+  /// richiedere un indice composito su una collection group query.
+  Future<int> countApprovedRegistrationsForUser(String userId) async {
+    final snap = await _db
+        .collectionGroup(FirebaseConstants.iscritti)
+        .where(FieldPath.documentId, isEqualTo: userId)
+        .get();
+    return snap.docs.where((d) => d.data()['stato'] == 'approvato').length;
+  }
+
   Future<void> recordWaypointPassage({
     required String eventId,
     required String userId,
@@ -915,7 +950,6 @@ class FirestoreService {
           missedCps: missedCps,
           pilotNote: pilotNote,
           timestamp: now,
-          status: CpDisputeStatus.pending,
         ).toFirestore());
     await _createNotification(eventId, {
       'type': 'cp_dispute',
@@ -953,18 +987,24 @@ class FirestoreService {
           .map((s) =>
               s.docs.map((d) => CpDisputeModel.fromFirestore(d)).toList());
 
-  /// Risolve una segnalazione CP. Se accolta, registra un passaggio
-  /// sintetico per ogni CP contestato con timestamp a metà tra inizio e
-  /// fine della PS (stessa risoluzione start/end usata da
-  /// ClassificaEngine._computeSpeciali): da quel momento il CP risulta
-  /// passato e la penalità sparisce dal calcolo senza alcuna logica
-  /// speciale nel motore di classifica.
-  Future<void> resolveCpDispute({
+  /// Risolve una segnalazione CP voce per voce (Step 42) — ogni entry di
+  /// [updatedEntries] porta già il proprio [DisputedCp.status] e
+  /// l'eventuale [DisputedCp.decisionReason] deciso dall'admin; le voci non
+  /// toccate dalla decisione corrente vanno passate invariate (stesso
+  /// status che avevano). Per ogni voce che passa a "accettata" in QUESTA
+  /// chiamata (mai per quelle già accettate in precedenza, altrimenti si
+  /// duplicherebbe il passaggio sintetico — `recordWaypointPassage` usa
+  /// `.add()`, non è idempotente) registra un passaggio sintetico con
+  /// timestamp a metà tra inizio e fine della PS (stessa risoluzione
+  /// start/end usata da ClassificaEngine._computeSpeciali): da quel momento
+  /// il CP risulta passato e la penalità sparisce dal calcolo senza alcuna
+  /// logica speciale nel motore di classifica.
+  Future<void> resolveCpDisputeEntries({
     required EventModel event,
     required String disputeId,
-    required bool accept,
     required String pilotId,
-    required List<DisputedCp> missedCps,
+    required List<DisputedCp> previousEntries,
+    required List<DisputedCp> updatedEntries,
   }) async {
     final eventId = event.id;
     await _db
@@ -972,11 +1012,24 @@ class FirestoreService {
         .doc(eventId)
         .collection(FirebaseConstants.disputes)
         .doc(disputeId)
-        .update({'status':
-            (accept ? CpDisputeStatus.accepted : CpDisputeStatus.rejected)
-                .name});
+        .update({
+      'missedCps': updatedEntries.map((c) => c.toMap()).toList(),
+      'status': updatedEntries.every((c) => c.status == CpDisputeStatus.accepted)
+          ? CpDisputeStatus.accepted.name
+          : updatedEntries
+                  .every((c) => c.status == CpDisputeStatus.rejected)
+              ? CpDisputeStatus.rejected.name
+              : CpDisputeStatus.pending.name,
+    });
 
-    if (accept) {
+    final previousByCpId = {for (final c in previousEntries) c.cpId: c.status};
+    final newlyAccepted = updatedEntries
+        .where((c) =>
+            c.status == CpDisputeStatus.accepted &&
+            previousByCpId[c.cpId] != CpDisputeStatus.accepted)
+        .toList();
+
+    if (newlyAccepted.isNotEmpty) {
       final myPassages = (await getPassagesOnce(eventId))
           .where((p) => p.userId == pilotId)
           .toList();
@@ -987,7 +1040,7 @@ class FirestoreService {
       final pilotStatus = await getPilotStatusOnce(eventId, pilotId);
       final routeId = pilotStatus?['routeVariantId'] as String? ?? 'A';
       final variant = event.routeVariant(routeId) ?? event.routeAAsVariant;
-      for (final cp in missedCps) {
+      for (final cp in newlyAccepted) {
         final special =
             variant.speciali.where((s) => s.id == cp.specialeId).firstOrNull;
         if (special == null) continue;
@@ -1013,21 +1066,23 @@ class FirestoreService {
           waypointId: cp.cpId,
           waypointNome: cp.cpNome,
           timestamp: midTs,
+          timingMethod: 'dispute',
         );
       }
     }
 
+    final accepted =
+        updatedEntries.where((c) => c.status == CpDisputeStatus.accepted).length;
+    final rejected =
+        updatedEntries.where((c) => c.status == CpDisputeStatus.rejected).length;
     await _sendUserNotification(
       recipientId: pilotId,
-      type: accept
+      type: rejected == 0
           ? NotificationType.cpDisputeAccepted
           : NotificationType.cpDisputeRejected,
-      title: accept
-          ? '✅ Segnalazione CP accolta'
-          : '❌ Segnalazione CP rifiutata',
-      body: accept
-          ? 'La tua segnalazione sui checkpoint mancati è stata accolta: la penalità è stata rimossa.'
-          : 'La tua segnalazione sui checkpoint mancati è stata rifiutata.',
+      title: 'Segnalazione CP verificata',
+      body: 'L\'organizzatore ha verificato la tua segnalazione: '
+          '$accepted CP accolti, $rejected rifiutati.',
     );
   }
 

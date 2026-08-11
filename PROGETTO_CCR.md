@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 10 agosto 2026 (Step 41 completato)  
+**Data aggiornamento:** 11 agosto 2026 (Step 42 completato)  
 **Branch:** main  
 **Versione:** 1.0.2+3
 
@@ -1751,6 +1751,51 @@ Deploy lanciato e poi verificato con 3 controlli mirati, usando l'account pilota
 3. **Lettura di `routeVariantByUser` da un pilota non admin:** stesso pilota di test, lettura dell'intera collezione (propria voce + una di un altro pilota fittizio, scritta via admin) → `200 OK`, entrambe le voci visibili — conferma che la classifica lato pilota può risolvere le varianti di ogni pilota, non solo la propria.
 
 **Incidente durante la pulizia (segnalato per trasparenza):** un comando di pulizia con `updateMask` mal formato ha azzerato per errore tutti i campi del documento utente del pilota di test (non solo il campo da rimuovere). Rilevato subito confrontando con la lettura iniziale, ripristinato (`nome`/`cognome`/`email`/`role`/`createdAt`) allo stato esatto precedente. Tutti i dati di test (evento, tracking, iscrizione) eliminati al termine — il progetto Firestore è tornato esattamente allo stato precedente (15 eventi, nessun residuo).
+
+### Step 42 — Profilo, elenco utenti, safe area, etichette PS, dispute CP granulari (11 agosto 2026) ✅
+
+**Obiettivo:** 6 interventi indipendenti dal profilo pilota alla gestione dispute CP, richiesti come commit unico.
+
+**Parte 1 — Regolamento e guida nel profilo:**
+- `REGOLAMENTO_CCR.md` (testo esistente, non riscritto) copiato in `assets/docs/regolamento_ccr.md`, dichiarato come asset — disponibile offline. `assets/docs/guida_app_ccr.md` nuovo, contenuto originale derivato dalle funzionalità reali dell'app.
+- `lib/core/utils/markdown_sections.dart`: parser minimale per documenti "a sezioni" (H1, `## ` sezioni, paragrafi, elenchi puntati `- ` con `**grassetto**` inline) — niente dipendenza markdown esterna, controllo tipografico preciso.
+- `lib/core/widgets/markdown_sections_view.dart`: rendering a sezioni espandibili (`ExpansionTile`, prima aperta di default), titoli in accent color, paragrafi distanziati, elenco puntato ben spaziato.
+- `RegolamentoScreen` (`lib/features/pilot/screens/regolamento_screen.dart`) e `GuidaScreen` nuove, raggiungibili da voci nel profilo pilota (icona documento/guida) insieme a Statistiche e Mappe offline. Route `/pilot/regolamento`, `/pilot/guida`, e contestuale `/pilot/event/:id/regolamento`.
+- Accesso contestuale da `EventDetailScreen` (pulsante REGOLAMENTO sotto CLASSIFICA): con `eventId`, mostra in cima una card "Dati evento" (dimensione squadra, numero e lunghezza PS calcolata dal tracciato, tempo massimo, tipologia classifica, tabella punti se a punteggio da `kChampionshipPoints`, penalità effettive via `getEffectivePenaltySettings`, numero punti pericolo e zone velocità — righe omesse se il dato non è configurato).
+- `EventModel.disposizioniParticolari` (String? nuovo campo): testo libero multilinea per ritrovo/orari/pranzo/rinvio maltempo, editor in `event_management_screen.dart` (`_TracciatoTab`, stesso pattern debounce 800ms di squadra/tipologia). Lato pilota compare come sezione in cima al Regolamento contestuale, prima del regolamento generale, omessa se vuota.
+
+**Parte 2 — Immagine profilo:**
+- `image_picker`, `image`, `cached_network_image` aggiunti a `pubspec.yaml`. Permessi: `CAMERA` + `uses-feature` opzionale su Android, `NSCameraUsageDescription`/`NSPhotoLibraryUsageDescription` su iOS.
+- `lib/core/services/profile_image_service.dart`: pick (galleria/fotocamera) → ritaglio quadrato centrato + resize a 512px (`package:image`, puro Dart, funziona anche su web) → upload JPEG su Storage `profile_images/{uid}/{timestamp}.jpg` (nome con timestamp: l'URL cambia sempre, niente immagine vecchia mostrata dalla cache) → eliminazione esplicita del file precedente.
+- `UserModel.photoUrl` (String? nuovo campo). `lib/core/widgets/ccr_avatar.dart` (avatar condiviso, cache + placeholder iniziali) e `lib/core/widgets/user_avatar_by_id.dart` (avatar per uno userId qualunque via nuovo `userByIdProvider`, per liste che conoscono solo l'id).
+- Avatar mostrato in: profilo pilota (tap per cambiare, bottom sheet galleria/fotocamera/rimuovi), elenco iscrizioni admin (`registrations_screen.dart`), membri squadra (`team_screen.dart`), classifica (`ClassificaEntry.membriIds` nuovo campo, `_MemberAvatarsStack` con overlap e badge "+N").
+- `storage.rules`: `profile_images/{userId}/{fileName}` scrivibile solo dal proprietario, leggibile da autenticati; il resto del bucket esplicitamente escluso da quel prefisso nella regola generica (`allPaths[0] != 'profile_images'` — le regole Storage si sommano, non vince la più specifica). `firestore.rules`: lettura di `users/{userId}` estesa a qualunque autenticato (era solo proprietario) per poter risolvere l'avatar di altri.
+
+**Parte 3 — Elenco utenti registrati (admin):**
+- `UsersListScreen` (`lib/features/admin/screens/users_list_screen.dart`), route `/admin/users`, bottone nella home admin. Ricerca nome/email, filtro stato (Tutti/Attivi/Disabilitati), ordinamento (data registrazione/nome). Per riga: avatar, nome, email, ruolo, stato, data registrazione, numero eventi (`countApprovedRegistrationsForUser`, collection group query su `iscritti` filtrata per `FieldPath.documentId` — l'id del documento È lo userId, nessun campo `userId` salvato).
+- Non esisteva un flusso di approvazione account nell'app (solo approvazione per-iscrizione-evento, già in `RegistrationsScreen`): `UserModel.attivo` (bool, default true) è l'unica nozione di "stato account" introdotta, non un'approvazione a due stati. Toggle attivo/disabilitato dall'elenco; `AuthService.signIn` blocca l'accesso (sign-out immediato + eccezione) se l'account è disabilitato.
+
+**Parte 4 — Safe area / barra di sistema:** passata su ~24 schermate (non solo le due segnalate) con contenuti/pulsanti ancorati in basso — pagina evento pilota, classifica, tempi (entrambe le viste), navigazione GPS (incluse le due `showModalBottomSheet` di batteria e aspetto traccia), risultati, squadra, statistiche, campionati, mappe offline, e diversi screen admin (home, crea evento, iscrizioni, live tracking, campionati, replay traccia, log diagnostico, ordine di partenza, penalità, gestione evento). `SafeArea(bottom: true)` dove il contenuto non è altrimenti scrollabile fino in fondo; `MediaQuery.paddingOf(context).bottom` aggiunto al padding inferiore di `ListView`/`SingleChildScrollView` altrove.
+
+**Parte 5 — Correzioni etichette PS:**
+- "SS" → "PS" (le uniche 2 occorrenze rimaste in tutto il codebase, entrambe in `classifica_screen.dart` — CSV export e annunci vocali già usavano "PS"/"prova speciale" correttamente).
+- Causa radice del nome PS non visibile per le speciali a tempo forfettario in `ClassificaScreen._SpecialRow`: non un dato mancante (`specialeNome` è sempre popolato da `classifica_engine.dart`), ma un layout che schiacciava il `Text` del nome (`Expanded`) contro una colonna di note/penalità a larghezza libera nello stesso `Row` — con una nota lunga ("Tempo forfettario applicato — speciale non rilevata") il nome finiva quasi a larghezza zero. Risolto separando la riga principale (badge PS + nome sempre leggibile + tempo) dalla riga di anomalie (sotto, larghezza piena).
+- Triangoli di segnalazione multipli sulla stessa riga per la stessa anomalia (icona `warning_amber_rounded` + testo con proprio "⚠" ripetuto in `classifica_screen.dart`; icona + badge "CP!" ridondante in `timing_screen.dart`): consolidati a un solo triangolo per riga, note multiple unite da " · ".
+
+**Parte 6 — Dispute CP granulari con mappa di analisi:**
+- `CpDisputeModel`/`DisputedCp` (`cp_dispute_model.dart`): ogni CP contestato ha ora stato indipendente (`pending`/`accepted`/`rejected`), nota pilota per-CP, distanza minima traccia-punto, motivazione admin. Retrocompatibilità: documenti scritti prima di questo Step (un solo `status` per l'intera dispute, nessuno stato per-voce) letti trasparentemente — il rollup legacy diventa lo stato di fallback per ogni voce priva del proprio.
+- Lato pilota: `CpDisputeScreen` nuova (sostituisce il vecchio dialog "invia tutto in blocco") — checkbox per CP, nessuna selezione predefinita, distanza minima calcolata da `pilotTrack` già caricata per la mappa risultati, nota per CP + nota generale, invio disabilitato finché 0 selezionati con conteggio nel pulsante.
+- Lato admin: `CpDisputeReviewScreen` nuova (sostituisce il dialog `_CpDisputesDialog`) — accetta/rifiuta indipendenti per CP con motivazione, "accetta tutti"/"rifiuta tutti" per segnalazione come scorciatoia esplicita. `CpDisputeMapScreen` nuova: traccia completa del pilota (`getFullPilotTrack`), cerchio del raggio di validità del CP (`CircleLayer`, `useRadiusInMeter`), punto di massimo avvicinamento evidenziato e collegato al CP con linea tratteggiata, traccia di riferimento evento per contesto.
+- `FirestoreService.resolveCpDisputeEntries` (sostituisce `resolveCpDispute`): registra il passaggio sintetico solo per i CP che transitano a "accettato" IN QUESTA chiamata (diff con lo stato precedente) — `recordWaypointPassage` usa `.add()`, non idempotente, quindi mai due volte per lo stesso CP già accolto in precedenza. Passaggio sintetico marcato `timingMethod:'dispute'`.
+- `SpecialTempo.disputeValidatedPositions` (nuovo, popolato da `classifica_engine.dart` controllando `timingMethod=='dispute'` sui passaggi CP): `TimingScreen` (admin) mostra un badge "CP DA DISPUTA" distinto dai CP rilevati automaticamente.
+- `functions/index.js::onCpDisputeResolved` riscritto: confronta le singole voci `missedCps` prima/dopo invece del solo rollup a livello documento — altrimenti una decisione mista (alcuni CP accettati, altri rifiutati) non avrebbe fatto scattare alcuna notifica push, perché il rollup resta `'pending'` finché non sono TUTTI decisi nello stesso verso. Corpo del messaggio con conteggio accolti/rifiutati.
+- **Limite noto:** un CP accettato e poi rifiutato in una decisione successiva NON rimuove il passaggio sintetico già registrato (nessuna logica di retract) — scenario non previsto dal flusso normale (decisione singola per segnalazione), da tenere a mente se un admin cambia idea dopo aver già accettato.
+
+**Deploy:**
+- `flutter analyze`: 0 issues (intero progetto)
+- `flutter test`: 83/83 verdi (nessun nuovo test dedicato — i 6 interventi sono stati verificati con analyze + revisione manuale del flusso dati, non con test automatici aggiuntivi)
+- `firebase deploy --only hosting,storage,firestore:rules,functions:onCpDisputeResolved`
+- `git push origin main`
 
 ---
 

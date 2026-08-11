@@ -157,6 +157,12 @@ class SpecialTempo {
   // true se il tempo netto proviene dal ricalcolo ufficiale post-gara
   // (Blocco B) invece che dai passaggi live.
   final bool isOfficialTime;
+  // Posizioni 1-based dei CP che risultano passati grazie a una disputa
+  // accolta (Step 42) — il passaggio sintetico registrato da
+  // resolveCpDisputeEntries porta timingMethod=='dispute', distinto dai
+  // CP rilevati automaticamente dal GPS in gara. Mostrato in TimingScreen
+  // (admin) per trasparenza sulle decisioni prese.
+  final List<int> disputeValidatedPositions;
 
   const SpecialTempo({
     required this.specialeId,
@@ -176,6 +182,7 @@ class SpecialTempo {
     this.startTimingMethod = 'radius',
     this.endTimingMethod = 'radius',
     this.isOfficialTime = false,
+    this.disputeValidatedPositions = const [],
   });
 
   SpecialTempo copyWith({Duration? tempo, int? penaltySeconds}) => SpecialTempo(
@@ -196,6 +203,7 @@ class SpecialTempo {
         startTimingMethod: startTimingMethod,
         endTimingMethod: endTimingMethod,
         isOfficialTime: isOfficialTime,
+        disputeValidatedPositions: disputeValidatedPositions,
       );
 
   String get tempoFormatted => TimeFormatUtils.formatRaceTime(tempo);
@@ -218,6 +226,7 @@ class ClassificaEntry {
   final String entryId; // teamId or userId for solo pilots
   final String teamNome;
   final List<String> membriNomi;
+  final Set<String> membriIds; // uid dei componenti, per l'avatar (Step 42)
   final List<SpecialTempo> specialiCompletati;
   final int totaleSpeciali;
   final Duration tempoTotale;     // include penalità CP e ritiro compagno
@@ -244,6 +253,7 @@ class ClassificaEntry {
     required this.entryId,
     required this.teamNome,
     required this.membriNomi,
+    this.membriIds = const {},
     required this.specialiCompletati,
     required this.totaleSpeciali,
     required this.tempoTotale,

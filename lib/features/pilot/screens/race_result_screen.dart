@@ -18,12 +18,14 @@ import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/gpx_utils.dart';
+import '../../../core/utils/location_utils.dart';
 import '../../../core/utils/time_format_utils.dart';
 import '../../admin/providers/admin_provider.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../classifica/providers/classifica_provider.dart';
 import '../../map/widgets/speed_zone_layer.dart';
 import '../providers/pilot_provider.dart';
+import 'cp_dispute_screen.dart';
 
 class RaceResultScreen extends ConsumerStatefulWidget {
   final String eventId;
@@ -374,8 +376,12 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
   /// CP segnati come mancati su tutte le speciali completate da [myEntry],
   /// risolti a [DisputedCp] (con id/nome del CP reale) per poter creare la
   /// segnalazione senza dover ri-risolvere posizione → waypoint più avanti.
-  List<DisputedCp> _computeMissedCps(
-      List<SpecialModel> speciali, ClassificaEntry? myEntry) {
+  /// Ogni candidato porta già [DisputedCp.distanceMeters] — la distanza
+  /// minima tra [pilotPoints] (già caricati per la mappa risultati) e il
+  /// punto — così la schermata di segnalazione (Step 42) non deve
+  /// ricaricare la traccia per mostrarla al pilota.
+  List<DisputedCp> _computeMissedCps(List<SpecialModel> speciali,
+      ClassificaEntry? myEntry, List<LatLng> pilotPoints) {
     final result = <DisputedCp>[];
     for (final s in speciali) {
       final tempo = _findTempo(myEntry, s.id);
@@ -389,100 +395,50 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
           cpId: cp.id,
           cpNome: cp.nome,
           position: pos,
+          distanceMeters: _minDistanceToPoint(pilotPoints, cp.lat, cp.lng),
         ));
       }
     }
     return result;
   }
 
-  Future<void> _showCpDisputeDialog(
+  double? _minDistanceToPoint(List<LatLng> track, double lat, double lng) {
+    if (track.isEmpty) return null;
+    double best = double.infinity;
+    for (final p in track) {
+      final d = LocationUtils.haversineDistance(p.latitude, p.longitude, lat, lng);
+      if (d < best) best = d;
+    }
+    return best;
+  }
+
+  /// Apre la schermata di segnalazione granulare (Step 42): il pilota
+  /// sceglie esplicitamente quali CP contestare, nessuno preselezionato.
+  Future<void> _openCpDisputeScreen(
     BuildContext context,
     EventModel event,
     String userId,
     String pilotName,
     String teamName,
-    List<DisputedCp> missedCps,
+    List<DisputedCp> candidates,
   ) async {
-    final noteCtrl = TextEditingController();
-    final sent = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.cardBackground,
-        title: const Text('Segnalazione CP mancati',
-            style: TextStyle(color: AppColors.textPrimary)),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Verrà segnalato all\'organizzatore che i seguenti checkpoint '
-                'potrebbero essere stati rilevati erroneamente come mancati:',
-                style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
-              ),
-              const SizedBox(height: 10),
-              ...missedCps.map((cp) => Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 2),
-                    child: Text(
-                      '• ${cp.specialeNome} — P${cp.position} (${cp.cpNome})',
-                      style: const TextStyle(
-                          color: AppColors.textPrimary, fontSize: 13),
-                    ),
-                  )),
-              const SizedBox(height: 12),
-              TextField(
-                controller: noteCtrl,
-                maxLines: 3,
-                style: const TextStyle(color: AppColors.textPrimary),
-                decoration: const InputDecoration(
-                  hintText: 'Note per l\'organizzatore (opzionale)',
-                  hintStyle: TextStyle(color: AppColors.textSecondary),
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ],
-          ),
+    final sent = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CpDisputeScreen(
+          eventId: event.id,
+          userId: userId,
+          pilotName: pilotName,
+          teamName: teamName,
+          candidates: candidates,
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Annulla',
-                style: TextStyle(color: AppColors.textSecondary)),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.accent),
-            child: const Text('Invia'),
-          ),
-        ],
       ),
     );
-    if (sent != true || !context.mounted) return;
-    try {
-      await ref.read(firestoreServiceProvider).createCpDispute(
-            eventId: event.id,
-            pilotId: userId,
-            pilotName: pilotName,
-            teamName: teamName,
-            missedCps: missedCps,
-            pilotNote: noteCtrl.text.trim().isEmpty
-                ? null
-                : noteCtrl.text.trim(),
-          );
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Segnalazione inviata all\'organizzatore'),
-          backgroundColor: AppColors.success,
-        ));
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Errore invio segnalazione: $e'),
-          backgroundColor: AppColors.error,
-        ));
-      }
+    if (sent == true && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Segnalazione inviata all\'organizzatore'),
+        backgroundColor: AppColors.success,
+      ));
     }
   }
 
@@ -538,29 +494,39 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
     final myDisputes = disputesAsync.valueOrNull ?? const <CpDisputeModel>[];
     final latest = myDisputes.isNotEmpty ? myDisputes.first : null;
 
+    // Step 42 — ogni voce della dispute ha ora uno stato indipendente:
+    // il banner riassume in base a quante voci sono state accolte/
+    // rifiutate/sono ancora in attesa, invece di un singolo stato per
+    // l'intera segnalazione.
     final (String statusText, Color statusColor, bool canSend) =
-        switch (latest?.status) {
-      CpDisputeStatus.pending => (
-          'Segnalazione inviata — in attesa di verifica admin.',
-          AppColors.warning,
-          false
-        ),
-      CpDisputeStatus.accepted => (
-          'Segnalazione accolta: la penalità è stata rimossa.',
-          AppColors.success,
-          false
-        ),
-      CpDisputeStatus.rejected => (
-          'Segnalazione rifiutata dall\'organizzatore.',
-          AppColors.error,
-          false
-        ),
+        switch (latest) {
       null => (
           'Hai ${missedCps.length} checkpoint segnati come mancati. Se '
               'ritieni siano stati rilevati erroneamente dal GPS, puoi '
               'inviare una segnalazione all\'admin.',
           AppColors.warning,
           true
+        ),
+      CpDisputeModel d when d.hasPending => (
+          'Segnalazione inviata — in attesa di verifica admin.',
+          AppColors.warning,
+          false
+        ),
+      CpDisputeModel d when d.allAccepted => (
+          'Segnalazione accolta: la penalità è stata rimossa.',
+          AppColors.success,
+          false
+        ),
+      CpDisputeModel d when d.allRejected => (
+          'Segnalazione rifiutata dall\'organizzatore.',
+          AppColors.error,
+          false
+        ),
+      CpDisputeModel d => (
+          'Segnalazione verificata: ${d.acceptedCount} CP accolti, '
+              '${d.rejectedCount} rifiutati.',
+          AppColors.accent,
+          false
         ),
     };
 
@@ -590,7 +556,7 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
             SizedBox(
               width: double.infinity,
               child: OutlinedButton(
-                onPressed: () => _showCpDisputeDialog(
+                onPressed: () => _openCpDisputeScreen(
                   context,
                   event,
                   userId,
@@ -631,10 +597,11 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
     final distanceKm = _computeDistanceKm(pilotPoints);
     final retiredReason = statusData?['retiredReason'] as String?;
     final finishedAt = (statusData?['finishedAt'] as Timestamp?)?.toDate();
-    final missedCps = _computeMissedCps(speciali, myEntry);
+    final missedCps = _computeMissedCps(speciali, myEntry, pilotPoints);
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
+      padding: EdgeInsets.fromLTRB(
+          16, 16, 16, 16 + MediaQuery.paddingOf(context).bottom),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

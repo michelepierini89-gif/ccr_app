@@ -32,6 +32,11 @@ class AdminHomeScreen extends ConsumerWidget {
         ),
         actions: [
           IconButton(
+            icon: const Icon(Icons.people_outline),
+            tooltip: 'Utenti registrati',
+            onPressed: () => context.push('/admin/users'),
+          ),
+          IconButton(
             icon: const Icon(Icons.emoji_events_outlined),
             tooltip: 'Campionati',
             onPressed: () => context.push('/admin/championships'),
@@ -83,7 +88,7 @@ class AdminHomeScreen extends ConsumerWidget {
         tooltip: 'Nuovo evento',
         child: const Icon(Icons.add),
       ),
-      body: eventsAsync.when(
+      body: SafeArea(bottom: true, child: eventsAsync.when(
         loading: () => const Center(
           child: CircularProgressIndicator(color: AppColors.accent),
         ),
@@ -186,6 +191,7 @@ class AdminHomeScreen extends ConsumerWidget {
             ),
           );
         },
+      ),
       ),
     ));
   }

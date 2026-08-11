@@ -234,7 +234,9 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
               onPressed: () => context.pop(),
             ),
           ),
-          body: RefreshIndicator(
+          body: SafeArea(
+            bottom: true,
+            child: RefreshIndicator(
             color: AppColors.accent,
             backgroundColor: AppColors.cardBackground,
             onRefresh: () async {
@@ -248,6 +250,7 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
             },
             child: SingleChildScrollView(
               physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.only(bottom: 24),
               child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -459,6 +462,7 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
                 ),
               ],
             ),
+          ),
           ),
           ),
         );
@@ -834,9 +838,12 @@ class _PilotRegistrationSectionState
                                         title:
                                             const Text('I miei tempi')),
                                     backgroundColor: AppColors.background,
-                                    body: TimingScreen(
-                                        eventId: widget.eventId,
-                                        adminView: false),
+                                    body: SafeArea(
+                                      bottom: true,
+                                      child: TimingScreen(
+                                          eventId: widget.eventId,
+                                          adminView: false),
+                                    ),
                                   ),
                                 ),
                               ),
@@ -948,6 +955,26 @@ class _PilotRegistrationSectionState
               ),
               icon: const Icon(Icons.leaderboard, size: 18),
               label: const Text('CLASSIFICA',
+                  style: TextStyle(
+                      fontWeight: FontWeight.bold, letterSpacing: 0.5)),
+            ),
+          ),
+          // Regolamento contestuale — apre con i dati di QUESTO evento già
+          // popolati in cima (Step 42), a differenza della voce nel
+          // profilo che mostra il solo regolamento generale.
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            height: 46,
+            child: OutlinedButton.icon(
+              onPressed: () => context
+                  .push('/pilot/event/${widget.eventId}/regolamento'),
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: AppColors.border),
+                foregroundColor: AppColors.textSecondary,
+              ),
+              icon: const Icon(Icons.description_outlined, size: 18),
+              label: const Text('REGOLAMENTO',
                   style: TextStyle(
                       fontWeight: FontWeight.bold, letterSpacing: 0.5)),
             ),

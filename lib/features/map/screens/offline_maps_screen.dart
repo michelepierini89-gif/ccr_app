@@ -170,7 +170,7 @@ class _OfflineMapsScreenState extends ConsumerState<OfflineMapsScreen> {
             ),
         ],
       ),
-      body: eventsAsync.when(
+      body: SafeArea(bottom: true, child: eventsAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => Center(
           child: Text('Errore: $e',
@@ -252,6 +252,7 @@ class _OfflineMapsScreenState extends ConsumerState<OfflineMapsScreen> {
             },
           );
         },
+      ),
       ),
     );
   }
