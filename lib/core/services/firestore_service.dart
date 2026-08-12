@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:latlong2/latlong.dart';
 import '../constants/firebase_constants.dart';
 import '../models/app_notification_model.dart';
@@ -23,6 +24,35 @@ class FirestoreService {
 
   final FirebaseFirestore? _dbOverride;
   FirebaseFirestore get _db => _dbOverride ?? FirebaseFirestore.instance;
+
+  /// Fix (bug test 18/08, "Carring CLO 3") — un evento reale ha mostrato
+  /// `saveFullPilotTrack` fallire con `permission-denied` a fine di una
+  /// sessione web/Chrome durata oltre un'ora, mentre le regole Firestore
+  /// deployate (verificate via Rules API contro il file committato) erano
+  /// corrette e già attive da prima dell'inizio della sessione. La causa più
+  /// probabile è un ID token Firebase Auth scaduto (TTL 1h) il cui refresh
+  /// automatico — su web si basa su un timer JS — può essere ritardato dal
+  /// browser su un tab in background durante un test GPS lungo. Questo
+  /// wrapper intercetta `permission-denied`/`unauthenticated`, forza un
+  /// refresh del token e ritenta l'operazione una sola volta prima di
+  /// arrendersi, usato dalle scritture del percorso traccia GPS (le uniche
+  /// per cui questo pattern è stato osservato in produzione).
+  Future<T> _withTokenRefreshRetry<T>(Future<T> Function() action) async {
+    try {
+      return await action();
+    } on FirebaseException catch (e) {
+      if (e.code != 'permission-denied' && e.code != 'unauthenticated') {
+        rethrow;
+      }
+      try {
+        await FirebaseAuth.instance.currentUser?.getIdToken(true);
+      } catch (_) {
+        // Nessun utente o refresh fallito: ritenta comunque, l'errore
+        // originale è più informativo di uno legato al refresh.
+      }
+      return await action();
+    }
+  }
 
   // Events
   Future<String> createEvent(EventModel event) async {
@@ -334,10 +364,13 @@ class FirestoreService {
           }, SetOptions(merge: true));
 
   /// Persists the full GPS track for post-race replay.
-  /// Called on FINE GARA and RITIRO so the result screen can show the polyline.
+  /// Called on FINE GARA and RITIRO so the result screen can show the
+  /// polyline, e anche periodicamente durante la gara (vedi
+  /// `GpsRecordingScreen`, flush incrementale) — è un unico campo array
+  /// lat/lng, economico da riscrivere per intero ad ogni flush.
   Future<void> savePilotTrack(
           String eventId, String userId, List<LatLng> track) =>
-      _db
+      _withTokenRefreshRetry(() => _db
           .collection(FirebaseConstants.tracking)
           .doc(eventId)
           .collection(FirebaseConstants.pilots)
@@ -346,7 +379,7 @@ class FirestoreService {
             'pilotTrack': track
                 .map((p) => {'lat': p.latitude, 'lng': p.longitude})
                 .toList(),
-          }, SetOptions(merge: true));
+          }, SetOptions(merge: true)));
 
   /// Fix 5 (09/08/2026) — campioni per chunk della sottocollezione
   /// [FirebaseConstants.fullTrackChunks]: a questa dimensione un chunk resta
@@ -389,53 +422,117 @@ class FirestoreService {
   /// cancellato invece di contenere il nuovo `set`) — separarli in due
   /// commit elimina l'ambiguità alla radice invece di dipendere da un
   /// comportamento non garantito.
-  Future<void> saveFullPilotTrack(
-      String eventId, String userId, List<RawTrackSample> samples) async {
-    final chunksRef = _db
-        .collection(FirebaseConstants.tracking)
-        .doc(eventId)
-        .collection(FirebaseConstants.pilots)
-        .doc(userId)
-        .collection(FirebaseConstants.fullTrackChunks);
+  CollectionReference<Map<String, dynamic>> _fullTrackChunksRef(
+          String eventId, String userId) =>
+      _db
+          .collection(FirebaseConstants.tracking)
+          .doc(eventId)
+          .collection(FirebaseConstants.pilots)
+          .doc(userId)
+          .collection(FirebaseConstants.fullTrackChunks);
 
-    final existing = await chunksRef.get();
-    if (existing.docs.isNotEmpty) {
-      final deleteBatch = _db.batch();
-      for (final doc in existing.docs) {
-        deleteBatch.delete(doc.reference);
-      }
-      await deleteBatch.commit();
-    }
-    if (samples.isNotEmpty) {
+  /// Cancella i chunk residui di una sessione precedente (se presenti) senza
+  /// scrivere nulla di nuovo — va chiamato una volta all'avvio di una NUOVA
+  /// registrazione, PRIMA del primo flush incrementale
+  /// ([appendFullPilotTrackChunks]), così quest'ultimo può limitarsi ad
+  /// aggiungere senza mai dover ricontrollare cosa c'era già: senza questo
+  /// passo, gli id zero-padded di una sessione precedente più lunga
+  /// resterebbero mescolati a quelli della sessione nuova.
+  Future<void> resetFullPilotTrackForNewSession(
+          String eventId, String userId) =>
+      _withTokenRefreshRetry(() async {
+        final existing = await _fullTrackChunksRef(eventId, userId).get();
+        if (existing.docs.isEmpty) return;
+        final deleteBatch = _db.batch();
+        for (final doc in existing.docs) {
+          deleteBatch.delete(doc.reference);
+        }
+        await deleteBatch.commit();
+      });
+
+  Future<void> saveFullPilotTrack(
+          String eventId, String userId, List<RawTrackSample> samples) =>
+      _withTokenRefreshRetry(() async {
+        final chunksRef = _fullTrackChunksRef(eventId, userId);
+
+        final existing = await chunksRef.get();
+        if (existing.docs.isNotEmpty) {
+          final deleteBatch = _db.batch();
+          for (final doc in existing.docs) {
+            deleteBatch.delete(doc.reference);
+          }
+          await deleteBatch.commit();
+        }
+        if (samples.isNotEmpty) {
+          final writeBatch = _db.batch();
+          for (var i = 0; i < samples.length; i += _fullTrackChunkSize) {
+            final end = (i + _fullTrackChunkSize < samples.length)
+                ? i + _fullTrackChunkSize
+                : samples.length;
+            writeBatch.set(chunksRef.doc(i.toString().padLeft(8, '0')),
+                {'samples': _encodeSamples(samples.sublist(i, end))});
+          }
+          await writeBatch.commit();
+        }
+
+        // Campo legacy sul documento pilota: mantenuto vuoto/rimosso per non
+        // lasciare doppioni, ma senza toccare gli altri campi del documento
+        // (raceStatus, pilotTrack, waypointPassati, ...).
+        await _db
+            .collection(FirebaseConstants.tracking)
+            .doc(eventId)
+            .collection(FirebaseConstants.pilots)
+            .doc(userId)
+            .set({'pilotTrackFull': FieldValue.delete()},
+                SetOptions(merge: true));
+      });
+
+  static List<Map<String, dynamic>> _encodeSamples(
+          List<RawTrackSample> samples) =>
+      samples
+          .map((s) => {
+                'lat': s.lat,
+                'lng': s.lng,
+                'accuracy': s.accuracy,
+                'ts': s.timestamp.millisecondsSinceEpoch,
+              })
+          .toList();
+
+  /// Fix (bug test 18/08, "Carring CLO 3") — scrittura INCREMENTALE dei
+  /// chunk di [FirebaseConstants.fullTrackChunks], usata da
+  /// `GpsRecordingScreen` con un flush periodico DURANTE la gara (non solo a
+  /// FINE GARA/RITIRO/timeout, dove resta autorevole [saveFullPilotTrack]
+  /// con il suo delete+rewrite completo). A differenza di
+  /// [saveFullPilotTrack], NON cancella i chunk esistenti: scrive solo i
+  /// chunk che coprono `[startIndex, startIndex + newSamples.length)`,
+  /// riusando lo stesso schema di id zero-padded (indicizzato in assoluto,
+  /// non relativo a questa chiamata) così i flush successivi continuano la
+  /// sequenza senza sovrapporsi. Un'interruzione a metà gara (crash, chiusura
+  /// app, tab web chiuso) lascia quindi leggibili tutti i campioni fino
+  /// all'ultimo flush riuscito, invece di perdere l'intera traccia se solo
+  /// il salvataggio finale fallisce.
+  Future<void> appendFullPilotTrackChunks(
+    String eventId,
+    String userId,
+    List<RawTrackSample> newSamples, {
+    required int startIndex,
+  }) {
+    if (newSamples.isEmpty) return Future.value();
+    return _withTokenRefreshRetry(() async {
+      final chunksRef = _fullTrackChunksRef(eventId, userId);
+
       final writeBatch = _db.batch();
-      for (var i = 0; i < samples.length; i += _fullTrackChunkSize) {
-        final end = (i + _fullTrackChunkSize < samples.length)
+      for (var i = 0; i < newSamples.length; i += _fullTrackChunkSize) {
+        final end = (i + _fullTrackChunkSize < newSamples.length)
             ? i + _fullTrackChunkSize
-            : samples.length;
-        final chunk = samples.sublist(i, end);
-        writeBatch.set(chunksRef.doc(i.toString().padLeft(8, '0')), {
-          'samples': chunk
-              .map((s) => {
-                    'lat': s.lat,
-                    'lng': s.lng,
-                    'accuracy': s.accuracy,
-                    'ts': s.timestamp.millisecondsSinceEpoch,
-                  })
-              .toList(),
-        });
+            : newSamples.length;
+        final absoluteIndex = startIndex + i;
+        writeBatch.set(
+            chunksRef.doc(absoluteIndex.toString().padLeft(8, '0')),
+            {'samples': _encodeSamples(newSamples.sublist(i, end))});
       }
       await writeBatch.commit();
-    }
-
-    // Campo legacy sul documento pilota: mantenuto vuoto/rimosso per non
-    // lasciare doppioni, ma senza toccare gli altri campi del documento
-    // (raceStatus, pilotTrack, waypointPassati, ...).
-    await _db
-        .collection(FirebaseConstants.tracking)
-        .doc(eventId)
-        .collection(FirebaseConstants.pilots)
-        .doc(userId)
-        .set({'pilotTrackFull': FieldValue.delete()}, SetOptions(merge: true));
+    });
   }
 
   /// Legge la traccia grezza completa salvata da [saveFullPilotTrack] per

@@ -310,7 +310,8 @@ class _EventManagementScreenState
         final bytes =
             await StorageService().downloadTrack(event.routeB!.trackUrl!);
         final ext = event.routeB!.trackUrl!.contains('.kml') ? 'kml' : 'gpx';
-        final newUrlB = await StorageService().uploadTrack(newId, bytes, ext);
+        final newUrlB = await StorageService()
+            .uploadTrack(newId, bytes, ext, routeId: 'B');
         newRouteB = event.routeB!.copyWith(trackUrl: newUrlB);
       }
       if (newUrlA != null || newRouteB != event.routeB) {
@@ -433,7 +434,8 @@ class _EventManagementScreenState
           ? GpxParser.parseGpx(content)
           : GpxParser.parseKml(content);
 
-      final url = await StorageService().uploadTrack(event.id, bytes, ext);
+      final url = await StorageService()
+          .uploadTrack(event.id, bytes, ext, routeId: routeId);
       final updated = routeId == 'B'
           ? event.copyWith(routeB: event.routeB!.copyWith(trackUrl: url))
           : event.copyWith(trackUrlRouteA: url);
@@ -1582,16 +1584,23 @@ class _TracciatoTabState extends ConsumerState<_TracciatoTab> {
                       ),
                     ],
                   )
-                // No track at all
-                : const Column(
+                // No track at all — Fix (bug test 18/08): messaggio
+                // esplicito sulla variante in editing, invece di lasciare
+                // intendere (o mostrare, come nel bug reale) il tracciato
+                // dell'altra variante.
+                : Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(Icons.map_outlined,
+                      const Icon(Icons.map_outlined,
                           color: AppColors.textSecondary, size: 48),
-                      SizedBox(height: 8),
-                      Text('Nessun tracciato',
-                          style: TextStyle(
-                              color: AppColors.textSecondary, fontSize: 13)),
+                      const SizedBox(height: 8),
+                      Text(
+                        widget.editingRouteId == 'B'
+                            ? 'Nessun tracciato caricato per il percorso B'
+                            : 'Nessun tracciato',
+                        style: const TextStyle(
+                            color: AppColors.textSecondary, fontSize: 13),
+                      ),
                     ],
                   ),
       ),

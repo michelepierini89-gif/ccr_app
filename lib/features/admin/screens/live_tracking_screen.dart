@@ -86,6 +86,25 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
     }
   }
 
+  /// Fix (bug test 18/08, "Carring CLO 3") — un documento pilota malformato
+  /// (es. senza `lat`/`lng`, riprodotto da un caso reale in produzione) non
+  /// deve impedire di vedere tutti gli altri: ogni marker è costruito in
+  /// isolamento, un fallimento su un singolo pilota viene scartato invece
+  /// di propagarsi e abbattere l'intera schermata Live.
+  List<Marker> _buildSafeMarkers(
+      List<GpsPointModel> pilots, List<RegistrationModel> regs) {
+    final markers = <Marker>[];
+    for (final p in pilots) {
+      if (!p.hasPosition) continue;
+      try {
+        markers.add(_buildPilotMarker(p, _pilotLabel(p, regs)));
+      } catch (_) {
+        // Scartato: un pilota malformato non deve abbattere gli altri.
+      }
+    }
+    return markers;
+  }
+
   Marker _buildPilotMarker(
       GpsPointModel p, String label) {
     final status = p.raceStatus;
@@ -146,16 +165,20 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
                 pilotMap[r.userId]!.raceStatus == _kNotStarted)
             .length;
 
-        final markers = <Marker>[
-          for (final p in pilots)
-            _buildPilotMarker(p, _pilotLabel(p, regs)),
-        ];
+        final markers = _buildSafeMarkers(pilots, regs);
 
-        final racingPilots = pilots.where((p) => p.raceStatus == _kRacing);
+        // Fix (bug test 18/08) — solo piloti con un fix GPS reale
+        // (`hasPosition`, vedi GpsPointModel) possono determinare il
+        // centro mappa: un pilota il cui documento non ha ancora lat/lng
+        // (gara conclusa entro pochi secondi dall'avvio) altrimenti
+        // centrerebbe la mappa al largo dell'Africa (0,0).
+        final positioned = pilots.where((p) => p.hasPosition);
+        final racingPilots =
+            positioned.where((p) => p.raceStatus == _kRacing);
         final mapCenter = racingPilots.isNotEmpty
             ? LatLng(racingPilots.first.lat, racingPilots.first.lng)
-            : pilots.isNotEmpty
-                ? LatLng(pilots.first.lat, pilots.first.lng)
+            : positioned.isNotEmpty
+                ? LatLng(positioned.first.lat, positioned.first.lng)
                 : const LatLng(44.0, 11.0);
 
         return Column(

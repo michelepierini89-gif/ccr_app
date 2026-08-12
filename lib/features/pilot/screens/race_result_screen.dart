@@ -44,6 +44,14 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
   // Null finché non risolta: i widget che la usano ricadono su
   // event.routeAAsVariant nel frattempo (stesso comportamento pre-feature).
   RouteVariantModel? _raceVariant;
+  // Fix (bug test 18/08, "Carring CLO 3") — PRIMA di questo fix
+  // _loadRefTrack ingoiava qualunque eccezione in silenzio: se il download
+  // falliva (rete, permessi, CORS) la traccia rossa restava assente per
+  // sempre senza alcun segnale, indistinguibile da un caricamento ancora
+  // in corso. Questi due flag rendono visibili i tre stati (in corso /
+  // errore / nessun tracciato per la variante) invece di una mappa muta.
+  bool _refTrackLoading = true;
+  bool _refTrackError = false;
 
   @override
   void initState() {
@@ -72,14 +80,29 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
       if (!mounted) return;
       final variant = event.routeVariant(routeId) ?? event.routeAAsVariant;
       _raceVariant = variant;
-      if (variant.trackUrl == null) return;
+      if (variant.trackUrl == null) {
+        setState(() => _refTrackLoading = false);
+        return;
+      }
       final bytes = await StorageService().downloadTrack(variant.trackUrl!);
       final content = utf8.decode(bytes);
       final pts = variant.trackUrl!.contains('.kml')
           ? GpxParser.parseKml(content).points
           : GpxParser.parseGpx(content).points;
-      if (mounted) setState(() => _refTrack = pts);
-    } catch (_) {}
+      if (mounted) {
+        setState(() {
+          _refTrack = pts;
+          _refTrackLoading = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _refTrackLoading = false;
+          _refTrackError = true;
+        });
+      }
+    }
   }
 
   void _tryFitMap(List<LatLng> pilotPoints) {
@@ -167,7 +190,62 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
         children: [
           SizedBox(
             height: mapHeight,
-            child: _buildMap(pilotPoints, event, waypointPassati),
+            child: Stack(
+              children: [
+                _buildMap(pilotPoints, event, waypointPassati, myEntry),
+                // Fix (bug test 18/08) — stato esplicito del caricamento
+                // della traccia di riferimento (rossa), prima silenzioso
+                // in ogni caso (in corso, fallito, o assente per la
+                // variante) e indistinguibile da "nessuna traccia".
+                if (_refTrackLoading || _refTrackError)
+                  Positioned(
+                    top: 8,
+                    left: 8,
+                    right: 8,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: AppColors.cardBackground.withValues(alpha: 0.9),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                            color: _refTrackError
+                                ? AppColors.error
+                                : AppColors.border),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_refTrackLoading)
+                            const SizedBox(
+                              width: 12,
+                              height: 12,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: AppColors.accent),
+                            )
+                          else
+                            const Icon(Icons.error_outline,
+                                size: 14, color: AppColors.error),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _refTrackLoading
+                                  ? 'Caricamento traccia di riferimento…'
+                                  : 'Traccia di riferimento non disponibile',
+                              style: TextStyle(
+                                color: _refTrackError
+                                    ? AppColors.error
+                                    : AppColors.textSecondary,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
           Expanded(
             child: _buildSummary(
@@ -261,6 +339,7 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
     List<LatLng> pilotPoints,
     EventModel? event,
     Set<String> waypointPassati,
+    ClassificaEntry? myEntry,
   ) {
     final markers = <Marker>[];
     // Percorso alternativo, Parte 5 — la variante con cui il pilota ha
@@ -276,8 +355,20 @@ class _RaceResultScreenState extends ConsumerState<RaceResultScreen> {
             const Color(0xFF00C853), true));
         markers.add(_psMarker(s.waypointFine.latLng, '⏹ PS${s.ordine + 1}',
             AppColors.error, false));
-        for (final cp in s.controlPoints) {
-          markers.add(_cpMarker(cp.latLng, waypointPassati.contains(cp.id)));
+        // Fix (bug test 18/08, "Carring CLO 3") — quando la speciale ha
+        // già un tempo calcolato dalla classifica (fonte autorevole,
+        // ClassificaEngine), lo stato "mancato" del CP viene da
+        // `missedCpPositions` (posizione 1-based), non dal set grezzo
+        // `waypointPassati` del rilevatore live sul device: erano due
+        // fonti diverse mai sincronizzate — sulla mappa apparivano tutti
+        // verdi anche quando la classifica riportava CP mancati.
+        final tempo = _findTempo(myEntry, s.id);
+        for (var i = 0; i < s.controlPoints.length; i++) {
+          final cp = s.controlPoints[i];
+          final passed = tempo != null
+              ? !tempo.missedCpPositions.contains(i + 1)
+              : waypointPassati.contains(cp.id);
+          markers.add(_cpMarker(cp.latLng, passed));
         }
       }
     }

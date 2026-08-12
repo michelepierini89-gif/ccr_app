@@ -28,6 +28,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/firebase_error_handler.dart';
 import '../../../core/utils/heading_display_utils.dart';
 import '../../../core/utils/location_utils.dart';
+import '../../../core/utils/race_session_guard.dart';
 import '../../../core/utils/time_format_utils.dart';
 import '../../map/danger_marker_icon.dart';
 import '../../map/widgets/speed_zone_layer.dart';
@@ -92,8 +93,23 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   StreamSubscription<String>? _dangerPassedSub;
 
   DateTime? _raceDeadline;
+  DateTime? _raceStartTime;
+  bool _noStartingOrderSlot = false;
   bool _isTimeExpired = false;
   bool _showingTimeoutDialog = false;
+
+  // Fix (bug test 18/08) — vedi il commento in build(): verifica one-shot
+  // per istanza di schermata che uno stato "in registrazione" ereditato dal
+  // provider globale GpsService trovi riscontro nel tracking Firestore.
+  bool _orphanSessionChecked = false;
+
+  // Fix (bug test 18/08) — flush incrementale della traccia grezza completa
+  // durante la gara (non solo a FINE GARA/RITIRO/timeout): quanti campioni
+  // sono già stati scritti su Firestore, per inviare solo i nuovi ad ogni
+  // tick. Azzerato ad ogni nuovo _startRace().
+  int _lastFlushedFullTrackCount = 0;
+  bool _trackSaveErrorNotified = false;
+  int _trackFlushTicks = 0;
 
   // Catturato in initState — MAI leggere provider via `ref` dentro
   // dispose(): in questa versione di Riverpod il ConsumerStatefulElement
@@ -197,9 +213,30 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         unawaited(_updateForegroundNotification(gps));
       }
 
+      // Fix (bug test 18/08) — flush incrementale della traccia grezza
+      // completa ogni ~90s, non solo a FINE GARA/RITIRO/timeout: un
+      // salvataggio one-shot a fine gara perde TUTTA la traccia se fallisce
+      // (es. token Auth scaduto su una sessione web lunga, causa reale
+      // osservata in produzione). Ogni flush scrive solo i campioni nuovi
+      // dall'ultimo tick riuscito.
+      _trackFlushTicks++;
+      if (_trackFlushTicks >= 90) {
+        _trackFlushTicks = 0;
+        unawaited(_flushFullTrackIncremental(gps));
+      }
+
       if (gps.recordingStart != null) {
-        // Timeout check before setState so flag is visible in next build
-        if (_raceDeadline != null && !_isTimeExpired && !_showingTimeoutDialog) {
+        // Timeout check before setState so flag is visible in next build.
+        // Fix (bug test 18/08) — soglia di protezione esplicita: nessun
+        // ritiro automatico per timeout nei primi minuti dall'avvio REALE,
+        // anche se la deadline calcolata (orario di partenza squadra +
+        // tempo massimo) risultasse già scaduta per un dato mal
+        // interpretato o storico.
+        if (_raceDeadline != null &&
+            !_isTimeExpired &&
+            !_showingTimeoutDialog &&
+            canAutoConcludeRace(
+                recordingStart: gps.recordingStart!, now: DateTime.now())) {
           if (DateTime.now().isAfter(_raceDeadline!)) {
             final eid = widget.eventId ?? gps.activeEventId;
             final ev = eid != null
@@ -239,16 +276,76 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     } catch (_) {}
   }
 
+  /// Fix (bug test 18/08, "Carring CLO 3") — chiamato ogni ~90s dal tick di
+  /// [_startElapsedTimer] mentre la registrazione è attiva. Scrive solo i
+  /// campioni accumulati dall'ultimo flush riuscito (append incrementale,
+  /// non rewrite completo) così un'interruzione a metà gara — crash, app
+  /// chiusa, tab web chiuso — lascia leggibile la traccia fino all'ultimo
+  /// flush, invece di perderla tutta se fallisce solo il salvataggio finale
+  /// (FINE GARA/RITIRO/timeout, ancora un rewrite completo per idempotenza).
+  /// Aggiorna anche `pilotTrack` (economico, riscrittura intera) così la
+  /// polyline del riepilogo resta disponibile anche su un'interruzione.
+  /// Se il flush fallisce (anche dopo il retry-con-refresh-token in
+  /// `FirestoreService`), l'errore viene mostrato al pilota SUBITO — non
+  /// solo scritto su Firestore/log locale, mai visto durante la gara prima
+  /// di questo fix.
+  Future<void> _flushFullTrackIncremental(GpsService gps) async {
+    final eventId = gps.activeEventId;
+    final userId = ref.read(authStateProvider).valueOrNull?.uid;
+    if (eventId == null || userId == null) return;
+    final samples = gps.fullTrackSamples;
+    final newSamples = samples.length > _lastFlushedFullTrackCount
+        ? samples.sublist(_lastFlushedFullTrackCount)
+        : samples.sublist(samples.length);
+    try {
+      if (newSamples.isNotEmpty) {
+        await ref.read(firestoreServiceProvider).appendFullPilotTrackChunks(
+            eventId, userId, newSamples,
+            startIndex: _lastFlushedFullTrackCount);
+        _lastFlushedFullTrackCount = samples.length;
+      }
+      await ref
+          .read(firestoreServiceProvider)
+          .savePilotTrack(eventId, userId, List.of(gps.localTrack));
+      _trackSaveErrorNotified = false;
+    } catch (e) {
+      _diagLogger.logTrackSaveError('flush_incrementale', e);
+      try {
+        await ref
+            .read(firestoreServiceProvider)
+            .flagTrackSaveError(eventId, userId, e.toString());
+      } catch (_) {}
+      if (mounted && !_trackSaveErrorNotified) {
+        _trackSaveErrorNotified = true;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('⚠ Salvataggio traccia GPS non riuscito, '
+              'verifica la connessione'),
+          backgroundColor: AppColors.warning,
+          duration: Duration(seconds: 6),
+        ));
+      }
+    }
+  }
+
   void _computeDeadlineIfNeeded(EventModel event, RegistrationModel? reg) {
-    if (_raceDeadline != null || _isTimeExpired) return;
+    if (_raceDeadline != null || _isTimeExpired || _noStartingOrderSlot) {
+      return;
+    }
     final teamName = reg?.teamName;
-    if (teamName == null || event.startingOrder.isEmpty) return;
+    if (teamName == null || event.startingOrder.isEmpty) {
+      _noStartingOrderSlot = true;
+      return;
+    }
     final tl = teamName.toLowerCase().trim();
     final slot = event.startingOrder.cast<StartingSlot?>().firstWhere(
           (s) => s!.teamName.toLowerCase().trim() == tl,
           orElse: () => null,
         );
-    if (slot == null) return;
+    if (slot == null) {
+      _noStartingOrderSlot = true;
+      return;
+    }
+    _raceStartTime = slot.startTime;
     _raceDeadline =
         slot.startTime.add(Duration(minutes: event.maxRaceTimeMinutes));
   }
@@ -565,49 +662,59 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     setState(() => _followMode = true);
   }
 
-  Future<void> _toggleRecording() async {
+  /// Handler dedicato al pulsante FINE GARA (vista di tracciamento attivo).
+  /// Fix (bug test 18/08, "Carring CLO 3") — prima faceva parte di un unico
+  /// `_toggleRecording` condiviso con l'avvio, discriminato solo da
+  /// `gps.isRecording`: uno stato locale corrotto (sessione orfana, vedi
+  /// `discardOrphanSession`/`isOrphanLocalSession`) poteva far interpretare
+  /// come "concludi" un tocco che il pilota intendeva come "avvia". Ora
+  /// questo metodo è raggiungibile SOLO dal pulsante della vista attiva:
+  /// nessun pulsante cambia più significato in base allo stato interno.
+  Future<void> _finishRace() async {
     final gps = ref.read(gpsServiceProvider);
-    if (gps.isRecording) {
-      final finEventId = gps.activeEventId;
-      final finUserId = ref.read(authStateProvider).valueOrNull?.uid;
-      // FIX 6: chiude eventuali PS ancora aperte (fine non rilevata) prima
-      // di bloccare le scritture — nessun effetto se tutte erano già chiuse
-      // regolarmente.
-      await gps.closeAllOpenSpecialsForFineGara();
-      if (!mounted) return;
-      final finTrack = List.of(gps.localTrack); // capture before stop clears it
-      final finFullSamples = gps.fullTrackSamples;
-      gps.blockFurtherWrites();
-      if (finEventId != null && finUserId != null) {
+    final finEventId = gps.activeEventId;
+    final finUserId = ref.read(authStateProvider).valueOrNull?.uid;
+    // FIX 6: chiude eventuali PS ancora aperte (fine non rilevata) prima
+    // di bloccare le scritture — nessun effetto se tutte erano già chiuse
+    // regolarmente.
+    await gps.closeAllOpenSpecialsForFineGara();
+    if (!mounted) return;
+    final finTrack = List.of(gps.localTrack); // capture before stop clears it
+    final finFullSamples = gps.fullTrackSamples;
+    gps.blockFurtherWrites();
+    if (finEventId != null && finUserId != null) {
+      try {
+        await ref
+            .read(firestoreServiceProvider)
+            .setRaceStatus(finEventId, finUserId, 'finished',
+                finishedAt: DateTime.now());
+        if (finTrack.isNotEmpty) {
+          await ref
+              .read(firestoreServiceProvider)
+              .savePilotTrack(finEventId, finUserId, finTrack);
+        }
+        if (finFullSamples.isNotEmpty) {
+          await ref
+              .read(firestoreServiceProvider)
+              .saveFullPilotTrack(finEventId, finUserId, finFullSamples);
+        }
+      } catch (e) {
+        _diagLogger.logTrackSaveError('fine_gara', e);
         try {
           await ref
               .read(firestoreServiceProvider)
-              .setRaceStatus(finEventId, finUserId, 'finished',
-                  finishedAt: DateTime.now());
-          if (finTrack.isNotEmpty) {
-            await ref
-                .read(firestoreServiceProvider)
-                .savePilotTrack(finEventId, finUserId, finTrack);
-          }
-          if (finFullSamples.isNotEmpty) {
-            await ref
-                .read(firestoreServiceProvider)
-                .saveFullPilotTrack(finEventId, finUserId, finFullSamples);
-          }
-        } catch (e) {
-          _diagLogger.logTrackSaveError('fine_gara', e);
-          try {
-            await ref
-                .read(firestoreServiceProvider)
-                .flagTrackSaveError(finEventId, finUserId, e.toString());
-          } catch (_) {}
-        }
+              .flagTrackSaveError(finEventId, finUserId, e.toString());
+        } catch (_) {}
       }
-      await gps.stopRecording();
-      setState(() => _elapsed = Duration.zero);
-      return;
     }
+    await gps.stopRecording();
+    setState(() => _elapsed = Duration.zero);
+  }
 
+  /// Handler dedicato al pulsante di avvio (vista pre-partenza). Vedi
+  /// [_finishRace] per il perché della separazione.
+  Future<void> _startRace() async {
+    final gps = ref.read(gpsServiceProvider);
     final user = ref.read(authStateProvider).valueOrNull;
     if (user == null) {
       if (!mounted) return;
@@ -637,6 +744,19 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           waypoints.add(s.waypointFine);
         }
       }
+      // Fix (bug test 18/08) — azzera eventuali chunk di una sessione
+      // precedente per questo evento/pilota PRIMA del primo flush
+      // incrementale (vedi _flushFullTrackIncremental), altrimenti gli id
+      // zero-padded di una sessione vecchia più lunga resterebbero
+      // mescolati a quelli della sessione nuova. Best-effort: se fallisce
+      // (offline), il primo flush incrementale la ritenterà comunque
+      // tramite lo stesso retry-con-refresh-token del resto del percorso.
+      unawaited(ref
+          .read(firestoreServiceProvider)
+          .resetFullPilotTrackForNewSession(widget.eventId!, user.uid)
+          .catchError((_) {}));
+      _lastFlushedFullTrackCount = 0;
+      _trackSaveErrorNotified = false;
       await gps.startRecording(
         eventId: widget.eventId!,
         userId: user.uid,
@@ -830,9 +950,46 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
       _computeDeadlineIfNeeded(event, reg);
     }
 
+    // Fix (bug test 18/08, "Carring CLO 3") — la fonte di verità su "questa
+    // gara è in corso" deve essere il documento di tracking Firestore, non
+    // `gps.isRecording`: questo provider è globale e mai disposato, quindi
+    // una sessione precedente mai chiusa con STOP/FINE GARA/RITIRO lascia
+    // `_isRecording` (e lo stato derivato) "sporco" tra una sessione e
+    // l'altra. Verifica UNA VOLTA per istanza di questa schermata: se
+    // `isRecording` è già true al primo build utile ma Firestore non
+    // conferma `raceStatus == 'racing'` per QUESTO evento, la sessione
+    // locale è orfana e va scartata prima di mostrare la vista attiva —
+    // vedi `race_session_guard.isOrphanLocalSession`. Se `isRecording` è
+    // false fin da subito non c'è nulla da verificare: nessuna latenza
+    // aggiunta al percorso normale (evento mai avviato in questa sessione
+    // di schermata).
+    if (!_orphanSessionChecked) {
+      if (!isRecording) {
+        _orphanSessionChecked = true;
+      } else if (effectiveEventId == null) {
+        // Non dovrebbe accadere (isRecording implica activeEventId
+        // non-null), ma senza un evento da verificare su Firestore non c'è
+        // modo di confermare la sessione: scarta per sicurezza.
+        _orphanSessionChecked = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) ref.read(gpsServiceProvider).discardOrphanSession();
+        });
+      } else if (myStatusAsync != null && !myStatusAsync.isLoading) {
+        _orphanSessionChecked = true;
+        if (isOrphanLocalSession(
+            localIsRecording: true, firestoreRaceStatus: raceStatus)) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) ref.read(gpsServiceProvider).discardOrphanSession();
+          });
+        }
+      }
+    }
+
     // Determine which screen to show
     Widget body;
-    if (isRecording) {
+    if (isRecording && !_orphanSessionChecked) {
+      body = _buildVerifyingSession();
+    } else if (isRecording) {
       body = _buildActiveTracking(gps, pos, event);
     } else if (myStatusAsync?.isLoading == true) {
       body = const Center(
@@ -863,6 +1020,23 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
       body: SafeArea(child: body),
     );
   }
+
+  /// Fix (bug test 18/08) — mostrato SOLO nel breve intervallo in cui
+  /// `gps.isRecording` è già true ma non è ancora stato confrontato con il
+  /// tracking Firestore (vedi `_orphanSessionChecked` in build()): evita
+  /// qualunque frame in cui il pulsante FINE GARA sia realmente premibile
+  /// su uno stato locale non ancora verificato.
+  Widget _buildVerifyingSession() => const Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            CircularProgressIndicator(color: AppColors.accent),
+            SizedBox(height: 16),
+            Text('Verifica stato gara…',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ],
+        ),
+      );
 
   // ── Pre-start view ──────────────────────────────────────────────────────────
 
@@ -1063,7 +1237,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           'sempre": il GPS potrebbe fermarsi con l\'app in background.');
     }
     if (warnings.isEmpty) {
-      _toggleRecording();
+      _startRace();
       return;
     }
     final proceed = await showDialog<bool>(
@@ -1091,7 +1265,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         ],
       ),
     );
-    if (proceed == true) _toggleRecording();
+    if (proceed == true) _startRace();
   }
 
   // ── Race-done view (finished or retired) ────────────────────────────────────
@@ -1403,8 +1577,16 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
 
         // FIX 6: seconda via di sblocco FINE GARA, vedi _canFinishNearStart.
         final allSpecialsDone = _allSpecialsCompleted(gps, event);
-        final canFinish =
-            allSpecialsDone || _canFinishNearStart(gps, curPos, event);
+        // Fix (bug test 18/08) — nessuna conclusione, nemmeno tramite
+        // pulsante, nei primi minuti dall'avvio REALE della registrazione:
+        // protegge da stato residuo (specialiEntries di una sessione
+        // precedente) che soddisfa già le condizioni di sblocco. Vedi
+        // race_session_guard.canAutoConcludeRace.
+        final pastMinProtection = gps.recordingStart != null &&
+            canAutoConcludeRace(
+                recordingStart: gps.recordingStart!, now: DateTime.now());
+        final canFinish = pastMinProtection &&
+            (allSpecialsDone || _canFinishNearStart(gps, curPos, event));
         // Blocco D4: "Fine gara disponibile" — idempotente (dedupe interno
         // a VoiceAlertService), sicuro da chiamare ad ogni rebuild.
         if (allSpecialsDone) {
@@ -1421,10 +1603,12 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           onSettingsTap: _showTrackAppearanceSheet,
         ),
 
-        // Countdown strip (visible only when deadline is set)
-        if (_raceDeadline != null)
+        // Countdown strip (visible once a deadline OR the "no starting
+        // order slot" state is resolved — see _computeDeadlineIfNeeded)
+        if (_raceDeadline != null || _noStartingOrderSlot)
           _CountdownStrip(
-            deadline: _raceDeadline!,
+            deadline: _raceDeadline,
+            raceStartTime: _raceStartTime,
             allSpecialsDone: event != null && _allSpecialsCompleted(gps, event),
           ),
 
@@ -1737,53 +1921,60 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                 ],
               ),
 
-              // Heading mode toggle (bottom-left)
-              Positioned(
-                left: 12,
-                bottom: 12,
-                child: Material(
-                  color: AppColors.cardBackground,
-                  borderRadius: BorderRadius.circular(8),
-                  elevation: 4,
-                  child: InkWell(
-                    onTap: () {
-                      setState(() {
-                        _headingMode = !_headingMode;
-                        if (!_headingMode) _mapController.rotate(0);
-                      });
-                    },
-                    borderRadius: BorderRadius.circular(8),
-                    child: Padding(
-                      padding: const EdgeInsets.all(8),
-                      child: Icon(
-                        _headingMode ? Icons.navigation : Icons.explore,
-                        color: _headingMode
-                            ? AppColors.accent
-                            : AppColors.textSecondary,
-                        size: 20,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              // Re-center FAB
-              if (!_followMode)
-                Positioned(
-                  right: 12,
-                  bottom: 12,
-                  child: FloatingActionButton.small(
-                    onPressed: _recenter,
-                    backgroundColor: AppColors.cardBackground,
-                    foregroundColor: AppColors.accent,
-                    elevation: 4,
-                    child: const Icon(Icons.my_location, size: 20),
-                  ),
-                ),
-              // Scale bar
+              // Fix (pulizia schermata navigazione, bug test 18/08) —
+              // indicatore di scala in alto a destra (prima in basso a
+              // destra, si sovrapponeva ai controlli) e i controlli
+              // interattivi (heading, re-center) raggruppati in un'unica
+              // colonna sul bordo destro invece che sparsi su due angoli
+              // diversi: il centro della mappa resta libero.
               Positioned(
                 right: 12,
-                bottom: _followMode ? 12 : 60,
+                top: 12,
                 child: _MapScaleBar(lat: curPos.latitude, zoom: _mapZoom),
+              ),
+              Positioned(
+                right: 12,
+                bottom: 12,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (!_followMode) ...[
+                      FloatingActionButton.small(
+                        heroTag: 'recenter',
+                        onPressed: _recenter,
+                        backgroundColor: AppColors.cardBackground,
+                        foregroundColor: AppColors.accent,
+                        elevation: 4,
+                        child: const Icon(Icons.my_location, size: 20),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                    Material(
+                      color: AppColors.cardBackground,
+                      borderRadius: BorderRadius.circular(8),
+                      elevation: 4,
+                      child: InkWell(
+                        onTap: () {
+                          setState(() {
+                            _headingMode = !_headingMode;
+                            if (!_headingMode) _mapController.rotate(0);
+                          });
+                        },
+                        borderRadius: BorderRadius.circular(8),
+                        child: Padding(
+                          padding: const EdgeInsets.all(8),
+                          child: Icon(
+                            _headingMode ? Icons.navigation : Icons.explore,
+                            color: _headingMode
+                                ? AppColors.accent
+                                : AppColors.textSecondary,
+                            size: 20,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
               // Bordo schermo rosso lampeggiante quando un punto pericolo è in allerta (<50m)
               if (gps.isDangerBlinking)
@@ -1804,16 +1995,18 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                     ),
                   ),
                 ),
-              // Fix 6 (09/08/2026) — debug overlay SEMPRE visibile (anche in
-              // release: gli unici test reali su strada usano l'APK
-              // release, non un build debug) con tutti i valori in gioco
-              // per la modalità mappa rotante: heading display (quello
+              // Fix 6 (09/08/2026) — debug overlay con tutti i valori in
+              // gioco per la modalità mappa rotante: heading display (quello
               // effettivamente usato per freccia/mappa), bearing GPS
               // grezzo, rotazione applicata alla mappa, angolo applicato
               // alla freccia e la modalità corrente — per diagnosticare sul
               // campo un eventuale disallineamento senza dover riprodurre
-              // il problema nel codice.
-              Positioned(
+              // il problema nel codice. Fix (pulizia navigazione, bug test
+              // 18/08) — nascondibile da un interruttore nelle impostazioni
+              // (`trackAppearance.debugPanelVisible`), attivo di default
+              // finché siamo in fase di test.
+              if (trackAppearance.debugPanelVisible)
+                Positioned(
                   bottom: 80,
                   left: 8,
                   child: Container(
@@ -2033,15 +2226,19 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                       child: Tooltip(
                         message: _isTimeExpired
                             ? 'Tempo scaduto — ritiro automatico in corso'
-                            : canFinish
-                                ? (allSpecialsDone
-                                    ? ''
-                                    : 'PS non chiuse correttamente: '
-                                        'verranno segnalate all\'admin')
-                                : 'Completa tutte le speciali prima di terminare',
+                            : !pastMinProtection
+                                ? 'Non puoi terminare la gara nei primi '
+                                    '${minRaceProtection.inMinutes} minuti '
+                                    'dall\'avvio'
+                                : canFinish
+                                    ? (allSpecialsDone
+                                        ? ''
+                                        : 'PS non chiuse correttamente: '
+                                            'verranno segnalate all\'admin')
+                                    : 'Completa tutte le speciali prima di terminare',
                         child: ElevatedButton.icon(
                           onPressed: !_isTimeExpired && canFinish
-                              ? _toggleRecording
+                              ? _finishRace
                               : null,
                           style: ElevatedButton.styleFrom(
                             backgroundColor: AppColors.cardBackground,
@@ -2057,12 +2254,19 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                                 borderRadius: BorderRadius.circular(12)),
                           ),
                           icon: const Icon(Icons.flag_circle_outlined, size: 20),
-                          label: const Text(
-                            'FINE GARA',
-                            style: TextStyle(
-                                fontWeight: FontWeight.bold, letterSpacing: 1),
-                            softWrap: false,
-                            overflow: TextOverflow.ellipsis,
+                          // Fix (pulizia navigazione, bug test 18/08) —
+                          // FittedBox invece di softWrap:false+ellipsis: con
+                          // un textScaleFactor di sistema più alto o uno
+                          // schermo stretto, il testo si restringe invece
+                          // di troncarsi (osservato su "SALTA SPECIALE").
+                          label: const FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text(
+                              'FINE GARA',
+                              style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 1),
+                            ),
                           ),
                         ),
                       ),
@@ -2089,15 +2293,16 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                                 borderRadius: BorderRadius.circular(12)),
                           ),
                           icon: const Icon(Icons.flag, size: 20),
-                          label: const Text(
-                            'RITIRO',
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 1.0,
+                          label: const FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text(
+                              'RITIRO',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 1.0,
+                              ),
                             ),
-                            softWrap: false,
-                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ),
@@ -2122,14 +2327,15 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                           borderRadius: BorderRadius.circular(10)),
                     ),
                     icon: const Icon(Icons.skip_next, size: 18),
-                    label: const Text(
-                      'SALTA SPECIALE',
-                      style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 0.8),
-                      softWrap: false,
-                      overflow: TextOverflow.ellipsis,
+                    label: const FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        'SALTA SPECIALE',
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.8),
+                      ),
                     ),
                   ),
                 ),
@@ -2227,6 +2433,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     double arrowSize = current.arrowSize;
     Color refTrackColor = current.refTrackColor;
     double refTrackWidth = current.refTrackWidth;
+    var debugPanelVisible = current.debugPanelVisible;
 
     final voiceService = ref.read(voiceAlertServiceProvider);
     var voiceSettings = voiceService.settings;
@@ -2500,6 +2707,23 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                     unawaited(gps.setUseRawLocationManager(v));
                   },
                 ),
+                // Fix (pulizia navigazione, bug test 18/08) — pannello
+                // debug (heading/bearing/satelliti) nascondibile, attivo di
+                // default finché siamo in fase di test.
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  activeThumbColor: AppColors.accent,
+                  title: const Text('Pannello debug',
+                      style: TextStyle(color: AppColors.textPrimary)),
+                  subtitle: const Text(
+                      'Mostra heading, bearing e satelliti sulla mappa '
+                      'durante la gara.',
+                      style: TextStyle(
+                          color: AppColors.textSecondary, fontSize: 12)),
+                  value: debugPanelVisible,
+                  onChanged: (v) =>
+                      setSheetState(() => debugPanelVisible = v),
+                ),
 
                 const SizedBox(height: 20),
                 SizedBox(
@@ -2514,6 +2738,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                       await notifier.setArrowSize(arrowSize);
                       await notifier.setRefTrackColor(refTrackColor);
                       await notifier.setRefTrackWidth(refTrackWidth);
+                      await notifier.setDebugPanelVisible(debugPanelVisible);
                       await voiceService.updateSettings(voiceSettings);
                       if (sheetCtx.mounted) Navigator.pop(sheetCtx);
                     },
@@ -3445,11 +3670,19 @@ class _BigButton extends StatelessWidget {
 // ── Countdown strip ─────────────────────────────────────────────────────────
 
 class _CountdownStrip extends StatefulWidget {
-  final DateTime deadline;
+  // Fix (bug test 18/08, "Carring CLO 3") — `deadline` è nullable: un test
+  // in campo prima dell'orario di partenza UFFICIALE della squadra
+  // (`raceStartTime` nel futuro) produceva un conto alla rovescia assurdo
+  // ("Tempo rimasto: 165:03:06", differenza tra `deadline` e `now` quando
+  // `now` precede ancora `raceStartTime`). `raceStartTime` permette di
+  // distinguere questo caso da un vero conto alla rovescia.
+  final DateTime? deadline;
+  final DateTime? raceStartTime;
   final bool allSpecialsDone;
 
   const _CountdownStrip({
     required this.deadline,
+    required this.raceStartTime,
     required this.allSpecialsDone,
   });
 
@@ -3461,6 +3694,7 @@ class _CountdownStripState extends State<_CountdownStrip> {
   late Timer _timer;
   Duration _remaining = Duration.zero;
   bool _blink = false;
+  bool _notYetStarted = false;
 
   @override
   void initState() {
@@ -3472,8 +3706,14 @@ class _CountdownStripState extends State<_CountdownStrip> {
   void _tick(Timer? _) {
     if (!mounted) return;
     final now = DateTime.now();
-    final rem = widget.deadline.difference(now);
+    final startTime = widget.raceStartTime;
+    final notYetStarted = startTime != null && now.isBefore(startTime);
+    final deadline = widget.deadline;
+    final rem = (deadline != null && !notYetStarted)
+        ? deadline.difference(now)
+        : Duration.zero;
     setState(() {
+      _notYetStarted = notYetStarted;
       _remaining = rem.isNegative ? Duration.zero : rem;
       _blink = now.second % 2 == 0;
     });
@@ -3487,6 +3727,35 @@ class _CountdownStripState extends State<_CountdownStrip> {
 
   @override
   Widget build(BuildContext context) {
+    // Fix (bug test 18/08) — orario di partenza non ancora disponibile
+    // (nessuno slot risolto per la squadra) o non ancora raggiunto (test in
+    // campo prima della gara ufficiale): nessun valore fittizio, un
+    // messaggio esplicito al suo posto.
+    if (widget.deadline == null || _notYetStarted) {
+      final startTime = widget.raceStartTime;
+      final message = startTime == null
+          ? 'Il conteggio del tempo massimo partirà con la pubblicazione '
+              'dell\'ordine di partenza'
+          : 'Conteggio dalle ${DateFormat('HH:mm \'del\' dd/MM').format(startTime.toLocal())} '
+              '(orario di partenza ufficiale)';
+      return Container(
+        width: double.infinity,
+        color: AppColors.accent.withValues(alpha: 0.10),
+        padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+        alignment: Alignment.center,
+        child: Text(
+          message,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            color: AppColors.accent,
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.3,
+          ),
+        ),
+      );
+    }
+
     final totalSec = _remaining.inSeconds;
     final expired = totalSec == 0;
     final critical = totalSec <= 5 * 60 && !expired;

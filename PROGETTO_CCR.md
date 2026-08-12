@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 11 agosto 2026 (Step 42 completato)  
+**Data aggiornamento:** 12 agosto 2026 (Step 43 completato)  
 **Branch:** main  
 **Versione:** 1.0.2+3
 
@@ -1795,6 +1795,159 @@ Deploy lanciato e poi verificato con 3 controlli mirati, usando l'account pilota
 - `flutter analyze`: 0 issues (intero progetto)
 - `flutter test`: 83/83 verdi (nessun nuovo test dedicato — i 6 interventi sono stati verificati con analyze + revisione manuale del flusso dati, non con test automatici aggiuntivi)
 - `firebase deploy --only hosting,storage,firestore:rules,functions:onCpDisputeResolved`
+- `git push origin main`
+
+---
+
+### Step 43 — Bug test 18/08 "Carring CLO 3": salvataggio incrementale traccia, chiusura automatica gara, varianti percorso, live admin, riepilogo post-gara, pulizia navigazione (12 agosto 2026) ✅
+
+Analisi partita dai dati REALI dell'evento `events/W0QmaCyIHKgRnQa1YfhD`
+("Carring CLO 3") via `tools/firestore-cli.js` (sola lettura, OAuth
+`firebase login`), non da ipotesi. Piloti coinvolti: Claudia La Rosa
+(`XCDyZQvqyXSPHsgmO4Vca93dBFm2`, Team Clo) e Michele Pierini
+(`cgHlpp4KMZM2RXlBb54PKcJSIj62`, Team Test, web/Chrome).
+
+**1 (BLOCCANTE) — `pilotTrackFull` non salvato in produzione:**
+- Causa reale: il doc tracking di Michele conteneva
+  `trackSaveErrorReason: "[cloud_firestore/permission-denied]..."`. Il
+  ruleset **deployato** (confrontato via Firebase Rules REST API col file
+  committato: identici byte-per-byte, attivo da oltre un'ora prima del
+  fallimento) era già corretto — NON è un problema di regole. Causa più
+  probabile: ID token Firebase Auth scaduto (TTL 1h) su una sessione
+  web/Chrome lunga, il cui refresh automatico (timer JS) può essere
+  ritardato dal browser su un tab in background — combinato con
+  `saveFullPilotTrack` come unico tentativo one-shot a fine gara, che
+  perde l'intera traccia se fallisce.
+- Fix: `FirestoreService.appendFullPilotTrackChunks` — scrittura
+  INCREMENTALE (append, non delete+rewrite) dei chunk
+  `fullTrackChunks`, chiamata ogni ~90s da `GpsRecordingScreen` durante
+  la gara (non solo a FINE GARA/RITIRO/timeout, dove
+  `saveFullPilotTrack` resta il salvataggio finale autorevole).
+  `FirestoreService._withTokenRefreshRetry`: intercetta
+  `permission-denied`/`unauthenticated`, forza `getIdToken(true)` e
+  ritenta una volta. Errore di flush mostrato al pilota con uno SnackBar
+  live (prima solo `flagTrackSaveError` su Firestore + log locale, mai
+  visto durante la gara).
+- Test: `test/core/services/firestore_track_save_test.dart` — interruzione
+  a metà gara con flush incrementali, nessun salvataggio finale, i
+  campioni fino all'ultimo flush restano leggibili; verifica separata che
+  `resetFullPilotTrackForNewSession` impedisca a chunk di una sessione
+  precedente di mescolarsi a quelli nuovi.
+
+**2 (BLOCCANTE) — Gara chiusa dopo pochi secondi (Claudia):**
+- Causa reale: il doc tracking di Claudia aveva SOLO
+  `raceStatus/finishedAt/routeVariantId` — zero fix GPS mai accettati.
+  `GpsService` è un `ChangeNotifierProvider` globale MAI disposato:
+  `_toggleRecording` era l'unico handler sia per START che per FINE GARA,
+  discriminato solo da `gps.isRecording` (stato in memoria che
+  sopravvive a una sessione precedente mai chiusa con
+  STOP/FINE GARA/RITIRO). Uno stato residuo soddisfa
+  `_allSpecialsCompleted`/`_canFinishNearStart` e chiude la gara
+  istantaneamente al primo tocco.
+- Fix strutturale: handler separati e non ambigui — `_startRace()`
+  (SOLO dalla vista pre-partenza) e `_finishRace()` (SOLO dal pulsante
+  FINE GARA della vista attiva). Fonte di verità Firestore: verifica
+  one-shot per istanza di schermata — se `isRecording` locale è già
+  `true` ma il documento `tracking/{eventId}/pilots/{userId}` non
+  conferma `raceStatus=='racing'` per l'evento aperto, la sessione è
+  orfana → `GpsService.discardOrphanSession()` (pulizia locale pura,
+  azzera `_isRecording`/`_specialEntries`/`_passages`/buffer di
+  recovery/detector, nessuna scrittura Firestore) prima di mostrare la
+  vista attiva; nel frattempo un breve stato "Verifica stato gara…"
+  evita qualunque frame con FINE GARA realmente premibile.
+- Fix difesa aggiuntiva: `lib/core/utils/race_session_guard.dart`,
+  `canAutoConcludeRace` — soglia di 3 minuti da `recordingStart` prima
+  che QUALUNQUE conclusione (timeout automatico o pulsante FINE GARA,
+  entrambe le vie) possa avvenire.
+- Fix display "Tempo rimasto: 165:03:06": causa reale — il test è
+  avvenuto PRIMA dell'orario di partenza ufficiale programmato
+  (`startingOrder`, 18/08), producendo `deadline - now` enorme (non
+  negativo). `_CountdownStrip` ora mostra "conteggio dalle ore HH:mm del
+  gg/MM" se il test precede l'orario ufficiale, o "il conteggio partirà
+  con la pubblicazione dell'ordine di partenza" se nessuno slot è
+  risolvibile — mai un valore fittizio.
+- Test: `test/core/utils/race_session_guard_test.dart` (soglia +
+  rilevamento sessione orfana, puri); `test/features/pilot/gps_recording_orphan_session_test.dart`
+  (widget: stato locale orfano + tracking non avviato su Firestore →
+  mai la vista attiva, nessun "FINE GARA" raggiungibile).
+
+**3 — Tracciato non separato tra variante A e B:**
+- Causa reale confermata sui dati: `trackUrl` (A) e `routeB.trackUrl`
+  puntavano allo stesso file Storage
+  (`tracks/W0QmaCyIHKgRnQa1YfhD/track.kml`), solo token diversi.
+  `StorageService.uploadTrack` generava sempre lo stesso path fisso
+  `tracks/$eventId/track.$ext` indipendentemente dalla variante in
+  editing.
+- Fix: `uploadTrack(..., {String routeId = 'A'})` — path invariato per A
+  (nessuna migrazione), `track_B.$ext` per B. La funzione "copia da A"
+  (`_createRouteB`) era già corretta: non copia mai il file, solo
+  speciali/danger/zone — l'admin carica sempre il tracciato di B
+  esplicitamente. UI: messaggio "Nessun tracciato caricato per il
+  percorso B" quando non impostato, invece di mostrare quello di A.
+
+**4 — Permission-denied sulla lettura del tracking:**
+- Verificato che il ruleset **deployato è identico** al file committato
+  (stesso confronto del punto 1) e copre correttamente
+  `tracking/{eventId}/pilots/{userId}` (owner+admin) e
+  `routeVariantByUser` (autenticati). **Non è una regressione delle
+  regole** — stessa causa del punto 1 (token Auth scaduto su sessione
+  web lunga), applicata a una lettura invece che una scrittura; coperta
+  dallo stesso retry-con-refresh-token generico in `FirestoreService`.
+
+**5 — Schermata live admin: TypeError su cast numerico:**
+- Causa reale riprodotta dal doc di Claudia (nessun `lat`/`lng`):
+  `GpsPointModel.fromFirestore` faceva `(d['lat'] as num).toDouble()`
+  senza null check. Fix: cast null-safe + nuovo campo `hasPosition`
+  (distingue "nessun fix ancora" da un vero fix a 0,0);
+  `LiveTrackingScreen._buildSafeMarkers` isola ogni pilota in un
+  try/catch — un documento malformato non abbatte più l'intera lista.
+  Test: `test/core/models/gps_point_model_test.dart`.
+
+**6 — Riepilogo post-gara:**
+- Traccia di riferimento assente: `_loadRefTrack` usava già la variante
+  REGISTRATA sul tracking del pilota (corretto), ma ingoiava ogni
+  eccezione in silenzio — ora mostra "Caricamento…"/"Traccia di
+  riferimento non disponibile" invece di una mappa muta indistinguibile
+  da "nessun errore".
+- CP tutti verdi vs "2 CP mancati in PS2" in classifica: causa reale —
+  la mappa coloriva i CP dal set grezzo `waypointPassati` (rilevatore
+  live sul device), la classifica da `SpecialTempo.missedCpPositions`
+  (autorevole, `ClassificaEngine`) — due fonti mai sincronizzate. Fix:
+  la mappa usa `missedCpPositions` quando la speciale ha già un tempo
+  calcolato, fallback al set grezzo solo se non ancora disponibile.
+
+**7 — Pulizia schermata di navigazione:**
+- Pannello debug (heading/bearing/satelliti): nascondibile da uno
+  Switch nel bottom sheet impostazioni (`TrackAppearanceSettings.debugPanelVisible`,
+  persistito SharedPreferences), default ON finché siamo in test.
+- Indicatore di scala spostato in alto a destra; heading-toggle e
+  re-center raggruppati in un'unica colonna sul bordo destro (prima
+  sparsi su due angoli), centro mappa libero.
+- Etichette con sfondo grigio: nessun widget dell'app le disegna
+  (verificato — `_WaypointPin`/`_psMarker`/marker pericolo non usano
+  grigio); provengono dai tile OpenStreetMap standard. Cambiare stile
+  tile è una decisione a parte (nuovo provider/dipendenza), non inclusa
+  in questo intervento.
+- FINE GARA/RITIRO/SALTA SPECIALE: label avvolte in `FittedBox(fit:
+  BoxFit.scaleDown)` invece di `softWrap:false`+ellipsis — un
+  `textScaleFactor` di sistema più alto o uno schermo stretto restringe
+  il testo invece di troncarlo (causa del troncamento osservato su
+  "SALTA SPECIALE").
+
+**8 — Taratura GPS: BLOCCATA.** Nessuna traccia con timestamp reali
+disponibile per l'evento (Michele: scrittura fallita per
+permission-denied, punto 1; Claudia: zero fix GPS mai accettati, punto
+2). Richiede un nuovo test di campo dopo questo deploy.
+
+**Deploy:**
+- `flutter analyze`: 0 issues (intero progetto)
+- `flutter test`: 94/94 verdi (incluso `test/core/utils/race_session_guard_test.dart`,
+  `test/features/pilot/gps_recording_orphan_session_test.dart`,
+  `test/core/models/gps_point_model_test.dart`, 2 nuovi test in
+  `firestore_track_save_test.dart`)
+- `firebase deploy --only hosting`
+- `firebase deploy --only firestore:rules` (regole invariate — verifica
+  post-deploy che il ruleset attivo resti identico al file committato)
 - `git push origin main`
 
 ---

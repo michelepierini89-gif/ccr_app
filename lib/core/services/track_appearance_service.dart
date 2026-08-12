@@ -11,6 +11,10 @@ class TrackAppearanceSettings {
   final double arrowSize;
   final Color refTrackColor;
   final double refTrackWidth;
+  // Fix (pulizia schermata navigazione, bug test 18/08) — pannello debug
+  // (heading/bearing/satelliti) nascondibile: default true finché siamo in
+  // fase di test, come richiesto.
+  final bool debugPanelVisible;
 
   const TrackAppearanceSettings({
     required this.trackWidth,
@@ -19,6 +23,7 @@ class TrackAppearanceSettings {
     required this.arrowSize,
     required this.refTrackColor,
     required this.refTrackWidth,
+    required this.debugPanelVisible,
   });
 
   TrackAppearanceSettings copyWith({
@@ -28,6 +33,7 @@ class TrackAppearanceSettings {
     double? arrowSize,
     Color? refTrackColor,
     double? refTrackWidth,
+    bool? debugPanelVisible,
   }) {
     return TrackAppearanceSettings(
       trackWidth: trackWidth ?? this.trackWidth,
@@ -36,6 +42,7 @@ class TrackAppearanceSettings {
       arrowSize: arrowSize ?? this.arrowSize,
       refTrackColor: refTrackColor ?? this.refTrackColor,
       refTrackWidth: refTrackWidth ?? this.refTrackWidth,
+      debugPanelVisible: debugPanelVisible ?? this.debugPanelVisible,
     );
   }
 }
@@ -64,6 +71,7 @@ class TrackAppearanceService {
   static const _arrowSizeKey = 'track_appearance_arrow_size';
   static const _refTrackColorKey = 'track_appearance_ref_track_color';
   static const _refTrackWidthKey = 'track_appearance_ref_track_width';
+  static const _debugPanelVisibleKey = 'track_appearance_debug_panel_visible';
 
   final SharedPreferences _prefs;
 
@@ -90,8 +98,12 @@ class TrackAppearanceService {
           ? Color(refTrackColorValue)
           : defaultRefTrackColor,
       refTrackWidth: refTrackWidth,
+      debugPanelVisible: _prefs.getBool(_debugPanelVisibleKey) ?? true,
     );
   }
+
+  Future<void> saveDebugPanelVisible(bool visible) =>
+      _prefs.setBool(_debugPanelVisibleKey, visible);
 
   Future<void> saveWidth(double width) =>
       _prefs.setDouble(_widthKey, width.clamp(minWidth, maxWidth));

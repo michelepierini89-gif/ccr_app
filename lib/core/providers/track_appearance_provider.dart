@@ -42,6 +42,13 @@ class TrackAppearanceNotifier extends Notifier<TrackAppearanceSettings> {
     state = state.copyWith(refTrackWidth: width);
     await ref.read(trackAppearanceServiceProvider).saveRefTrackWidth(width);
   }
+
+  Future<void> setDebugPanelVisible(bool visible) async {
+    state = state.copyWith(debugPanelVisible: visible);
+    await ref
+        .read(trackAppearanceServiceProvider)
+        .saveDebugPanelVisible(visible);
+  }
 }
 
 final trackAppearanceProvider =

@@ -2503,6 +2503,50 @@ class GpsService extends ChangeNotifier {
     _safeNotify();
   }
 
+  /// SOLO per test widget: simula uno stato locale "in registrazione"
+  /// orfano (`_isRecording == true` senza essere passati da
+  /// [startRecording], es. sessione precedente mai chiusa) senza toccare
+  /// permessi/hardware/Firestore — replica il bug reale osservato in
+  /// produzione (vedi `race_session_guard.dart`,
+  /// `test/features/pilot/gps_recording_orphan_session_test.dart`).
+  @visibleForTesting
+  void debugMarkRecordingForTest(
+      {required String eventId, required String userId}) {
+    _isRecording = true;
+    _activeEventId = eventId;
+    _activeUserId = userId;
+    _recordingStart = DateTime.now();
+  }
+
+  /// Fix (bug test 18/08, "Carring CLO 3") — scarta uno stato locale "in
+  /// registrazione" che non trova riscontro nel documento di tracking
+  /// Firestore per l'evento che si sta aprendo (vedi
+  /// `race_session_guard.isOrphanLocalSession`): questo provider è globale
+  /// e mai disposato, quindi una sessione precedente mai chiusa con
+  /// STOP/FINE GARA/RITIRO lascia `_isRecording` (e le liste di stato
+  /// derivate: speciali avviate/completate, passaggi, buffer di recovery)
+  /// "sporchi" tra una sessione e l'altra — è la causa reale della gara
+  /// dichiarata conclusa entro pochi secondi dall'avvio in produzione.
+  /// Pulizia puramente locale: nessuna scrittura Firestore, perché una
+  /// sessione mai confermata dal backend non ha nulla da chiudere lato
+  /// server.
+  Future<void> discardOrphanSession() async {
+    await stopRecording();
+    _specialEntries.clear();
+    _passages.clear();
+    _passedWaypoints.clear();
+    _passedFuelPoints.clear();
+    _passedDangerPoints.clear();
+    _bestPassageByWaypoint.clear();
+    _jumpClusterBuffer.clear();
+    _cpMinDistance.clear();
+    _cpMinDistanceMethod.clear();
+    _currentSpecialId = null;
+    _currentSpecialNome = null;
+    _totalDistanceKm = 0.0;
+    _safeNotify();
+  }
+
   void _safeNotify() {
     if (!_disposed) notifyListeners();
   }

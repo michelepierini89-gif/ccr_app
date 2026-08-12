@@ -136,6 +136,67 @@ void main() {
   });
 
   test(
+      'interruzione a metà gara (bug test 18/08): i campioni scritti coi '
+      'flush incrementali restano leggibili anche senza il salvataggio '
+      'finale', () async {
+    final fake = FakeFirebaseFirestore();
+    final service = FirestoreService(firestore: fake);
+    final start = DateTime(2026, 8, 18, 7, 0, 0);
+    final allSamples = _buildRealisticTrack(5000, start);
+
+    // Come GpsRecordingScreen._startRace(): reset esplicito prima del
+    // primo flush della sessione.
+    await service.resetFullPilotTrackForNewSession(eventId, userId);
+
+    // 3 flush incrementali (come il tick periodico in
+    // GpsRecordingScreen._flushFullTrackIncremental), poi l'"interruzione":
+    // saveFullPilotTrack (il salvataggio finale autorevole di FINE
+    // GARA/RITIRO/timeout) non viene mai chiamato.
+    var flushed = 0;
+    for (final end in [1500, 3000, 4500]) {
+      final newSamples = allSamples.sublist(flushed, end);
+      await service.appendFullPilotTrackChunks(eventId, userId, newSamples,
+          startIndex: flushed);
+      flushed = end;
+    }
+
+    final reread = await service.getFullPilotTrack(eventId, userId);
+    expect(reread.length, 4500,
+        reason: 'i campioni fino all\'ultimo flush riuscito devono essere '
+            'leggibili anche se la gara si interrompe prima del '
+            'salvataggio finale');
+    for (var i = 0; i < reread.length; i++) {
+      expect(reread[i].lat, allSamples[i].lat, reason: 'punto $i: lat');
+      expect(reread[i].lng, allSamples[i].lng, reason: 'punto $i: lng');
+      expect(reread[i].timestamp, allSamples[i].timestamp,
+          reason: 'punto $i: timestamp');
+    }
+  });
+
+  test(
+      'resetFullPilotTrackForNewSession cancella i chunk di una sessione '
+      'precedente prima del primo flush incrementale', () async {
+    final fake = FakeFirebaseFirestore();
+    final service = FirestoreService(firestore: fake);
+    final start = DateTime(2026, 8, 18, 7, 0, 0);
+
+    // Sessione precedente, più lunga, salvata regolarmente a fine gara.
+    await service.saveFullPilotTrack(
+        eventId, userId, _buildRealisticTrack(9000, start));
+
+    // Nuova sessione: reset esplicito, poi un solo flush incrementale
+    // corto. Senza il reset, i chunk della sessione precedente (più
+    // lunga) resterebbero mescolati a quelli nuovi.
+    await service.resetFullPilotTrackForNewSession(eventId, userId);
+    final newSamples = _buildRealisticTrack(300, start);
+    await service.appendFullPilotTrackChunks(eventId, userId, newSamples,
+        startIndex: 0);
+
+    final reread = await service.getFullPilotTrack(eventId, userId);
+    expect(reread.length, 300);
+  });
+
+  test(
       'fallback: traccia salvata col vecchio campo singolo pilotTrackFull '
       '(pre-fix, sotto 1 MiB) resta leggibile', () async {
     final fake = FakeFirebaseFirestore();
