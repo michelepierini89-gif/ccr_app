@@ -317,6 +317,52 @@ class GpsService extends ChangeNotifier {
   final List<LatLng> _recentFilteredPoints = []; // circular buffer, last 5
   double _bearingDeg = 0.0;
 
+  // Velocità di DISPLAY — SOLO per il readout "VEL", mai per la logica
+  // interna (quella resta _geometricSpeedKmh, tra due soli fix, volutamente
+  // reattiva per il filtro jump/sigmaAccel/freeze bearing/dead reckoning).
+  // Finestra mobile ~2.5s: spostamento (corda tra il primo e l'ultimo punto
+  // della finestra, non la somma dei segmenti intermedi) diviso il tempo
+  // trascorso — molto meno nervosa della velocità istantanea tra due fix a
+  // 250ms, dove pochi metri di incertezza di posizione producono un errore
+  // relativo enorme sulla velocità. Usare la corda invece della somma dei
+  // segmenti è deliberato: da fermo il rumore GPS fa "vagare" la posizione
+  // avanti e indietro, la somma dei segmenti continuerebbe a crescere (un
+  // percorso a zig-zag ha comunque lunghezza positiva) mentre la corda
+  // resta vicina a zero — esattamente il comportamento voluto per il
+  // display, a differenza della distanza percorsa mostrata in "DIST".
+  static const int kDisplaySpeedWindowMs = 2500;
+  // Sotto questa soglia si mostra 0: da fermo il rumore GPS produce
+  // velocità apparenti di qualche km/h tra fix successivi.
+  static const double kDisplaySpeedZeroThresholdKmh = 3.0;
+  final List<({LatLng pos, DateTime ts})> _displaySpeedWindow = [];
+  double _displaySpeedKmh = 0.0;
+
+  void _updateDisplaySpeed(LatLng pos, DateTime ts) {
+    _displaySpeedWindow.add((pos: pos, ts: ts));
+    final cutoff = ts.subtract(const Duration(milliseconds: kDisplaySpeedWindowMs));
+    while (_displaySpeedWindow.length > 1 &&
+        _displaySpeedWindow.first.ts.isBefore(cutoff)) {
+      _displaySpeedWindow.removeAt(0);
+    }
+    if (_displaySpeedWindow.length < 2) {
+      _displaySpeedKmh = 0.0;
+      return;
+    }
+    final dtSec = _displaySpeedWindow.last.ts
+            .difference(_displaySpeedWindow.first.ts)
+            .inMilliseconds /
+        1000.0;
+    if (dtSec < 0.5) {
+      _displaySpeedKmh = 0.0;
+      return;
+    }
+    final chordM = _haversineKm(
+            _displaySpeedWindow.first.pos, _displaySpeedWindow.last.pos) *
+        1000.0;
+    final raw = (chordM / dtSec) * 3.6;
+    _displaySpeedKmh = raw < kDisplaySpeedZeroThresholdKmh ? 0.0 : raw;
+  }
+
   // Special-start recovery
   // 120m (era 80m): raggio aumentato dopo il test in cui una PS saltata
   // interamente (segnale debole sul suo waypoint START) non veniva mai
@@ -441,6 +487,11 @@ class GpsService extends ChangeNotifier {
   /// UI "VEL" readout, the bearing freeze threshold and the adaptive GPS
   /// interval — `position.speed` is never used for logic decisions.
   double get geometricSpeedKmh => _geometricSpeedKmh;
+
+  /// Velocità per il readout "VEL" in navigazione: media su una finestra
+  /// mobile di ~2.5s (spostamento/tempo), arrotondata a zero sotto soglia.
+  /// SOLO per display — la logica interna usa sempre [geometricSpeedKmh].
+  double get displaySpeedKmh => _displaySpeedKmh;
 
   /// Timestamp dell'ultimo fix GPS accettato (passato accuracy + jump
   /// filter) — usato per il contatore nella notifica persistente (Parte 5)
@@ -1660,6 +1711,8 @@ class GpsService extends ChangeNotifier {
     _lastAcceptedFilteredPos = null;
     _lastFilteredTs = null;
     _geometricSpeedKmh = 0.0;
+    _displaySpeedWindow.clear();
+    _displaySpeedKmh = 0.0;
     _recentFilteredPoints.clear();
     _bearingDeg = 0.0;
     _recoveryAttempted.clear();
@@ -2109,6 +2162,7 @@ class GpsService extends ChangeNotifier {
     }
     _lastAcceptedFilteredPos = filteredPos;
     _lastFilteredTs = now;
+    _updateDisplaySpeed(filteredPos, now);
 
     // Sigma accel dinamico: a velocità più basse il filtro Kalman può
     // smorzare di più (meno dinamica da inseguire); a velocità da enduro
@@ -2475,6 +2529,8 @@ class GpsService extends ChangeNotifier {
     _lastAcceptedFilteredPos = null;
     _lastFilteredTs = null;
     _geometricSpeedKmh = 0.0;
+    _displaySpeedWindow.clear();
+    _displaySpeedKmh = 0.0;
     _recentFilteredPoints.clear();
     _bearingDeg = 0.0;
     _recoveryAttempted.clear();
@@ -2509,6 +2565,14 @@ class GpsService extends ChangeNotifier {
   /// permessi/hardware/Firestore — replica il bug reale osservato in
   /// produzione (vedi `race_session_guard.dart`,
   /// `test/features/pilot/gps_recording_orphan_session_test.dart`).
+  /// SOLO per test: fa avanzare la finestra della velocità di display
+  /// ([displaySpeedKmh]) con un campione sintetico, senza passare dall'intera
+  /// pipeline Kalman/filtro jump — isola il comportamento della sola
+  /// finestra mobile (vedi `test/core/services/gps_display_speed_test.dart`).
+  @visibleForTesting
+  void debugFeedDisplaySpeedSample(LatLng pos, DateTime ts) =>
+      _updateDisplaySpeed(pos, ts);
+
   @visibleForTesting
   void debugMarkRecordingForTest(
       {required String eventId, required String userId}) {

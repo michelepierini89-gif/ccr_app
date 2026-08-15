@@ -14,6 +14,7 @@ import '../../auth/providers/auth_provider.dart';
 import '../../admin/providers/admin_provider.dart';
 import '../providers/pilot_provider.dart';
 import '../../../core/models/championship_model.dart';
+import '../widgets/preferred_team_picker.dart';
 import 'event_list_screen.dart';
 import 'gps_recording_screen.dart';
 
@@ -706,7 +707,61 @@ class _ProfilePageState extends ConsumerState<_ProfilePage> {
                       fontWeight: FontWeight.bold),
                 ),
               ),
-              const SizedBox(height: 32),
+              const SizedBox(height: 20),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppColors.background,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: user.preferredTeamName != null
+                        ? AppColors.warning.withValues(alpha: 0.5)
+                        : AppColors.border,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      user.preferredTeamName != null
+                          ? Icons.star
+                          : Icons.star_border,
+                      color: user.preferredTeamName != null
+                          ? AppColors.warning
+                          : AppColors.textSecondary,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Squadra preferita',
+                              style: TextStyle(
+                                  color: AppColors.textSecondary,
+                                  fontSize: 11)),
+                          Text(
+                            user.preferredTeamName ?? 'Non impostata',
+                            style: TextStyle(
+                              color: user.preferredTeamName != null
+                                  ? AppColors.textPrimary
+                                  : AppColors.textSecondary,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () => showPreferredTeamPicker(context, ref),
+                      child: Text(
+                          user.preferredTeamName != null ? 'Cambia' : 'Imposta'),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
               SizedBox(
                 width: double.infinity,
                 height: 50,

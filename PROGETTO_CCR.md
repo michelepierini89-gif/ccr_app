@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 12 agosto 2026 (Step 43 completato)  
+**Data aggiornamento:** 15 agosto 2026 (Step 44 completato)  
 **Branch:** main  
 **Versione:** 1.0.2+3
 
@@ -1948,6 +1948,88 @@ permission-denied, punto 1; Claudia: zero fix GPS mai accettati, punto
 - `firebase deploy --only hosting`
 - `firebase deploy --only firestore:rules` (regole invariate — verifica
   post-deploy che il ruleset attivo resti identico al file committato)
+- `git push origin main`
+
+---
+
+### Step 44 — Velocità display stabilizzata, squadra preferita completata, indicatore salvataggio traccia (15 agosto 2026) ✅
+
+Tre interventi indipendenti prima del prossimo test sul campo, commit unico.
+
+**1 — Indicatore di velocità instabile:**
+- Causa: il readout "VEL" in navigazione mostrava la velocità geometrica
+  istantanea tra due soli fix GPS consecutivi (`GpsService.geometricSpeedKmh`)
+  — con fix ogni 250ms in speciale, pochi metri di incertezza sulla
+  posizione producono un errore relativo enorme sulla velocità mostrata.
+  Anche la velocità IMU (`ImuFusionService.fusedSpeedKmh`) ne era affetta:
+  veniva ri-ancorata direttamente al valore istantaneo ad ogni fix GPS.
+- Fix: nuovo `GpsService.displaySpeedKmh` — SOLO per il readout "VEL" e per
+  il banner informativo di zona a velocità controllata (mai per la logica
+  interna: filtro jump, sigmaAccel adattivo, freeze bearing e dead
+  reckoning restano su `geometricSpeedKmh`, invariato). Finestra mobile di
+  2.5s: corda (spostamento netto) tra il primo e l'ultimo punto della
+  finestra diviso il tempo trascorso — non la somma dei segmenti
+  intermedi, che da fermo continuerebbe a crescere per il solo jitter GPS
+  (zig-zag) invece di restare vicina a zero. Soglia a 3 km/h sotto la
+  quale il display mostra 0. Arrotondamento all'unità già presente in UI
+  (invariato).
+- Test: `test/core/services/gps_display_speed_test.dart` — da fermo con
+  jitter di ±1.5m il display resta a 0; a velocità costante con rumore
+  punto-a-punto paragonabile al passo vero, la deviazione standard del
+  display è meno della metà di quella della velocità istantanea e la
+  media converge entro 5 km/h dal valore reale.
+
+**2 — Squadra preferita: verifica e completamento:**
+- Verifica sullo stato reale (nessun bug trovato in quanto già
+  implementato): il campo `preferredTeamName` si salva correttamente
+  (`savePreferredTeamName`, merge write); il pulsante in `team_screen.dart`
+  funziona; nel dialogo di iscrizione (`event_detail_screen.dart`) la
+  squadra preferita viene già evidenziata/selezionata se una squadra con
+  lo stesso nome esiste nell'evento, o pre-compilata nel campo "nuova
+  squadra" se assente.
+- Gap reale trovato: raggiungibile SOLO dalla schermata squadra di un
+  evento specifico, nessun accesso dal profilo; nessuna statistica per
+  squadra.
+- `PilotStatsModel`: nuovi campi `preferredTeamGare*`/`preferredTeamSpeciali*`
+  (stesse metriche esistenti, ristrette alle gare disputate con la
+  squadra preferita) e `preferredTeamCompagni` (`TeammateStat`: compagni
+  con cui si è corso più spesso in quella squadra, ordinati per numero di
+  gare condivise) e `raceTeamNames` (nomi distinti delle squadre con cui
+  il pilota ha già una registrazione approvata, per la scelta senza dover
+  essere dentro un evento).
+- `pilotStatsProvider`: calcola le metriche sopra nello stesso giro di
+  eventi già esistente (nessuna query N+1 aggiuntiva).
+- `PilotStatsScreen`: nuova sezione "Con «nome squadra»" con le 5
+  metriche + elenco compagni (avatar + nome + gare condivise); se non
+  impostata, invito con pulsante diretto "Imposta squadra preferita".
+- `lib/features/pilot/widgets/preferred_team_picker.dart`
+  (`showPreferredTeamPicker`): bottom sheet condiviso che elenca le
+  squadre da `raceTeamNames`, scrive `savePreferredTeamName` e invalida
+  `currentUserModelProvider`/`pilotStatsProvider`.
+- `PilotHomeScreen` (tab Profilo): nuova card "Squadra preferita" con
+  nome corrente e pulsante Imposta/Cambia — reso raggiungibile senza
+  passare da un evento specifico.
+
+**3 — Indicatore di salvataggio traccia:**
+- `_SaveStatusIndicator` (`gps_recording_screen.dart`), accanto al chip
+  REC nella top bar: icona con orario dell'ultimo flush incrementale
+  riuscito (verde), arancione se l'ultimo tentativo è fallito ma un flush
+  precedente era riuscito, rosso se falliscono da più di 5 minuti
+  (accompagnato dallo SnackBar di errore già mostrato ad ogni fallimento).
+  Grigio prima del primo flush (~90s dall'avvio).
+- Stato tracciato in `_GpsRecordingScreenState` (`_lastFlushSuccessAt`,
+  `_flushFailingSince`), aggiornato in `_flushFullTrackIncremental` e
+  azzerato ad ogni nuovo `_startRace()`.
+- Notifica persistente del foreground service (Android): il testo include
+  ora anche lo stato salvataggio ("salvato HH:mm" / "salvataggio: ERRORE"
+  / "salvataggio: in attesa") accanto al contatore punti già presente —
+  verificabile dalla schermata di blocco senza aprire l'app.
+
+**Deploy:**
+- `flutter analyze`: 0 issues (intero progetto)
+- `flutter test`: 96/96 verdi (94 preesistenti + 2 nuovi in
+  `gps_display_speed_test.dart`)
+- `firebase deploy --only hosting`
 - `git push origin main`
 
 ---

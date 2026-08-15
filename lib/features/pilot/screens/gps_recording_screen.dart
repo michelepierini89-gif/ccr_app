@@ -111,6 +111,13 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   bool _trackSaveErrorNotified = false;
   int _trackFlushTicks = 0;
 
+  // Indicatore di salvataggio traccia (Step 43 punto 3): orario dell'ultimo
+  // flush incrementale riuscito, e da quando (se) i tentativi falliscono di
+  // fila — null quando l'ultimo tentativo è andato a buon fine. Letti da
+  // _SaveStatusIndicator per il pallino verde/arancio/rosso vicino a REC.
+  DateTime? _lastFlushSuccessAt;
+  DateTime? _flushFailingSince;
+
   // Catturato in initState — MAI leggere provider via `ref` dentro
   // dispose(): in questa versione di Riverpod il ConsumerStatefulElement
   // marca `ref` invalido prima che State.dispose() giri, e un ref.read()
@@ -268,10 +275,25 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     final lastFix = gps.lastAcceptedFixTime;
     final timeStr =
         lastFix != null ? DateFormat('HH:mm:ss').format(lastFix) : '--:--:--';
+    // Stato salvataggio traccia (Step 43 punto 3): così il pilota controlla
+    // dalla schermata di blocco che il flush incrementale sta funzionando,
+    // senza dover aprire l'app.
+    final String saveStr;
+    if (_flushFailingSince != null) {
+      saveStr = 'salvataggio: ERRORE';
+    } else if (_lastFlushSuccessAt != null) {
+      saveStr =
+          'salvato ${DateFormat('HH:mm').format(_lastFlushSuccessAt!)}';
+    } else {
+      saveStr = 'salvataggio: in attesa';
+    }
     try {
       await _foregroundNotificationChannel.invokeMethod(
         'updateForegroundNotification',
-        {'text': 'CCR — registrazione attiva · $count punti · $timeStr'},
+        {
+          'text':
+              'CCR — registrazione attiva · $count punti · $timeStr · $saveStr'
+        },
       );
     } catch (_) {}
   }
@@ -308,6 +330,15 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           .read(firestoreServiceProvider)
           .savePilotTrack(eventId, userId, List.of(gps.localTrack));
       _trackSaveErrorNotified = false;
+      if (mounted) {
+        setState(() {
+          _lastFlushSuccessAt = DateTime.now();
+          _flushFailingSince = null;
+        });
+      } else {
+        _lastFlushSuccessAt = DateTime.now();
+        _flushFailingSince = null;
+      }
     } catch (e) {
       _diagLogger.logTrackSaveError('flush_incrementale', e);
       try {
@@ -315,6 +346,11 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
             .read(firestoreServiceProvider)
             .flagTrackSaveError(eventId, userId, e.toString());
       } catch (_) {}
+      if (mounted) {
+        setState(() => _flushFailingSince ??= DateTime.now());
+      } else {
+        _flushFailingSince ??= DateTime.now();
+      }
       if (mounted && !_trackSaveErrorNotified) {
         _trackSaveErrorNotified = true;
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -757,6 +793,8 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           .catchError((_) {}));
       _lastFlushedFullTrackCount = 0;
       _trackSaveErrorNotified = false;
+      _lastFlushSuccessAt = null;
+      _flushFailingSince = null;
       await gps.startRecording(
         eventId: widget.eventId!,
         userId: user.uid,
@@ -1566,13 +1604,15 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         final arrowAngle =
             HeadingDisplayUtils.arrowAngleRad(_headingMode, displayHeadingDeg);
         final hasPos = liveData != null || pos != null;
-        // Velocità geometrica (distanza/tempo tra punti GPS accettati),
-        // coerente col filtro jump — non position.speed, inaffidabile.
-        // L'IMU sovrascrive il display se ha un valore significativo (>0.5km/h),
-        // altrimenti si usa la velocità geometrica GPS.
+        // Velocità di DISPLAY: media su finestra mobile ~2.5s (vedi
+        // GpsService.displaySpeedKmh) — NON la velocità geometrica
+        // istantanea (quella resta riservata alla logica interna: filtro
+        // jump, sigmaAccel, freeze bearing, dead reckoning) né la velocità
+        // IMU grezza (anch'essa ri-ancorata ad ogni fix alla velocità
+        // istantanea, quindi altrettanto nervosa). `imu` resta letto qui
+        // solo per il pannello debug più sotto.
         final imu = ref.watch(imuFusionServiceProvider);
-        final speedKmh =
-            imu.fusedSpeedKmh > 0.5 ? imu.fusedSpeedKmh : gps.geometricSpeedKmh;
+        final speedKmh = gps.displaySpeedKmh;
         final accuracy = liveData?.accuracy ?? pos?.accuracy ?? 0.0;
 
         // FIX 6: seconda via di sblocco FINE GARA, vedi _canFinishNearStart.
@@ -1601,6 +1641,8 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           elapsed: _elapsed,
           isRecording: true,
           onSettingsTap: _showTrackAppearanceSheet,
+          lastFlushSuccessAt: _lastFlushSuccessAt,
+          flushFailingSince: _flushFailingSince,
         ),
 
         // Countdown strip (visible once a deadline OR the "no starting
@@ -2828,12 +2870,16 @@ class _TopBar extends ConsumerWidget {
   final Duration? elapsed;
   final bool isRecording;
   final VoidCallback? onSettingsTap;
+  final DateTime? lastFlushSuccessAt;
+  final DateTime? flushFailingSince;
 
   const _TopBar(
       {required this.eventId,
       required this.elapsed,
       required this.isRecording,
-      this.onSettingsTap});
+      this.onSettingsTap,
+      this.lastFlushSuccessAt,
+      this.flushFailingSince});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -2905,6 +2951,13 @@ class _TopBar extends ConsumerWidget {
                 ],
               ),
             ),
+          if (isRecording) ...[
+            const SizedBox(width: 8),
+            _SaveStatusIndicator(
+              lastSuccessAt: lastFlushSuccessAt,
+              failingSince: flushFailingSince,
+            ),
+          ],
           if (onSettingsTap != null)
             IconButton(
               onPressed: onSettingsTap,
@@ -2912,6 +2965,73 @@ class _TopBar extends ConsumerWidget {
               tooltip: 'Aspetto traccia',
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// Indicatore discreto dello stato del salvataggio incrementale della
+/// traccia (Step 43 punto 3, ogni ~90s — vedi
+/// `_GpsRecordingScreenState._flushFullTrackIncremental`): verde con
+/// l'orario dell'ultimo flush riuscito, arancione se l'ultimo tentativo è
+/// fallito ma un flush precedente era riuscito, rosso se i tentativi
+/// falliscono da più di 5 minuti (accompagnato dallo SnackBar di errore già
+/// mostrato ad ogni fallimento). Prima di qualunque flush (primi ~90s di
+/// gara) resta grigio, in attesa.
+class _SaveStatusIndicator extends StatelessWidget {
+  final DateTime? lastSuccessAt;
+  final DateTime? failingSince;
+
+  const _SaveStatusIndicator({this.lastSuccessAt, this.failingSince});
+
+  static const _redThreshold = Duration(minutes: 5);
+
+  @override
+  Widget build(BuildContext context) {
+    final Color color;
+    final IconData icon;
+    final String label;
+
+    if (failingSince != null) {
+      final failingFor = DateTime.now().difference(failingSince!);
+      color = failingFor >= _redThreshold ? AppColors.error : Colors.orange;
+      icon = Icons.cloud_off;
+      label = lastSuccessAt != null
+          ? DateFormat('HH:mm').format(lastSuccessAt!)
+          : 'mai riuscito';
+    } else if (lastSuccessAt != null) {
+      color = AppColors.success;
+      icon = Icons.cloud_done;
+      label = DateFormat('HH:mm').format(lastSuccessAt!);
+    } else {
+      color = AppColors.textSecondary;
+      icon = Icons.cloud_upload;
+      label = '—';
+    }
+
+    return Tooltip(
+      message: failingSince != null
+          ? 'Salvataggio traccia non riuscito'
+          : lastSuccessAt != null
+              ? 'Ultimo salvataggio traccia riuscito'
+              : 'In attesa del primo salvataggio traccia',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: color),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 12, color: color),
+            const SizedBox(width: 4),
+            Text(label,
+                style: TextStyle(
+                    color: color, fontWeight: FontWeight.bold, fontSize: 11)),
+          ],
+        ),
       ),
     );
   }
