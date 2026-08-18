@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 18 agosto 2026 (Step 46 completato)  
+**Data aggiornamento:** 18 agosto 2026 (Step 47 completato)  
 **Branch:** main  
 **Versione:** 1.0.2+3
 
@@ -2198,6 +2198,119 @@ alla curvatura (mancante allo Step 45).
 - `flutter test`: 104/104 verdi (101 preesistenti + 3 nuovi in
   `carring_clo4_curvature_display_test.dart`)
 - `firebase deploy --only hosting`
+- `git push origin main`
+
+---
+
+### Step 47 — Verifica Step 45, dead reckoning ridotto in curva, distanze avvisi lungo la traccia, eventi di allenamento (18 agosto 2026) ✅
+
+Verifica dei 5 punti richiesti nel prompt originale dello Step 45 (tre già
+fatti, due mancanti implementati ora), riduzione del dead reckoning in
+curva, e nuovo tipo di evento "allenamento" con tentativi multipli.
+
+**Parte 0 — verifica:**
+- a) Soglie GNSS, b) countdown, c) indicatore salvataggio: confermati
+  FATTI allo Step 45.
+- d) Etichette con riquadro grigio sulla mappa: verificato — vengono dal
+  tile OSM Standard (nomi via/paesi incorporati nei pixel), nessuna
+  etichetta disegnata dall'app. `gps_recording_screen.dart`: `TileLayer`
+  avvolto in `Opacity(opacity: 0.55)` nella sola navigazione — track/
+  marker restano a piena opacità in primo piano. Nessun cambio di
+  provider tile (avrebbe introdotto una dipendenza/ToS esterna).
+- e) **Distanze avvisi lungo la traccia** (il punto più importante,
+  mancante): era completamente assente, tutto in linea d'aria. Nuova
+  classe `lib/core/utils/track_chainage.dart` (`TrackChainage`):
+  progressiva chilometrica cumulativa sulla polilinea di riferimento,
+  calcolata una volta al caricamento; ogni punto annunciabile (waypoint
+  inizio/fine PS, zone velocità, punto ristoro, punti pericolo) vi si
+  proietta una volta per una progressiva fissa; il pilota vi si proietta
+  ad ogni fix accettato con una finestra di ricerca locale attorno
+  all'ultimo segmento noto (evita agganci a segmenti sbagliati sui
+  tornanti). Distanza con segno (positiva se davanti, negativa se
+  superato — solo positive annunciate); oltre 150m dalla polilinea gli
+  avvisi basati sulla progressiva sono sospesi (pilota fuori traccia).
+  `GpsService`: sostituite le distanze haversine nei 5 call site (PS
+  inizio/fine, zone velocità, punto ristoro, pericoli) sia per la voce
+  che per i banner — le soglie fisiche di prossimità/passato dei pericoli
+  (150/50/15m) restano volutamente in linea d'aria (prossimità fisica
+  reale, non distanza da percorrere). Test dedicati in
+  `test/core/utils/track_chainage_test.dart` (7 casi: tornante, punto
+  superato, ricerca locale, ecc.).
+
+**Parte 1 — dead reckoning ridotto in curva:**
+- `ImuFusionService`: nuovo taper continuo sulla distanza di proiezione
+  del dead reckoning, guidato dalla stessa velocità angolare già stimata
+  da `GpsService` per sigmaAccel adattivo (Step 46) — nessuna stima
+  ridondante. Invariato sotto 10°/s (rettilinei, riduce il lag della
+  freccia), annullato sopra 50°/s (curva stretta), transizione lineare.
+- Misurato su alta curvatura (Carring CLO4): 13.4m (+7% vs registrata) →
+  13.3m (+6%) — guadagno reale ma piccolo, il dataset ha fix già fitti
+  che limitano quanto il DR può divergere prima della correzione GPS.
+
+**Parte 2 — eventi di allenamento (nuova feature):**
+- `EventModel.tipoEvento` (`EventType.gara`/`allenamento`, default
+  `gara` — zero migrazione). Allenamento: nessun ordine di
+  partenza/tempo massimo/ritiro automatico, `data` è apertura non
+  svolgimento, resta disponibile finché l'admin non chiude
+  (`EventStatus.archiviata` — non `concluso`: `getOpenEvents()` legge
+  solo `aperto`/`inCorso`, un `concluso` sparirebbe da entrambe le liste
+  pilota; `archiviata` lo fa comparire nella sezione "passate" già
+  esistente). Cloud Function `autoArchiveEvents`/`enforceMaxRaceTime`
+  (`functions/index.js`) escludono esplicitamente `tipoEvento ==
+  'allenamento'` — **non ancora deployate** (solo `hosting`/
+  `firestore:rules` richiesti in questo step, `functions` resta da fare).
+- **Tentativi multipli**: `tracking/{eventId}/pilots/{userId}/attempts/
+  {attemptId}`, con `fullTrackChunks`/`passages`/`speedZoneViolations`
+  annidati per tentativo — stesso meccanismo a chunk della gara, riusato
+  tramite un helper di path generalizzato (`_pilotOrAttemptDocRef`).
+  Tutti i metodi esistenti (`saveFullPilotTrack`,
+  `appendFullPilotTrackChunks`, `getFullPilotTrack`, `savePilotTrack`,
+  `resetFullPilotTrackForNewSession`) hanno solo un parametro `attemptId`
+  opzionale in coda, default null = comportamento di gara invariato
+  (verificato: 115/115 test verdi). Nuovo modello `AttemptModel`
+  (`lib/core/models/attempt_model.dart`). `GpsService`: nuovo campo
+  `_attemptId` + `_persistPassage()` centralizza la scelta gara/tentativo
+  per tutti gli 8 call site di `recordWaypointPassage` (prima duplicati).
+- **Classifica allenamento**: `ClassificaEngine._computeSpeciali` reso
+  pubblico (`computeSpeciali`, solo rinominato, zero logica cambiata) e
+  riusato da un motore dedicato, `TrainingClassificaEngine` — miglior
+  tempo per PS fra TUTTI i tentativi completati di TUTTI i membri della
+  squadra (non un pool di passaggi come in gara: qui i tentativi sono
+  sessioni indipendenti), nessun tempo forfettario per le PS non
+  completate (semplicemente non concorrono), nessuna penalità squadra
+  incompleta, penalità CP/zona velocità invariate. 4 test dedicati in
+  `test/core/services/training_classifica_engine_test.dart`.
+- **UI**: selettore tipo evento in creazione (`create_event_screen.dart`,
+  campi non pertinenti nascosti); chiusura allenamento + vista "tentativi
+  per pilota" in gestione evento (`training_attempts_screen.dart`, nuova
+  route `/admin/event/:id/training-attempts`); sezione "Allenamenti"
+  distinta in `event_list_screen.dart` (pilota); `gps_recording_screen.dart`
+  crea/riprende un tentativo all'avvio, lo chiude a FINE GARA/RITIRO
+  (mai raceStatus/withdrawal per l'allenamento), propone "nuovo
+  tentativo" al termine, nessun obbligo di completare tutte le PS per
+  terminare, nessuna cerimonia "abilita partenza" admin, countdown
+  nascosto. Statistiche pilota: allenamenti esclusi dal conteggio gara,
+  nuova sezione dedicata (`training_stats_provider.dart`) con tentativi e
+  migliori tempi personali. Campionati: un evento di allenamento non è
+  selezionabile.
+- `REGOLAMENTO_CCR.md`/`assets/docs/regolamento_ccr.md` (tenuti
+  identici): nuova sezione "Allenamento".
+- **Semplificazioni note**: ripresa di un tentativo orfano azzera la
+  traccia GPS locale (come già la gara per le sessioni orfane, i
+  passaggi waypoint già registrati restano validi); nessuna coda offline
+  per i passaggi di allenamento (best-effort, un tentativo perso si
+  rifà); vista admin tentativi essenziale, non rifinita quanto le altre
+  schermate; pagina dettaglio evento pilota non mostra ancora "il mio
+  miglior tempo/record squadra" in pagina (disponibile in Statistiche);
+  testi dei dialoghi RITIRO dicono ancora "gara" durante un tentativo
+  (corretto funzionalmente, non nella formulazione).
+
+**Deploy:**
+- `flutter analyze`: 0 issues (intero progetto)
+- `flutter test`: 115/115 verdi (111 preesistenti + 7 nuovi in
+  `track_chainage_test.dart` + 4 nuovi in
+  `training_classifica_engine_test.dart`)
+- `firebase deploy --only hosting,firestore:rules`
 - `git push origin main`
 
 ---
