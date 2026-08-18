@@ -109,22 +109,29 @@ void main() {
   });
 
   test(
-      'risultato empirico su questa fixture: 16/20 in entrambe le modalità '
+      'risultato empirico su questa fixture: legacy 15/20, fixed 16/20 '
       '— documentato, non un fallimento', () {
     // Su QUESTA traccia (campionamento sintetico 1Hz, non i 250ms reali in
-    // speciale) il Fix 1 non guadagna CP aggiuntivi: dei 4 CP mancati, 2
-    // (track_pt_1028 a 314m, track_pt_1105 a 595m) sono fuori traiettoria
-    // per un taglio di percorso reale in questo test (stesso evento
-    // documentato in gate_replay_test.dart per PS3), non un problema di
-    // campionamento; gli altri 2 (track_pt_719 a 64m, track_pt_630 a 38m)
-    // restano oltre la soglia anche a 35m. I 16 CP agganciati lo erano già
-    // a raggio puntuale 20m: il campionamento di questa fixture è già
-    // abbastanza denso da non esercitare il vantaggio del segmento.
-    // Il guadagno reale del fix va verificato sul replay dell'evento
-    // "Carring Clo 2 HB" (campionamento vero a 250ms in speciale, dove il
-    // problema è stato osservato), non deducibile da questa fixture — vedi
-    // il commento in cima al file.
-    expect(legacy.cpPassedCount, 16);
+    // speciale) il Fix 1 non guadagna CP aggiuntivi rispetto al proprio
+    // 16/20: dei 4 CP mancati da `fixed`, 2 (track_pt_1028 a 314m,
+    // track_pt_1105 a 595m) sono fuori traiettoria per un taglio di
+    // percorso reale in questo test (stesso evento documentato in
+    // gate_replay_test.dart per PS3), non un problema di campionamento;
+    // gli altri 2 (track_pt_719 a 65m, track_pt_630 a 38m) restano oltre
+    // la soglia anche a 35m.
+    //
+    // `legacy` è sceso da 16 a 15 allo Step 46 (soglia accuracy 8m→6m +
+    // sigmaAccel adattivo alla curvatura, `gps_service.dart`): entrambe le
+    // modalità leggono la STESSA traiettoria Kalman-filtrata (solo
+    // l'algoritmo di detection cambia tra legacy/fixed), e lo spostamento
+    // — di pochi metri, atteso e verificato utile sui dati reali "Carring
+    // CLO 4" (vedi PROGETTO_CCR.md Step 46) — ha portato UN CP appena
+    // sotto il raggio puntuale 20m del legacy leggermente oltre. `fixed`
+    // (l'algoritmo realmente in uso oggi, soglia 35m su segmento) non ne
+    // risente: resta 16/20, invariato. Nessuna azione richiesta: `legacy`
+    // è mantenuto solo per il confronto A/B storico, non è mai eseguito
+    // in produzione.
+    expect(legacy.cpPassedCount, 15);
     expect(fixed.cpPassedCount, 16);
   });
 

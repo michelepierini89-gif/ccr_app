@@ -22,25 +22,32 @@ import '../utils/kalman_filter.dart';
 
 enum GpsMode { idle, transfer, inSpecial, nearWaypoint }
 
-/// Parametri della pipeline filtri/Kalman, esposti SOLO per il banco di
-/// replay (griglia parametrica, Blocco E) — mai usati per cambiare il
-/// comportamento live: [GpsService] costruito senza questo parametro (il
-/// caso di ogni sessione reale) usa esattamente le stesse costanti di
-/// prima, invariate. Multiplier invece di valori assoluti per
-/// [sigmaAccelScale]/[anchorThresholdScale]: preserva la forma delle
-/// curve già tarate (3 livelli sigmaAccel, 4 livelli soglia anchor),
-/// varia solo la loro scala complessiva.
+/// Parametri della pipeline filtri/Kalman. [GpsService] costruito senza
+/// questo parametro (ogni sessione live) usa [defaults] — che per
+/// [maxAccuracyDisplayMeters]/[curvatureAdaptationFactor] SONO i valori di
+/// produzione decisi dopo la griglia parametrica (Step 45/46), non solo un
+/// placeholder per il banco di replay. [sigmaAccelScale]/
+/// [maxSpeedFilterKmh]/[anchorThresholdScale] restano invece test-only
+/// (default 1.0/costante originale = comportamento invariato): un
+/// multiplier globale su sigmaAccel guadagna aderenza ma costa reattività
+/// percepita in guida (vedi Step 46), a differenza dell'adattamento alla
+/// curvatura, mirato solo alle curve. Multiplier invece di valori assoluti
+/// per [sigmaAccelScale]/[anchorThresholdScale]: preserva la forma delle
+/// curve già tarate (3 livelli sigmaAccel, 4 livelli soglia anchor), varia
+/// solo la loro scala complessiva.
 class GpsPipelineConfig {
   final double sigmaAccelScale;
   final double maxAccuracyDisplayMeters;
   final double maxSpeedFilterKmh;
   final double anchorThresholdScale;
+  final double curvatureAdaptationFactor;
 
   const GpsPipelineConfig({
     this.sigmaAccelScale = 1.0,
     this.maxAccuracyDisplayMeters = GpsService.kMaxAccuracyDisplayMeters,
     this.maxSpeedFilterKmh = GpsService.kMaxSpeedFilterKmh,
     this.anchorThresholdScale = 1.0,
+    this.curvatureAdaptationFactor = GpsService.kDefaultCurvatureAdaptationFactor,
   });
 
   static const GpsPipelineConfig defaults = GpsPipelineConfig();
@@ -96,9 +103,13 @@ class GpsService extends ChangeNotifier {
   // un punto così impreciso corrompe il Kalman, ma scartarlo del tutto
   // rischia di perdere il passaggio di un waypoint. Soglia display più
   // restrittiva (meglio gaps che scatter), soglia detection più permissiva.
-  // 8.0 (era 10.0): il chip MediaTek del DOOGEE dichiara accuracy
+  // 6.0 (era 8.0, era 10.0): il chip MediaTek del DOOGEE dichiara accuracy
   // ottimistica, abbassare la soglia migliora la qualità del Kalman.
-  static const double kMaxAccuracyDisplayMeters = 8.0;
+  // Ritarato allo Step 46 sulla griglia parametrica reale (test "Carring
+  // CLO 4"): 6m migliora lo scostamento dal percorso reale in ogni riga
+  // della griglia senza aumentare in modo significativo lo scarto fix
+  // (vedi report/PROGETTO_CCR.md per il confronto).
+  static const double kMaxAccuracyDisplayMeters = 6.0;
   static const double kMaxAccuracyDetectionMeters = 25.0;
 
   // Soglia display PROGRESSIVA durante l'acquisizione iniziale: il chip GPS
@@ -131,6 +142,27 @@ class GpsService extends ChangeNotifier {
   // (evita jitter della freccia da fermo); sopra, smoothing esponenziale.
   static const double kMinBearingSpeedKmh = 3.0;
   static const double kBearingSmoothingAlpha = 0.4;
+
+  // sigmaAccel adattivo alla curvatura (Step 46): il Kalman cinematico
+  // assume moto rettilineo uniforme — in curva sottostima la rotazione e
+  // "taglia" verso l'esterno (le "curve allargate" osservate in
+  // navigazione, test 17/08). Il fattore aumenta sigmaAccel in proporzione
+  // continua alla velocità angolare stimata dal bearing GPS (mai dal
+  // giroscopio) — a differenza del multiplier globale su sigmaAccel
+  // (GpsPipelineConfig.sigmaAccelScale, test-only), qui il filtro si fida
+  // di più della misura SOLO durante la curva stessa, non sempre: nessun
+  // costo di reattività fuori curva.
+  // 0.08 scelto sulla griglia parametrica reale (Step 46, 6 valori
+  // 0-0.15): miglioramento monotono di scostamento generale e su tratti
+  // ad alta curvatura per tutto il range testato, MAI a scapito della
+  // precisione di aggancio porte (anzi leggermente migliore anch'essa) —
+  // 0.08 lascia margine prima del valore massimo testato (0.15, ancora in
+  // miglioramento, non ancora al punto di rendimenti decrescenti) invece
+  // di estrapolare oltre i dati misurati (vedi report/PROGETTO_CCR.md per
+  // la tabella completa). Clamp del moltiplicatore risultante in
+  // [_onPosition] a 5x: una singola lettura di bearing corrotta non deve
+  // poter destabilizzare il filtro.
+  static const double kDefaultCurvatureAdaptationFactor = 0.08;
 
   // Distanza minima (m) tra due fix consecutivi richiesta da Geolocator,
   // fissa per tutte le modalità — 0 causava l'accettazione di ogni
@@ -345,6 +377,19 @@ class GpsService extends ChangeNotifier {
   double _geometricSpeedKmh = 0.0;
   final List<LatLng> _recentFilteredPoints = []; // circular buffer, last 5
   double _bearingDeg = 0.0;
+
+  // Curvatura (Step 46): velocità angolare stimata dal bearing GPS grezzo
+  // (non _bearingDeg, già smussato/congelato per la freccia), indipendente
+  // dai sensori inerziali — usata SOLO per sigmaAccel (vedi STEP 5), mai
+  // per waypoint detection/timing/recovery.
+  double? _lastRawBearingDeg;
+  DateTime? _lastRawBearingTs;
+  double _smoothedAngularVelocityDegS = 0.0;
+  static const double kCurvatureSmoothingAlpha = 0.3;
+
+  /// Velocità angolare corrente stimata dal bearing GPS (°/s), smussata —
+  /// esposta per diagnostica/test, mai usata per timing.
+  double get angularVelocityDegS => _smoothedAngularVelocityDegS;
 
   // Velocità di DISPLAY — SOLO per il readout "VEL", mai per la logica
   // interna (quella resta _geometricSpeedKmh, tra due soli fix, volutamente
@@ -1763,6 +1808,9 @@ class GpsService extends ChangeNotifier {
     _displaySpeedKmh = 0.0;
     _recentFilteredPoints.clear();
     _bearingDeg = 0.0;
+    _lastRawBearingDeg = null;
+    _lastRawBearingTs = null;
+    _smoothedAngularVelocityDegS = 0.0;
     _recoveryAttempted.clear();
     _endRecoveryAttempted.clear();
     _waypointDetector.reset();
@@ -2212,23 +2260,15 @@ class GpsService extends ChangeNotifier {
     _lastFilteredTs = now;
     _updateDisplaySpeed(filteredPos, now);
 
-    // Sigma accel dinamico: a velocità più basse il filtro Kalman può
-    // smorzare di più (meno dinamica da inseguire); a velocità da enduro
-    // serve tolleranza alle brusche variazioni di direzione/velocità.
-    final targetSigma = (_geometricSpeedKmh < 10.0
-            ? GpsKalmanFilter.kSigmaAccelWalking
-            : _geometricSpeedKmh < 40.0
-                ? GpsKalmanFilter.kSigmaAccelMedium
-                : GpsKalmanFilter.kSigmaAccelMotorcycle) *
-        _pipelineConfig.sigmaAccelScale;
-    _kalmanFilter.updateSigmaAccel(targetSigma);
-
     // Circular buffer of last 5 Kalman-filtered points for bearing
     _recentFilteredPoints.add(filteredPos);
     if (_recentFilteredPoints.length > 5) _recentFilteredPoints.removeAt(0);
 
     // Bearing: smoothing esponenziale sopra kMinBearingSpeedKmh; sotto
     // soglia resta congelato all'ultimo valore (freccia stabile da fermo).
+    // Curvatura calcolata nello stesso blocco: riusa rawBearing (il
+    // segmento GPS più fresco disponibile), calcolata PRIMA di sigmaAccel
+    // sotto così il fix corrente beneficia già della propria stima.
     if (_geometricSpeedKmh > kMinBearingSpeedKmh &&
         _recentFilteredPoints.length >= 2) {
       final rawBearing = _computeBearingDeg(
@@ -2237,7 +2277,55 @@ class GpsService extends ChangeNotifier {
       );
       _bearingDeg =
           _angularInterp(_bearingDeg, rawBearing, kBearingSmoothingAlpha);
+
+      // Curvatura: velocità angolare dal bearing GPS GREZZO (non
+      // _bearingDeg, già smussato/congelato per la freccia — qui serve il
+      // dato più fresco), indipendente dai sensori inerziali. Smoothing
+      // leggero dedicato (kCurvatureSmoothingAlpha), mai per waypoint
+      // detection/timing/recovery — solo per sigmaAccel sotto.
+      if (_lastRawBearingDeg != null && _lastRawBearingTs != null) {
+        final dtCurvS =
+            now.difference(_lastRawBearingTs!).inMilliseconds / 1000.0;
+        if (dtCurvS > 0) {
+          final bearingDiff =
+              ((rawBearing - _lastRawBearingDeg! + 540) % 360) - 180;
+          final rawAngularVelDegS = bearingDiff.abs() / dtCurvS;
+          _smoothedAngularVelocityDegS =
+              kCurvatureSmoothingAlpha * rawAngularVelDegS +
+                  (1 - kCurvatureSmoothingAlpha) * _smoothedAngularVelocityDegS;
+        }
+      }
+      _lastRawBearingDeg = rawBearing;
+      _lastRawBearingTs = now;
+    } else {
+      // Da fermo/piano il bearing è rumore: la curvatura residua decade
+      // verso zero invece di restare congelata a un valore che non
+      // descrive più il moto attuale (evita sigmaAccel gonfiato a lungo
+      // dopo l'ultima curva se il pilota rallenta/si ferma).
+      _smoothedAngularVelocityDegS *= 1 - kCurvatureSmoothingAlpha;
     }
+
+    // Sigma accel dinamico: a velocità più basse il filtro Kalman può
+    // smorzare di più (meno dinamica da inseguire); a velocità da enduro
+    // serve tolleranza alle brusche variazioni di direzione/velocità. In
+    // curva il modello cinematico a velocità costante sottostima la
+    // rotazione e taglia verso l'esterno: il fattore di adattamento
+    // (Step 46) aumenta sigmaAccel in proporzione continua alla curvatura
+    // stimata sopra, così il filtro si fida di più della misura e meno
+    // della predizione rettilinea. Clamp 1-5x: una singola lettura di
+    // bearing corrotta non deve poter destabilizzare il filtro.
+    final curvatureMultiplier = (1 +
+            _pipelineConfig.curvatureAdaptationFactor *
+                _smoothedAngularVelocityDegS)
+        .clamp(1.0, 5.0);
+    final targetSigma = (_geometricSpeedKmh < 10.0
+            ? GpsKalmanFilter.kSigmaAccelWalking
+            : _geometricSpeedKmh < 40.0
+                ? GpsKalmanFilter.kSigmaAccelMedium
+                : GpsKalmanFilter.kSigmaAccelMotorcycle) *
+        _pipelineConfig.sigmaAccelScale *
+        curvatureMultiplier;
+    _kalmanFilter.updateSigmaAccel(targetSigma);
 
     debugPrint(
         'Bearing: ${_bearingDeg.toStringAsFixed(1)}°, '
@@ -2582,6 +2670,9 @@ class GpsService extends ChangeNotifier {
     _displaySpeedKmh = 0.0;
     _recentFilteredPoints.clear();
     _bearingDeg = 0.0;
+    _lastRawBearingDeg = null;
+    _lastRawBearingTs = null;
+    _smoothedAngularVelocityDegS = 0.0;
     _recoveryAttempted.clear();
     _endRecoveryAttempted.clear();
     _waypointDetector.reset();

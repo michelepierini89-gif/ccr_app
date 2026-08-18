@@ -25,10 +25,11 @@
 /// NON incluso nella griglia:
 ///   - anchorThresholdScale: parametrizzato in GpsPipelineConfig ma escluso
 ///     da questa griglia per contenerne la dimensione (isolato a 1.0).
-///   - un "fattore di adattamento alla curvatura" per sigmaAccel NON esiste
-///     nel codice attuale (sigmaAccel dipende solo da 3 fasce di velocità
-///     geometrica, mai dalla curvatura/velocità angolare) — vedi report,
-///     nessun numero fabbricato per un meccanismo che non esiste.
+///   - curvatureAdaptationFactor: al momento di QUESTA griglia (Step 45)
+///     non esisteva ancora — implementato allo Step 46 (vedi
+///     `carring_clo4_curvature_display_test.dart`), qui esplicitamente
+///     fissato a 0.0 per preservare la riproducibilità dei numeri
+///     originali di questo file (isola sigmaAccel/accuracy/jump/RTS).
 library;
 
 import 'dart:convert';
@@ -262,6 +263,7 @@ void main() {
             sigmaAccelScale: sigma,
             maxAccuracyDisplayMeters: acc,
             maxSpeedFilterKmh: jump,
+            curvatureAdaptationFactor: 0.0, // vedi nota in cima al file
           );
 
           final gps = GpsService(
