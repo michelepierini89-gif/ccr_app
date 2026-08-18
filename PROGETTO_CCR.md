@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 15 agosto 2026 (Step 44 completato)  
+**Data aggiornamento:** 18 agosto 2026 (Step 45 completato)  
 **Branch:** main  
 **Versione:** 1.0.2+3
 
@@ -2034,6 +2034,100 @@ Tre interventi indipendenti prima del prossimo test sul campo, commit unico.
 
 ---
 
+### Step 45 — Diagnosi test "Carring CLO 4" (17/08): recovery su fix isolati, display heading senza GPS, soglie GNSS da ricevitore professionale (18 agosto 2026) ✅
+
+Analisi del log diagnostico del test in campo del 17/08 (evento "Carring
+CLO 4", DOOGEE Blade20 Pro, provider fused) e dei dati reali
+`fullTrackChunks`/KML dell'evento su Firestore — il test su strada con
+timestamp reali per la griglia parametrica atteso dallo Step 40 (vedi
+"BLOCCATO" sotto, ora risolto).
+
+**1 — Recovery su buffer troppo piccolo/rado:**
+- Causa reale (non quella ipotizzata inizialmente): `_recoveryTrack` era
+  già strutturalmente protetto da posizioni scartate (accuracy/jump/Kalman
+  non ci entrano mai). Il vero bug: il GPS ha impiegato 113s dall'avvio
+  sessione per il primo fix accettato dell'intera gara; quel fix, isolato
+  e senza storia nel buffer, è arrivato a 57.8m dalla porta di PS1 e ha
+  fatto scattare il recovery senza alcuna precondizione di densità/
+  freschezza del buffer.
+- `GpsService`: nuove costanti `kMinRecoveryBufferFixes` (5) e
+  `kMaxRecoveryLastFixAgeSeconds` (10) — `_trySpecialStartRecovery` ora
+  richiede che gli ultimi 5 fix accettati siano tutti arrivati negli
+  ultimi 10s prima di poter aprire retroattivamente una speciale.
+  `_lastPosition` verificato: solo UI, mai in logica decisionale (l'audit
+  di agosto risulta già risolto).
+- Nuovo test `test/features/gps/recovery_precondition_test.dart` (3 casi,
+  scenario reale) tramite `TrackReplayService.runFullPipeline`.
+
+**2 — Display heading (DISP) senza alcun contributo GPS:**
+- Causa: `ImuFusionService._displayHeadingDeg` era guidato al 100% dalla
+  bussola grezza — nessun controllo di coerenza con la rotta GPS non è
+  mai esistito (verificato su tutto il codice, contrariamente a quanto si
+  ipotizzava fosse già stato previsto).
+- Aggiunta fusione dipendente dalla velocità (bussola <5 km/h, GPS >15
+  km/h, transizione lineare in mezzo, bussola comunque ancorata al GPS
+  anche sopra soglia per la reattività), correzione declinazione
+  magnetica (+3.5°, confermato dal sorgente Android di `flutter_compass`
+  che non applica `GeomagneticField` — restituisce nord magnetico) con
+  affinamento automatico nel tempo, e controllo di coerenza bussola/GPS a
+  25° sostenuti 5s (mai esistito prima, non solo "soglia troppo alta").
+  Soglia validata sul replay del log reale: a 40° si sarebbero avuti 47
+  episodi di bassa affidabilità (14% della sessione), a 25° 62 episodi
+  (32%) — molto più protettivo, coerente con gli scarti 10-40° osservati
+  che a 40° sarebbero passati indisturbati.
+- Overlay diagnostico: nuova riga `ERR:` con lo scarto istantaneo DISP/GPS
+  (rossa sopra 25°).
+
+**3 — Soglie qualità GNSS da ricevitore professionale:**
+- `GnssStatusSnapshot.quality`: soglie precedenti (35/28 dB-Hz C/N0) mai
+  raggiungibili da un chip consumer — sulla sessione reale il C/N0 medio
+  non ha mai superato 34.2 dB-Hz, producendo "SAT:29/29 SCARSA". Ritarate
+  a più peso sul conteggio satelliti usati (20/12/6) e soglie C/N0
+  realistiche (26/20). Simulate sui 2800 campioni reali: 30% eccellente,
+  63% buona, 7% scarsa, 0% critica (prima: quasi sempre scarsa).
+
+**4 — UI: indicatore salvataggio e countdown:**
+- `_SaveStatusIndicator`: ridotto alla sola icona (nessun orario), visibile
+  SOLO in caso di errore di salvataggio — lo stato completo resta nella
+  notifica persistente (già presente dallo Step 44).
+- `_CountdownStrip`: quando l'orario di partenza ufficiale non è ancora
+  trascorso (tipico nei test in campo), il countdown ora parte dal via
+  effettivo della registrazione usando il tempo massimo gara configurato,
+  invece del messaggio statico — l'orario ufficiale resta come nota
+  piccola accanto al valore principale.
+
+**5 — Griglia parametrica su dati reali:**
+- `pilotTrackFull` (campo singolo legacy) non esiste per questo evento;
+  esiste (meglio) `fullTrackChunks` con timestamp reali — 2809 campioni
+  DOOGEE, 9287 l'altro pilota.
+- CSV diagnostico e traccia/speciali/riferimento (dal KML reale
+  dell'evento, 740 punti) caricati in `test/fixtures/
+  carring_clo4_20260817_*`.
+- `GpsPipelineConfig` (nuovo, additivo — ogni sessione live usa gli stessi
+  default di sempre): rende configurabili sigmaAccelScale,
+  maxAccuracyDisplayMeters, maxSpeedFilterKmh, anchorThresholdScale,
+  finora costanti fisse in `GpsService`. Nessun "fattore di adattamento
+  alla curvatura" esiste nel codice — sigmaAccel dipende solo da 3 fasce
+  di velocità, mai da curvatura/velocità angolare: nessun numero
+  fabbricato per un meccanismo inesistente.
+- `test/features/gps/carring_clo4_parametric_grid_test.dart`: 27
+  combinazioni sigmaAccel×accuracy×jump + RTS sui 2809 campioni reali
+  contro il KML reale. Risultato migliore della griglia: sigmaAccel 2×,
+  accuracy 6m → scostamento medio 7.2m (mediana 4.3m, p95 22.6m) vs 7.9m
+  medio della configurazione attuale (accuracy 8m, sigmaAccel 1×);
+  soglia jump ha effetto trascurabile 90-160 km/h su questi dati. Default
+  NON cambiati in produzione, in attesa di decisione.
+
+**Deploy:**
+- `flutter analyze`: 0 issues (intero progetto)
+- `flutter test`: 101/101 verdi (96 preesistenti + 3 nuovi in
+  `recovery_precondition_test.dart` + 2 nuovi in
+  `carring_clo4_parametric_grid_test.dart`)
+- `firebase deploy --only hosting`
+- `git push origin main`
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**
@@ -2054,7 +2148,7 @@ Tre interventi indipendenti prima del prossimo test sul campo, commit unico.
 - Rieseguire il confronto raggio/porta/RTS su una gara futura con `pilotTrackFull` reale (timestamp + accuracy veri, non sintetici) per validare i valori assoluti di durata, non solo il confronto qualitativo tra metodi
 - Verificare se la perdita di 2 PS su 5 passando da porta+raggio a porta+RTS (vista nella validazione sintetica) si ripete su dati con cadenza di campionamento reale (250ms in speciale) invece del 1s sintetico usato
 
-**BLOCCATO — qualità traccia in curva, griglia parametrica (Parte 2 sospesa allo Step 40):** l'app nativa produce una traccia meno aderente al percorso reale della web app, soprattutto in curva (sospetto: modello di moto rettilineo uniforme del Kalman — la separazione dati è già verificata corretta, vedi Step 40 Parte 2A). Serve un **nuovo test su strada** con il fix del salvataggio a chunk (ora verificato end-to-end) per avere `pilotTrackFull` con timestamp REALI per entrambi i dispositivi — la traccia del 09/08 non è utilizzabile (un pilota senza traccia, l'altro senza timestamp). Con quei dati, restano da fare: stima velocità angolare da bearing GPS, sigmaAccel adattivo alla curvatura, valutazione modello CTRV, dead reckoning progressivamente ridotto in curva, controllo di coerenza bussola, metriche di scostamento dalla KML + griglia parametrica nel banco di replay, esecuzione sui dati reali con raccomandazione sui default (da NON fissare senza prima riportare i numeri).
+**RISOLTO allo Step 45 (griglia parametrica su dati reali):** il test "Carring CLO 4" (17/08) ha fornito i timestamp reali (`fullTrackChunks`, entrambi i piloti) che mancavano dal 09/08. Girata la griglia sigmaAccel×accuracy×jump+RTS su dati reali (vedi Step 45 punto 5) — controllo di coerenza bussola implementato e validato sul log reale (Step 45 punto 2). **Resta aperto, non affrontato allo Step 45:** un vero adattamento di sigmaAccel alla curvatura/velocità angolare non esiste ancora nel codice (oggi sigmaAccel dipende solo da 3 fasce di velocità) — richiede stima della velocità angolare da bearing GPS e la progettazione di un meccanismo nuovo, non solo l'esposizione di un parametro esistente; valutazione modello CTRV e dead reckoning ridotto in curva ancora da fare. I valori della griglia (Step 45) non sono stati fissati come nuovi default in produzione, in attesa di decisione.
 
 **Limiti noti dallo Step 38 (diagnosticati, non risolti — nessuna azione pianificata, solo da tenere a mente):**
 - `_trySpecialStartRecovery`/`_trySpecialEndRecovery`: il tentativo "one-shot" può consumarsi troppo presto durante l'avvicinamento a un waypoint (quando la distanza è ancora calando verso il target, non ancora al minimo), fallendo il lookback e non venendo mai ritentato — osservato su PS4 INIZIO. Il Fix 1 (precedenza) ne limita il danno quando una porta successiva recupera il dato, ma il meccanismo in sé resta fragile. Una revisione (es. tentare al momento di massimo avvicinamento, non al primo ingresso in raggio) richiede test approfonditi su altre gare prima di toccare una logica già più volte tarata sul campo.
