@@ -138,7 +138,7 @@ class ClassificaEngine {
     // preoccupazione principale di questa Parte.
     var computed = rawEntries.map((e) {
       final variant = event.routeVariant(e.routeIdUsed) ?? event.routeAAsVariant;
-      final speciali = _computeSpeciali(variant, e.passages,
+      final speciali = computeSpeciali(variant, e.passages,
           e.speedZoneViolations, penalties, e.memberIds, officialTimesByUserId);
       final cpTotale = speciali.fold(Duration.zero, (acc, s) => acc + s.tempo);
       final ritiroPenaltySeconds =
@@ -217,7 +217,13 @@ class ClassificaEngine {
     return _rankByTime(computed);
   }
 
-  static List<SpecialTempo> _computeSpeciali(
+  /// Reso pubblico (Step 47, Parte 2C) — riusato anche da
+  /// `TrainingClassificaEngine` (allenamento: miglior tempo per PS fra i
+  /// tentativi, senza forfait/penalità squadra incompleta, applicati
+  /// invece qui in [compute] PASSO 2/[_RawEntry]). Nessuna logica
+  /// cambiata, solo la visibilità: il calcolo del tempo/CP/zone velocità
+  /// per una singola PS da un elenco di passaggi è identico nei due casi.
+  static List<SpecialTempo> computeSpeciali(
       RouteVariantModel variant,
       List<WaypointPassageRecord> passages,
       List<SpeedZoneViolation> speedZoneViolations,

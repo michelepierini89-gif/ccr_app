@@ -1,4 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../core/models/attempt_model.dart';
 import '../../../core/models/event_model.dart';
 import '../../../core/models/registration_model.dart';
 import '../../../core/models/team_model.dart';
@@ -34,6 +35,16 @@ final liveTrackingProvider =
 final eventStreamProvider =
     StreamProvider.family<EventModel?, String>((ref, id) {
   return ref.watch(firestoreServiceProvider).getEventById(id);
+});
+
+/// Step 47, Parte 2B/2E — tentativi di un pilota su un evento di
+/// allenamento, più recente prima. Usato dalla vista admin "tentativi per
+/// pilota" e dall'elenco tentativi lato pilota.
+final attemptsStreamProvider = StreamProvider.family<List<AttemptModel>,
+    ({String eventId, String userId})>((ref, key) {
+  return ref
+      .watch(firestoreServiceProvider)
+      .attemptsStream(key.eventId, key.userId);
 });
 
 /// Elenco utenti registrati all'app (Step 42) — schermata admin dedicata,

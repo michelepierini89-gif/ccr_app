@@ -91,6 +91,38 @@ class LocationUtils {
     return sqrt(dx * dx + dy * dy);
   }
 
+  /// Come [distanceToSegmentMeters] ma ritorna anche la frazione `t`
+  /// (0=A, 1=B) del punto proiettato sul segmento — usata da
+  /// `TrackChainage` (Step 47) per interpolare la progressiva
+  /// chilometrica. Duplica la geometria di [distanceToSegmentMeters]
+  /// invece di farla dipendere da questo metodo: quella è usata da
+  /// checkpoint/porte virtuali, meglio non introdurre un accoppiamento in
+  /// un punto già delicato.
+  static (double distanceM, double t) projectOntoSegment(
+    double pointLat,
+    double pointLng,
+    double aLat,
+    double aLng,
+    double bLat,
+    double bLng,
+  ) {
+    final p = toLocalMeters(aLat, aLng, pointLat, pointLng);
+    final b = toLocalMeters(aLat, aLng, bLat, bLng);
+    final abx = b[0], aby = b[1];
+    final apx = p[0], apy = p[1];
+    final abLenSq = abx * abx + aby * aby;
+    if (abLenSq < 1e-9) {
+      return (sqrt(apx * apx + apy * apy), 0.0);
+    }
+    var t = (apx * abx + apy * aby) / abLenSq;
+    t = t.clamp(0.0, 1.0);
+    final closestX = abx * t;
+    final closestY = aby * t;
+    final dx = apx - closestX;
+    final dy = apy - closestY;
+    return (sqrt(dx * dx + dy * dy), t);
+  }
+
   static String formatTimestamp(DateTime dt) {
     final ms = dt.millisecondsSinceEpoch % 1000;
     final tenths = (ms / 100).floor();

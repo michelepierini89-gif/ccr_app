@@ -5,6 +5,15 @@ import 'waypoint_model.dart';
 
 enum EventStatus { bozza, aperto, inCorso, concluso, archiviata }
 
+/// Step 47, Parte 2A — `gara` (default, tutti gli eventi esistenti) o
+/// `allenamento` (tentativi multipli ripetibili, nessun ordine di
+/// partenza/tempo massimo, `data` è apertura non svolgimento — vedi
+/// [EventModel.tipoEvento]). Il default `gara` garantisce
+/// retrocompatibilità senza migrazione: un evento esistente senza questo
+/// campo in Firestore viene letto come `gara`, comportamento identico a
+/// prima dell'introduzione del campo.
+enum EventType { gara, allenamento }
+
 class StartingSlot {
   final String teamName;
   final DateTime startTime;
@@ -88,6 +97,7 @@ class EventModel {
   final DateTime data;
   final String descrizione;
   final EventStatus stato;
+  final EventType tipoEvento;
   final String createdBy;
   final DateTime createdAt;
   final int minSquadra;
@@ -147,6 +157,7 @@ class EventModel {
     this.activeRouteId = 'A',
     this.routeChangeLog = const [],
     required this.stato,
+    this.tipoEvento = EventType.gara,
     required this.createdBy,
     required this.createdAt,
     this.minSquadra = 2,
@@ -184,6 +195,12 @@ class EventModel {
       stato: EventStatus.values.firstWhere(
         (e) => e.name == (d['stato'] ?? 'bozza'),
         orElse: () => EventStatus.bozza,
+      ),
+      // Retrocompatibilità (Parte 2A): un documento esistente senza questo
+      // campo viene letto come 'gara', comportamento identico a prima.
+      tipoEvento: EventType.values.firstWhere(
+        (e) => e.name == (d['tipoEvento'] ?? 'gara'),
+        orElse: () => EventType.gara,
       ),
       createdBy: d['createdBy'] ?? '',
       createdAt: (d['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
@@ -228,6 +245,7 @@ class EventModel {
         'activeRouteId': activeRouteId,
         'routeChangeLog': routeChangeLog.map((e) => e.toMap()).toList(),
         'stato': stato.name,
+        'tipoEvento': tipoEvento.name,
         'createdBy': createdBy,
         'createdAt': Timestamp.fromDate(createdAt),
         'minSquadra': minSquadra,
@@ -276,6 +294,8 @@ class EventModel {
   DateTime? get lastRouteChangeAt =>
       routeChangeLog.isEmpty ? null : routeChangeLog.last.timestamp;
 
+  bool get isAllenamento => tipoEvento == EventType.allenamento;
+
   EventModel copyWith({
     String? nome,
     String? luogo,
@@ -290,6 +310,7 @@ class EventModel {
     String? activeRouteId,
     List<RouteChangeLogEntry>? routeChangeLog,
     EventStatus? stato,
+    EventType? tipoEvento,
     int? minSquadra,
     int? maxSquadra,
     TipologiaClassifica? tipologiaClassifica,
@@ -318,6 +339,7 @@ class EventModel {
         activeRouteId: activeRouteId ?? this.activeRouteId,
         routeChangeLog: routeChangeLog ?? this.routeChangeLog,
         stato: stato ?? this.stato,
+        tipoEvento: tipoEvento ?? this.tipoEvento,
         createdBy: createdBy,
         createdAt: createdAt,
         minSquadra: minSquadra ?? this.minSquadra,

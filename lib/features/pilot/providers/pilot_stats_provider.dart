@@ -42,6 +42,10 @@ final pilotStatsProvider = FutureProvider<PilotStatsModel>((ref) async {
   final teamNameDisplay = <String, String>{};
 
   for (final event in allEvents) {
+    // Step 47, Parte 2F — gli allenamenti non contribuiscono alle
+    // statistiche di gara (vittorie/podi/speciali vinte): hanno una
+    // sezione statistiche dedicata, vedi trainingStatsProvider.
+    if (event.isAllenamento) continue;
     final reg = await svc.getMyRegistration(event.id, user.uid);
     if (reg == null || reg.stato != RegistrationStatus.approvato) continue;
     gareDisputate++;

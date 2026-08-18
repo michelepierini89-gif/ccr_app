@@ -29,6 +29,10 @@ class _CreateEventScreenState extends ConsumerState<CreateEventScreen> {
   int _maxRaceTimeH = 4;
   int _maxRaceTimeM = 30;
   bool _isLoading = false;
+  // Step 47, Parte 2E — scelta del tipo, campi non pertinenti (tempo
+  // massimo gara) nascosti quando si sceglie allenamento (Parte 2A: nessun
+  // tempo massimo/ritiro automatico per questo tipo).
+  EventType _tipoEvento = EventType.gara;
 
   @override
   void dispose() {
@@ -67,7 +71,8 @@ class _CreateEventScreenState extends ConsumerState<CreateEventScreen> {
       return;
     }
     final totalMinutes = _maxRaceTimeH * 60 + _maxRaceTimeM;
-    if (totalMinutes < 30 || totalMinutes > 720) {
+    final isAllenamento = _tipoEvento == EventType.allenamento;
+    if (!isAllenamento && (totalMinutes < 30 || totalMinutes > 720)) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('Tempo massimo: tra 30 minuti e 12 ore'),
         backgroundColor: AppColors.error,
@@ -85,12 +90,15 @@ class _CreateEventScreenState extends ConsumerState<CreateEventScreen> {
         descrizione: _descrizioneCtrl.text.trim(),
         specialiRouteA: const [],
         stato: EventStatus.bozza,
+        tipoEvento: _tipoEvento,
         createdBy: uid,
         createdAt: DateTime.now(),
         minSquadra: _minSquadra,
         maxSquadra: _maxSquadra,
         tipologiaClassifica: _tipologia,
-        maxRaceTimeMinutes: totalMinutes,
+        // Irrilevante per l'allenamento (Parte 2A: nessun tempo massimo),
+        // valore di default lasciato per coerenza col fallback del model.
+        maxRaceTimeMinutes: isAllenamento ? 270 : totalMinutes,
       );
       final id = await ref.read(firestoreServiceProvider).createEvent(event);
       if (!mounted) return;
@@ -125,6 +133,14 @@ class _CreateEventScreenState extends ConsumerState<CreateEventScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // ── Tipo evento (Step 47, Parte 2E) ──
+              _SectionLabel('Tipo evento'),
+              const SizedBox(height: 12),
+              _EventTypeSelector(
+                value: _tipoEvento,
+                onChanged: (v) => setState(() => _tipoEvento = v),
+              ),
+              const SizedBox(height: 24),
               CcrTextField(
                 label: 'Nome evento *',
                 controller: _nomeCtrl,
@@ -163,8 +179,11 @@ class _CreateEventScreenState extends ConsumerState<CreateEventScreen> {
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text('Data evento',
-                              style: TextStyle(
+                          Text(
+                              _tipoEvento == EventType.allenamento
+                                  ? 'Data apertura'
+                                  : 'Data evento',
+                              style: const TextStyle(
                                   color: AppColors.textSecondary,
                                   fontSize: 12)),
                           Text(
@@ -242,46 +261,49 @@ class _CreateEventScreenState extends ConsumerState<CreateEventScreen> {
                 value: _tipologia,
                 onChanged: (v) => setState(() => _tipologia = v),
               ),
-              const SizedBox(height: 24),
-              // ── Tempo massimo gara ──
-              _SectionLabel('Tempo massimo gara'),
-              const SizedBox(height: 4),
-              Text(
-                'Min 30 min — Max 12 ore  (default: 4h 30min)',
-                style: const TextStyle(
-                    color: AppColors.textSecondary, fontSize: 11),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: _StepperField(
-                      label: 'Ore',
-                      value: _maxRaceTimeH,
-                      min: 0,
-                      max: 12,
-                      onChanged: (v) => setState(() => _maxRaceTimeH = v),
+              // Tempo massimo gara — non pertinente per l'allenamento
+              // (Parte 2A: nessun tempo massimo/ritiro automatico).
+              if (_tipoEvento == EventType.gara) ...[
+                const SizedBox(height: 24),
+                _SectionLabel('Tempo massimo gara'),
+                const SizedBox(height: 4),
+                const Text(
+                  'Min 30 min — Max 12 ore  (default: 4h 30min)',
+                  style: TextStyle(
+                      color: AppColors.textSecondary, fontSize: 11),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _StepperField(
+                        label: 'Ore',
+                        value: _maxRaceTimeH,
+                        min: 0,
+                        max: 12,
+                        onChanged: (v) => setState(() => _maxRaceTimeH = v),
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: _StepperField(
-                      label: 'Minuti',
-                      value: _maxRaceTimeM,
-                      min: 0,
-                      max: 55,
-                      step: 5,
-                      onChanged: (v) => setState(() => _maxRaceTimeM = v),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: _StepperField(
+                        label: 'Minuti',
+                        value: _maxRaceTimeM,
+                        min: 0,
+                        max: 55,
+                        step: 5,
+                        onChanged: (v) => setState(() => _maxRaceTimeM = v),
+                      ),
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'Totale: ${_maxRaceTimeH}h ${_maxRaceTimeM.toString().padLeft(2, '0')}min'
-                ' (${_maxRaceTimeH * 60 + _maxRaceTimeM} min)',
-                style: const TextStyle(color: AppColors.accent, fontSize: 12),
-              ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Totale: ${_maxRaceTimeH}h ${_maxRaceTimeM.toString().padLeft(2, '0')}min'
+                  ' (${_maxRaceTimeH * 60 + _maxRaceTimeM} min)',
+                  style: const TextStyle(color: AppColors.accent, fontSize: 12),
+                ),
+              ],
               const SizedBox(height: 32),
               CcrButton(
                 label: 'Salva evento',
@@ -403,6 +425,63 @@ class _StepperField extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _EventTypeSelector extends StatelessWidget {
+  final EventType value;
+  final void Function(EventType) onChanged;
+
+  const _EventTypeSelector({required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: EventType.values.map((t) {
+        final selected = value == t;
+        final label = t == EventType.gara ? 'Gara' : 'Allenamento';
+        final icon = t == EventType.gara ? Icons.flag : Icons.repeat;
+        return Expanded(
+          child: GestureDetector(
+            onTap: () => onChanged(t),
+            child: Container(
+              margin: EdgeInsets.only(
+                  right: t == EventType.gara ? 8 : 0,
+                  left: t == EventType.allenamento ? 8 : 0),
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              decoration: BoxDecoration(
+                color: selected
+                    ? AppColors.accent.withValues(alpha: 0.12)
+                    : AppColors.cardBackground,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: selected ? AppColors.accent : AppColors.border,
+                  width: selected ? 2 : 1,
+                ),
+              ),
+              child: Column(
+                children: [
+                  Icon(icon,
+                      size: 20,
+                      color: selected
+                          ? AppColors.accent
+                          : AppColors.textSecondary),
+                  const SizedBox(height: 6),
+                  Text(label,
+                      style: TextStyle(
+                          color: selected
+                              ? AppColors.textPrimary
+                              : AppColors.textSecondary,
+                          fontSize: 13,
+                          fontWeight:
+                              selected ? FontWeight.w600 : FontWeight.normal)),
+                ],
+              ),
+            ),
+          ),
+        );
+      }).toList(),
     );
   }
 }

@@ -120,6 +120,54 @@ class _EventManagementScreenState
     }
   }
 
+  /// Step 47, Parte 2D — chiude un evento di allenamento: la classifica si
+  /// congela (nessun nuovo tentativo ammesso, vedi GpsRecordingScreen), ma
+  /// l'evento resta consultabile (mai eliminato/nascosto).
+  Future<void> _closeTrainingEvent(
+      BuildContext context, EventModel event) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardBackground,
+        title: const Text('Chiudi allenamento',
+            style: TextStyle(color: AppColors.textPrimary)),
+        content: Text(
+          'Vuoi chiudere "${event.nome}"? La classifica si congela e non '
+          'sarà più possibile avviare nuovi tentativi. L\'evento resterà '
+          'consultabile.',
+          style: const TextStyle(color: AppColors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annulla',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
+            child: const Text('Chiudi allenamento'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !context.mounted) return;
+    // 'archiviata' (non 'concluso'): getOpenEvents() legge solo
+    // 'aperto'/'inCorso' — un evento 'concluso' sparirebbe da entrambe le
+    // liste pilota. 'archiviata' lo fa comparire nella sezione "passate"
+    // già esistente, dove resta consultabile — esattamente il
+    // comportamento richiesto (mai toccato dall'autoArchiveEvents Cloud
+    // Function, che esclude esplicitamente il tipo allenamento).
+    await ref
+        .read(firestoreServiceProvider)
+        .updateEvent(event.copyWith(stato: EventStatus.archiviata));
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text('Allenamento chiuso'),
+      backgroundColor: AppColors.success,
+    ));
+  }
+
   Future<void> _deleteEvent(BuildContext context, EventModel event) async {
     final first = await showDialog<bool>(
       context: context,
@@ -650,6 +698,24 @@ class _EventManagementScreenState
               onPressed: () => context.pop(),
             ),
             actions: [
+              // Step 47, Parte 2D — solo l'admin chiude un evento di
+              // allenamento, con conferma esplicita: alla chiusura la
+              // classifica si congela (nessun nuovo tentativo), l'evento
+              // resta consultabile.
+              if (event.tipoEvento == EventType.allenamento) ...[
+                IconButton(
+                  icon: const Icon(Icons.list_alt),
+                  tooltip: 'Tentativi per pilota',
+                  onPressed: () =>
+                      context.push('/admin/event/${event.id}/training-attempts'),
+                ),
+                if (event.stato != EventStatus.archiviata)
+                  IconButton(
+                    icon: const Icon(Icons.lock_outline),
+                    tooltip: 'Chiudi allenamento',
+                    onPressed: () => _closeTrainingEvent(context, event),
+                  ),
+              ],
               IconButton(
                 icon: const Icon(Icons.tune),
                 tooltip: 'Penalità evento',

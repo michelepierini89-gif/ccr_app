@@ -33,4 +33,11 @@ class FirebaseConstants {
   // poter risolvere la variante di OGNI pilota anche quando la guarda un
   // altro pilota, non solo l'admin.
   static const String routeVariantByUser = 'routeVariantByUser';
+  // Eventi di allenamento (Step 47, Parte 2): tentativi multipli per
+  // pilota, sottocollezione di tracking/{eventId}/pilots/{userId} — ogni
+  // tentativo è una sessione completa e indipendente (proprio
+  // fullTrackChunks/passages/speedZoneViolations annidati), la struttura
+  // usata dagli eventi di gara (documento pilota singolo, passages piatto
+  // sull'evento) resta invariata.
+  static const String attempts = 'attempts';
 }

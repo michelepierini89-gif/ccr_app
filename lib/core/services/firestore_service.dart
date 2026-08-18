@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:latlong2/latlong.dart';
 import '../constants/firebase_constants.dart';
 import '../models/app_notification_model.dart';
+import '../models/attempt_model.dart';
 import '../models/championship_model.dart';
 import '../models/cp_dispute_model.dart';
 import '../models/event_model.dart';
@@ -369,13 +370,10 @@ class FirestoreService {
   /// `GpsRecordingScreen`, flush incrementale) — è un unico campo array
   /// lat/lng, economico da riscrivere per intero ad ogni flush.
   Future<void> savePilotTrack(
-          String eventId, String userId, List<LatLng> track) =>
-      _withTokenRefreshRetry(() => _db
-          .collection(FirebaseConstants.tracking)
-          .doc(eventId)
-          .collection(FirebaseConstants.pilots)
-          .doc(userId)
-          .set({
+          String eventId, String userId, List<LatLng> track,
+          {String? attemptId}) =>
+      _withTokenRefreshRetry(() =>
+          _pilotOrAttemptDocRef(eventId, userId, attemptId: attemptId).set({
             'pilotTrack': track
                 .map((p) => {'lat': p.latitude, 'lng': p.longitude})
                 .toList(),
@@ -422,13 +420,29 @@ class FirestoreService {
   /// cancellato invece di contenere il nuovo `set`) — separarli in due
   /// commit elimina l'ambiguità alla radice invece di dipendere da un
   /// comportamento non garantito.
+  /// Documento pilota (`tracking/{eventId}/pilots/{userId}`, gara) o
+  /// documento tentativo (`.../pilots/{userId}/attempts/{attemptId}`,
+  /// allenamento — Step 47, Parte 2B) se [attemptId] è specificato. Un solo
+  /// helper riusato da tutti i metodi di storage traccia sotto: nessuna
+  /// logica duplicata tra i due path, la struttura usata dagli eventi di
+  /// gara resta esattamente quella di sempre quando [attemptId] è null.
+  DocumentReference<Map<String, dynamic>> _pilotOrAttemptDocRef(
+    String eventId,
+    String userId, {
+    String? attemptId,
+  }) {
+    final pilotDoc = _db
+        .collection(FirebaseConstants.tracking)
+        .doc(eventId)
+        .collection(FirebaseConstants.pilots)
+        .doc(userId);
+    if (attemptId == null) return pilotDoc;
+    return pilotDoc.collection(FirebaseConstants.attempts).doc(attemptId);
+  }
+
   CollectionReference<Map<String, dynamic>> _fullTrackChunksRef(
-          String eventId, String userId) =>
-      _db
-          .collection(FirebaseConstants.tracking)
-          .doc(eventId)
-          .collection(FirebaseConstants.pilots)
-          .doc(userId)
+          String eventId, String userId, {String? attemptId}) =>
+      _pilotOrAttemptDocRef(eventId, userId, attemptId: attemptId)
           .collection(FirebaseConstants.fullTrackChunks);
 
   /// Cancella i chunk residui di una sessione precedente (se presenti) senza
@@ -439,9 +453,11 @@ class FirestoreService {
   /// passo, gli id zero-padded di una sessione precedente più lunga
   /// resterebbero mescolati a quelli della sessione nuova.
   Future<void> resetFullPilotTrackForNewSession(
-          String eventId, String userId) =>
+          String eventId, String userId, {String? attemptId}) =>
       _withTokenRefreshRetry(() async {
-        final existing = await _fullTrackChunksRef(eventId, userId).get();
+        final existing =
+            await _fullTrackChunksRef(eventId, userId, attemptId: attemptId)
+                .get();
         if (existing.docs.isEmpty) return;
         final deleteBatch = _db.batch();
         for (final doc in existing.docs) {
@@ -451,9 +467,11 @@ class FirestoreService {
       });
 
   Future<void> saveFullPilotTrack(
-          String eventId, String userId, List<RawTrackSample> samples) =>
+          String eventId, String userId, List<RawTrackSample> samples,
+          {String? attemptId}) =>
       _withTokenRefreshRetry(() async {
-        final chunksRef = _fullTrackChunksRef(eventId, userId);
+        final chunksRef =
+            _fullTrackChunksRef(eventId, userId, attemptId: attemptId);
 
         final existing = await chunksRef.get();
         if (existing.docs.isNotEmpty) {
@@ -477,14 +495,18 @@ class FirestoreService {
 
         // Campo legacy sul documento pilota: mantenuto vuoto/rimosso per non
         // lasciare doppioni, ma senza toccare gli altri campi del documento
-        // (raceStatus, pilotTrack, waypointPassati, ...).
-        await _db
-            .collection(FirebaseConstants.tracking)
-            .doc(eventId)
-            .collection(FirebaseConstants.pilots)
-            .doc(userId)
-            .set({'pilotTrackFull': FieldValue.delete()},
-                SetOptions(merge: true));
+        // (raceStatus, pilotTrack, waypointPassati, ...). Solo per la
+        // struttura di gara: i tentativi non hanno mai avuto il campo
+        // legacy singolo, nulla da ripulire.
+        if (attemptId == null) {
+          await _db
+              .collection(FirebaseConstants.tracking)
+              .doc(eventId)
+              .collection(FirebaseConstants.pilots)
+              .doc(userId)
+              .set({'pilotTrackFull': FieldValue.delete()},
+                  SetOptions(merge: true));
+        }
       });
 
   static List<Map<String, dynamic>> _encodeSamples(
@@ -516,10 +538,12 @@ class FirestoreService {
     String userId,
     List<RawTrackSample> newSamples, {
     required int startIndex,
+    String? attemptId,
   }) {
     if (newSamples.isEmpty) return Future.value();
     return _withTokenRefreshRetry(() async {
-      final chunksRef = _fullTrackChunksRef(eventId, userId);
+      final chunksRef =
+          _fullTrackChunksRef(eventId, userId, attemptId: attemptId);
 
       final writeBatch = _db.batch();
       for (var i = 0; i < newSamples.length; i += _fullTrackChunkSize) {
@@ -543,12 +567,9 @@ class FirestoreService {
   /// salvate prima di questo fix e ancora presenti (sotto 1 MiB, quindi mai
   /// state colpite dal bug).
   Future<List<RawTrackSample>> getFullPilotTrack(
-      String eventId, String userId) async {
-    final pilotDocRef = _db
-        .collection(FirebaseConstants.tracking)
-        .doc(eventId)
-        .collection(FirebaseConstants.pilots)
-        .doc(userId);
+      String eventId, String userId, {String? attemptId}) async {
+    final pilotDocRef =
+        _pilotOrAttemptDocRef(eventId, userId, attemptId: attemptId);
 
     final chunks = await pilotDocRef
         .collection(FirebaseConstants.fullTrackChunks)
@@ -941,6 +962,173 @@ class FirestoreService {
         .where(FieldPath.documentId, isEqualTo: userId)
         .get();
     return snap.docs.where((d) => d.data()['stato'] == 'approvato').length;
+  }
+
+  // ── Eventi di allenamento — tentativi multipli (Step 47, Parte 2B) ─────
+  // Ogni tentativo è un documento indipendente sotto
+  // tracking/{eventId}/pilots/{userId}/attempts/{attemptId}, con le
+  // proprie sottocollezioni fullTrackChunks/passages/speedZoneViolations —
+  // stesso meccanismo a chunk della gara (vedi _pilotOrAttemptDocRef),
+  // MAI passages/speedZoneViolations piatte sull'evento come in gara: qui
+  // servono scoperte per tentativo, non per pilota.
+
+  CollectionReference<Map<String, dynamic>> _attemptsRef(
+          String eventId, String userId) =>
+      _db
+          .collection(FirebaseConstants.tracking)
+          .doc(eventId)
+          .collection(FirebaseConstants.pilots)
+          .doc(userId)
+          .collection(FirebaseConstants.attempts);
+
+  /// Crea un nuovo tentativo con `attemptNumber` = 1 + il numero di
+  /// tentativi già esistenti per questo pilota su questo evento (mai
+  /// riassegnato, letto una sola volta alla creazione).
+  Future<AttemptModel> createAttempt(String eventId, String userId) =>
+      _withTokenRefreshRetry(() async {
+        final existing = await _attemptsRef(eventId, userId).count().get();
+        final attemptNumber = (existing.count ?? 0) + 1;
+        final attempt = AttemptModel(
+          id: '',
+          eventId: eventId,
+          userId: userId,
+          attemptNumber: attemptNumber,
+          status: AttemptStatus.inProgress,
+          startedAt: DateTime.now(),
+        );
+        final ref =
+            await _attemptsRef(eventId, userId).add(attempt.toFirestoreCreate());
+        return AttemptModel(
+          id: ref.id,
+          eventId: eventId,
+          userId: userId,
+          attemptNumber: attemptNumber,
+          status: AttemptStatus.inProgress,
+          startedAt: attempt.startedAt,
+        );
+      });
+
+  /// Tutti i tentativi di [userId] su [eventId], più recente prima —
+  /// elenco pilota (Parte 2E) con i rispettivi tempi/stato.
+  Stream<List<AttemptModel>> attemptsStream(String eventId, String userId) =>
+      _attemptsRef(eventId, userId)
+          .orderBy('startedAt', descending: true)
+          .snapshots()
+          .map((s) => s.docs.map(AttemptModel.fromFirestore).toList());
+
+  /// Il tentativo in corso di [userId] su [eventId], se esiste — usato
+  /// all'avvio di `GpsRecordingScreen` per capire se riprendere una
+  /// sessione orfana (stesso pattern già in uso per la gara,
+  /// `race_session_guard.dart`) o iniziarne una nuova. Al più uno per
+  /// costruzione (un nuovo tentativo si crea solo dopo aver chiuso quello
+  /// precedente, vedi Parte 2B/2E).
+  Future<AttemptModel?> getInProgressAttempt(
+      String eventId, String userId) async {
+    final snap = await _attemptsRef(eventId, userId)
+        .where('status', isEqualTo: AttemptStatus.inProgress.name)
+        .limit(1)
+        .get();
+    if (snap.docs.isEmpty) return null;
+    return AttemptModel.fromFirestore(snap.docs.first);
+  }
+
+  /// Chiude un tentativo (completed/abandoned) — chiamato da FINE
+  /// GARA/RITIRO nella pipeline allenamento (mai per timeout: nessun
+  /// tempo massimo negli eventi di allenamento, vedi Parte 2A).
+  Future<void> updateAttemptStatus(
+    String eventId,
+    String userId,
+    String attemptId, {
+    required AttemptStatus status,
+    DateTime? finishedAt,
+    String? routeVariantId,
+  }) =>
+      _withTokenRefreshRetry(() {
+        final finishedAtTs =
+            finishedAt != null ? Timestamp.fromDate(finishedAt) : null;
+        return _attemptsRef(eventId, userId).doc(attemptId).set({
+          'status': status.name,
+          'finishedAt': ?finishedAtTs,
+          'routeVariantId': ?routeVariantId,
+        }, SetOptions(merge: true));
+      });
+
+  Future<void> recordAttemptWaypointPassage({
+    required String eventId,
+    required String userId,
+    required String attemptId,
+    required String waypointId,
+    required String waypointNome,
+    required DateTime timestamp,
+    bool recoveredStart = false,
+    bool recoveredEnd = false,
+    String? timingError,
+    String timingMethod = 'radius',
+  }) =>
+      _attemptsRef(eventId, userId).doc(attemptId).collection(FirebaseConstants.passages).add({
+        'userId': userId,
+        'waypointId': waypointId,
+        'waypointNome': waypointNome,
+        'timestamp': Timestamp.fromDate(timestamp),
+        if (recoveredStart) 'recoveredStart': true,
+        if (recoveredEnd) 'recoveredEnd': true,
+        'timingError': ?timingError,
+        'timingMethod': timingMethod,
+      });
+
+  Future<List<WaypointPassageRecord>> getAttemptPassagesOnce(
+      String eventId, String userId, String attemptId) async {
+    final snap = await _attemptsRef(eventId, userId)
+        .doc(attemptId)
+        .collection(FirebaseConstants.passages)
+        .get();
+    return snap.docs.map(WaypointPassageRecord.fromFirestore).toList();
+  }
+
+  Future<void> recordAttemptSpeedZoneViolation({
+    required String eventId,
+    required String userId,
+    required String attemptId,
+    required String zoneId,
+    required double avgSpeedKmh,
+    required double limitKmh,
+    required DateTime timestamp,
+  }) =>
+      _attemptsRef(eventId, userId)
+          .doc(attemptId)
+          .collection(FirebaseConstants.speedZoneViolations)
+          .add({
+        'userId': userId,
+        'zoneId': zoneId,
+        'avgSpeedKmh': avgSpeedKmh,
+        'limitKmh': limitKmh,
+        'timestamp': Timestamp.fromDate(timestamp),
+      });
+
+  Future<List<SpeedZoneViolation>> getAttemptSpeedZoneViolationsOnce(
+      String eventId, String userId, String attemptId) async {
+    final snap = await _attemptsRef(eventId, userId)
+        .doc(attemptId)
+        .collection(FirebaseConstants.speedZoneViolations)
+        .get();
+    return snap.docs.map(SpeedZoneViolation.fromFirestore).toList();
+  }
+
+  /// TUTTI i tentativi COMPLETATI di TUTTI i piloti su [eventId] — usato
+  /// dal motore classifica allenamento (Parte 2C, miglior tempo per PS fra
+  /// tutti i tentativi di tutta la squadra) e dalla vista admin "tentativi
+  /// per pilota" (Parte 2E). Collection group query sul nome
+  /// `attempts` (univoco nello schema, mai usato altrove) filtrata per
+  /// `eventId` — necessario perché il path non lo esprime direttamente in
+  /// una query su più pilot.
+  Future<List<AttemptModel>> getCompletedAttemptsForEvent(
+      String eventId) async {
+    final snap = await _db
+        .collectionGroup(FirebaseConstants.attempts)
+        .where('eventId', isEqualTo: eventId)
+        .where('status', isEqualTo: AttemptStatus.completed.name)
+        .get();
+    return snap.docs.map(AttemptModel.fromFirestore).toList();
   }
 
   Future<void> recordWaypointPassage({

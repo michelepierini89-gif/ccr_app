@@ -157,6 +157,23 @@ List<LatLng> _reconstructDisplayTrack(List<RawTrackSample> accepted,
   const kGpsWeight = 0.95; // ImuFusionService.updateWithGps
   const kMaxPredictionWindowS = 0.8; // ImuFusionService.kMaxPredictionWindowMs
   const kMinPredictionSpeedKmh = 5.0; // ImuFusionService.kMinPredictionSpeedKmh
+  // Step 47 — stessi parametri di ImuFusionService/GpsService per il
+  // taper del dead reckoning in curva: proiezione invariata sotto
+  // kCurvatureTaperStartDegS, annullata sopra kCurvatureTaperEndDegS,
+  // transizione lineare in mezzo. Angolare stimata dal bearing GPS grezzo
+  // fra segmenti consecutivi, smoothing esponenziale — stessa logica di
+  // GpsService._smoothedAngularVelocityDegS, non l'istanza reale (nessun
+  // GpsService in questo confronto offline).
+  const kCurvatureSmoothingAlpha = 0.3;
+  const kCurvatureTaperStartDegS = 10.0;
+  const kCurvatureTaperEndDegS = 50.0;
+  double taper(double angularVelDegS) {
+    if (angularVelDegS <= kCurvatureTaperStartDegS) return 1.0;
+    if (angularVelDegS >= kCurvatureTaperEndDegS) return 0.0;
+    return 1.0 -
+        (angularVelDegS - kCurvatureTaperStartDegS) /
+            (kCurvatureTaperEndDegS - kCurvatureTaperStartDegS);
+  }
 
   // predicted[i]: posizione mostrata appena PRIMA che arrivi accepted[i]
   // (per accepted[0] non c'è predizione: è l'anchor iniziale).
@@ -164,6 +181,9 @@ List<LatLng> _reconstructDisplayTrack(List<RawTrackSample> accepted,
   var correctedPos = predicted.first; // per la continuità della predizione
   double? lastKnownBearingDeg;
   double lastKnownSpeedKmh = 0.0;
+  double? lastRawBearingForCurvatureDeg;
+  DateTime? lastRawBearingTs;
+  double smoothedAngularVelocityDegS = 0.0;
 
   for (var i = 1; i < accepted.length; i++) {
     final prev = accepted[i - 1];
@@ -171,20 +191,25 @@ List<LatLng> _reconstructDisplayTrack(List<RawTrackSample> accepted,
     final dtS = curr.timestamp.difference(prev.timestamp).inMilliseconds / 1000.0;
 
     // Predizione dalla posizione CORRETTA precedente, usando SOLO ciò che
-    // era noto PRIMA di questo fix (bearing/velocità del segmento
-    // precedente) — questo è il valore che finisce nel confronto. Con
-    // [deadReckoningEnabled]=false resta ancorata (solo blend GPS sotto,
-    // nessuna estrapolazione) — la stessa disattivazione richiesta.
+    // era noto PRIMA di questo fix (bearing/velocità/curvatura del
+    // segmento precedente) — questo è il valore che finisce nel
+    // confronto. Con [deadReckoningEnabled]=false resta ancorata (solo
+    // blend GPS sotto, nessuna estrapolazione) — la stessa disattivazione
+    // richiesta.
     var predictedPos = correctedPos;
     if (deadReckoningEnabled &&
         lastKnownBearingDeg != null &&
         lastKnownSpeedKmh >= kMinPredictionSpeedKmh &&
         dtS > 0) {
       final predictS = dtS.clamp(0.0, kMaxPredictionWindowS);
-      final distM = (lastKnownSpeedKmh / 3.6) * predictS;
-      final dest = LocationUtils.destinationPoint(
-          correctedPos.latitude, correctedPos.longitude, lastKnownBearingDeg, distM);
-      predictedPos = LatLng(dest[0], dest[1]);
+      final distM = (lastKnownSpeedKmh / 3.6) *
+          predictS *
+          taper(smoothedAngularVelocityDegS);
+      if (distM > 0.001) {
+        final dest = LocationUtils.destinationPoint(correctedPos.latitude,
+            correctedPos.longitude, lastKnownBearingDeg, distM);
+        predictedPos = LatLng(dest[0], dest[1]);
+      }
     }
     predicted.add(predictedPos);
 
@@ -196,11 +221,29 @@ List<LatLng> _reconstructDisplayTrack(List<RawTrackSample> accepted,
       kGpsWeight * curr.lng + (1 - kGpsWeight) * predictedPos.longitude,
     );
 
-    // Ora "impariamo" bearing/velocità di QUESTO segmento — usati per
-    // predire il PROSSIMO, mai per il corrente (niente preveggenza).
+    // Ora "impariamo" bearing/velocità/curvatura di QUESTO segmento —
+    // usati per predire il PROSSIMO, mai per il corrente (niente
+    // preveggenza).
     if (dtS > 0) {
-      lastKnownBearingDeg =
+      final segBearingDeg =
           LocationUtils.bearingDegrees(prev.lat, prev.lng, curr.lat, curr.lng);
+      if (lastRawBearingForCurvatureDeg != null && lastRawBearingTs != null) {
+        final dtCurvS =
+            curr.timestamp.difference(lastRawBearingTs).inMilliseconds / 1000.0;
+        if (dtCurvS > 0) {
+          final bearingDiff =
+              ((segBearingDeg - lastRawBearingForCurvatureDeg + 540) % 360) -
+                  180;
+          final rawAngularVelDegS = bearingDiff.abs() / dtCurvS;
+          smoothedAngularVelocityDegS =
+              kCurvatureSmoothingAlpha * rawAngularVelDegS +
+                  (1 - kCurvatureSmoothingAlpha) * smoothedAngularVelocityDegS;
+        }
+      }
+      lastRawBearingForCurvatureDeg = segBearingDeg;
+      lastRawBearingTs = curr.timestamp;
+
+      lastKnownBearingDeg = segBearingDeg;
       final distM =
           LocationUtils.haversineDistance(prev.lat, prev.lng, curr.lat, curr.lng);
       lastKnownSpeedKmh = (distM / dtS) * 3.6;

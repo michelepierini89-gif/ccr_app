@@ -19,6 +19,7 @@ import '../services/imu_fusion_service.dart';
 import '../services/track_smoother.dart';
 import '../services/voice_alert_service.dart';
 import '../utils/kalman_filter.dart';
+import '../utils/track_chainage.dart';
 
 enum GpsMode { idle, transfer, inSpecial, nearWaypoint }
 
@@ -252,6 +253,13 @@ class GpsService extends ChangeNotifier {
   Position? _lastPosition;
   String? _activeEventId;
   String? _activeUserId;
+
+  /// Non null durante un tentativo di allenamento (Step 47, Parte 2B) —
+  /// instrada passaggi/violazioni verso la sottocollezione annidata
+  /// dell'attempt invece della struttura piatta di gara. Null per ogni
+  /// sessione di gara, invariato.
+  String? _attemptId;
+  String? get activeAttemptId => _attemptId;
   List<WaypointModel> _waypoints = [];
   List<SpecialModel> _specials = [];
   final Map<String, String> _inizioToSpecial = {};
@@ -277,6 +285,25 @@ class GpsService extends ChangeNotifier {
   // usa solo transitoriamente): serve a stimare la distanza tra un cluster
   // di jump scartati e il percorso atteso (vedi _flushJumpCluster).
   List<LatLng> _referenceTrack = const [];
+
+  // ── Progressiva chilometrica (Step 47) ──
+  // Sostituisce la distanza in linea d'aria per gli avvisi vocali/banner:
+  // su un percorso di montagna un punto vicino d'aria può essere
+  // lontanissimo da percorrere (tornante) o viceversa. Costruita una sola
+  // volta al caricamento del tracciato ([_resetSessionState]); ogni punto
+  // annunciabile vi si proietta una sola volta (progressiva fissa); il
+  // pilota vi si proietta ad ogni fix accettato.
+  TrackChainage? _chainage;
+  final Map<String, double> _chainageProgressiveByPointId = {};
+  double? _pilotProgressiveM;
+  double? _pilotOffTrackDistanceM;
+  int? _pilotChainageSegmentIdx;
+
+  // Oltre questa distanza dalla polilinea il pilota è considerato fuori
+  // traccia: gli avvisi basati sulla progressiva vengono sospesi invece di
+  // annunciare una distanza priva di senso (proiezione su un punto
+  // qualunque della traccia, non su dove si trova davvero il pilota).
+  static const double kChainageMaxOffTrackMeters = 150.0;
 
   // Zone a velocità controllata: i punti di inizio/fine sono iniettati in
   // _waypoints come WaypointType.intermedio sintetici (riusano la doppia
@@ -603,6 +630,18 @@ class GpsService extends ChangeNotifier {
   double? get alertDangerDistance => _alertDangerDistance;
   bool get isDangerBlinking => _dangerBlinking;
 
+  /// Distanza REALE da percorrere (Step 47) fino al punto annunciabile
+  /// [pointId] (waypoint inizio/fine PS, zona velocità, punto ristoro,
+  /// punto pericolo) — positiva se davanti, null se il pilota è fuori
+  /// traccia, il punto è già stato superato, o non è disponibile una
+  /// progressiva (nessun GPX caricato). Esposta per i banner visivi
+  /// (`gps_recording_screen.dart`): stessa distanza usata per gli avvisi
+  /// vocali, "voce e schermo devono dire la stessa cosa".
+  double? chainageDistanceTo(String pointId) {
+    final d = _chainageDistanceTo(pointId);
+    return (d != null && d > 0) ? d : null;
+  }
+
   /// Zona a velocità controllata in cui il pilota si trova attualmente
   /// (tra l'ingresso e l'uscita), o null se non è in nessuna zona. Usata
   /// per il banner live di velocità — a differenza della violazione (solo
@@ -721,6 +760,75 @@ class GpsService extends ChangeNotifier {
     ));
   }
 
+  /// Persiste un passaggio waypoint — gara (comportamento invariato,
+  /// incluso il fallback su coda offline) o tentativo di allenamento
+  /// (Step 47, Parte 2B: scritto nella sottocollezione annidata
+  /// dell'attempt invece che nella collezione piatta dell'evento).
+  /// Centralizza la sola scelta del path Firestore in base a [_attemptId]
+  /// — la logica di detection/recovery a monte resta identica per
+  /// entrambi (anche un passaggio 'forfait'/'recovery' viene scritto: la
+  /// regola "nessun tempo forfettario in allenamento" si applica a valle,
+  /// nel motore classifica dedicato, non qui).
+  ///
+  /// Nessuna coda offline per i tentativi: `OfflineQueueService.
+  /// queuePassage` risincronizza sempre sulla collezione piatta di gara
+  /// (mai attempt-aware) — instradarci un fallback di allenamento
+  /// scriverebbe nel posto sbagliato. Un tentativo è comunque a basso
+  /// rischio per definizione: se un passaggio va perso, il pilota rifà il
+  /// tentativo.
+  Future<void> _persistPassage({
+    required String waypointId,
+    required String waypointNome,
+    required DateTime timestamp,
+    bool recoveredStart = false,
+    bool recoveredEnd = false,
+    String? timingError,
+    String timingMethod = 'radius',
+  }) async {
+    if (_activeEventId == null || _activeUserId == null) return;
+    if (_attemptId != null) {
+      try {
+        await _firestoreService.recordAttemptWaypointPassage(
+          eventId: _activeEventId!,
+          userId: _activeUserId!,
+          attemptId: _attemptId!,
+          waypointId: waypointId,
+          waypointNome: waypointNome,
+          timestamp: timestamp,
+          recoveredStart: recoveredStart,
+          recoveredEnd: recoveredEnd,
+          timingError: timingError,
+          timingMethod: timingMethod,
+        );
+      } catch (_) {
+        // Best-effort (vedi doc sopra): nessuna coda offline per i tentativi.
+      }
+      return;
+    }
+    try {
+      await _firestoreService.recordWaypointPassage(
+        eventId: _activeEventId!,
+        userId: _activeUserId!,
+        waypointId: waypointId,
+        waypointNome: waypointNome,
+        timestamp: timestamp,
+        recoveredStart: recoveredStart,
+        recoveredEnd: recoveredEnd,
+        timingError: timingError,
+        timingMethod: timingMethod,
+      );
+    } catch (_) {
+      await _offlineQueue.queuePassage(
+        eventId: _activeEventId!,
+        userId: _activeUserId!,
+        waypointId: waypointId,
+        waypointNome: waypointNome,
+        timestamp: timestamp,
+        timingMethod: timingMethod,
+      );
+    }
+  }
+
   Future<void> _trySpecialStartRecovery(
       LatLng currentPos, DateTime now) async {
     // Precondizione buffer (vedi costanti sopra): serve una storia recente
@@ -825,28 +933,13 @@ class GpsService extends ChangeNotifier {
       _diagLogger?.logRecovery(special.id, 'inizio_speciale');
 
       // Persist in Firestore with recoveredStart flag so admins can review it
-      if (_activeEventId != null && _activeUserId != null) {
-        try {
-          await _firestoreService.recordWaypointPassage(
-            eventId: _activeEventId!,
-            userId: _activeUserId!,
-            waypointId: inizioId,
-            waypointNome: special.waypointInizio.nome,
-            timestamp: entryTime,
-            recoveredStart: true,
-            timingMethod: resolution.timingMethod,
-          );
-        } catch (_) {
-          await _offlineQueue.queuePassage(
-            eventId: _activeEventId!,
-            userId: _activeUserId!,
-            waypointId: inizioId,
-            waypointNome: special.waypointInizio.nome,
-            timestamp: entryTime,
-            timingMethod: resolution.timingMethod,
-          );
-        }
-      }
+      await _persistPassage(
+        waypointId: inizioId,
+        waypointNome: special.waypointInizio.nome,
+        timestamp: entryTime,
+        recoveredStart: true,
+        timingMethod: resolution.timingMethod,
+      );
     }
   }
 
@@ -975,46 +1068,21 @@ class GpsService extends ChangeNotifier {
           : '⚠ ${prev.nome} non rilevata — penalità automatica');
       _diagLogger?.logRecovery(prev.id, 'speciale_saltata');
 
-      if (_activeEventId != null && _activeUserId != null) {
-        try {
-          await _firestoreService.recordWaypointPassage(
-            eventId: _activeEventId!,
-            userId: _activeUserId!,
-            waypointId: startWp.id,
-            waypointNome: startWp.nome,
-            timestamp: entryTime,
-            recoveredStart: recoveredStart,
-            timingMethod: startResolution.timingMethod,
-          );
-          await _firestoreService.recordWaypointPassage(
-            eventId: _activeEventId!,
-            userId: _activeUserId!,
-            waypointId: endWp.id,
-            waypointNome: endWp.nome,
-            timestamp: exitTime,
-            recoveredEnd: true,
-            timingError: timingError,
-            timingMethod: endResolution.timingMethod,
-          );
-        } catch (_) {
-          await _offlineQueue.queuePassage(
-            eventId: _activeEventId!,
-            userId: _activeUserId!,
-            waypointId: startWp.id,
-            waypointNome: startWp.nome,
-            timestamp: entryTime,
-            timingMethod: startResolution.timingMethod,
-          );
-          await _offlineQueue.queuePassage(
-            eventId: _activeEventId!,
-            userId: _activeUserId!,
-            waypointId: endWp.id,
-            waypointNome: endWp.nome,
-            timestamp: exitTime,
-            timingMethod: endResolution.timingMethod,
-          );
-        }
-      }
+      await _persistPassage(
+        waypointId: startWp.id,
+        waypointNome: startWp.nome,
+        timestamp: entryTime,
+        recoveredStart: recoveredStart,
+        timingMethod: startResolution.timingMethod,
+      );
+      await _persistPassage(
+        waypointId: endWp.id,
+        waypointNome: endWp.nome,
+        timestamp: exitTime,
+        recoveredEnd: true,
+        timingError: timingError,
+        timingMethod: endResolution.timingMethod,
+      );
     }
   }
 
@@ -1244,27 +1312,12 @@ class GpsService extends ChangeNotifier {
       _voiceAlerts?.announceCheckpointPassed(wp.id);
     }
 
-    if (_activeEventId != null && _activeUserId != null) {
-      try {
-        await _firestoreService.recordWaypointPassage(
-          eventId: _activeEventId!,
-          userId: _activeUserId!,
-          waypointId: wp.id,
-          waypointNome: wp.nome,
-          timestamp: passage.timestamp,
-          timingMethod: method,
-        );
-      } catch (_) {
-        await _offlineQueue.queuePassage(
-          eventId: _activeEventId!,
-          userId: _activeUserId!,
-          waypointId: wp.id,
-          waypointNome: wp.nome,
-          timestamp: passage.timestamp,
-          timingMethod: method,
-        );
-      }
-    }
+    await _persistPassage(
+      waypointId: wp.id,
+      waypointNome: wp.nome,
+      timestamp: passage.timestamp,
+      timingMethod: method,
+    );
   }
 
   /// Chiude una speciale ancora aperta (entry senza exitTime) all'indice
@@ -1350,29 +1403,14 @@ class GpsService extends ChangeNotifier {
     _passedWaypoints.add(endWp.id);
     _passages.add(WaypointPassage(waypoint: endWp, timestamp: exitTime));
 
-    if (_activeEventId != null && _activeUserId != null) {
-      try {
-        await _firestoreService.recordWaypointPassage(
-          eventId: _activeEventId!,
-          userId: _activeUserId!,
-          waypointId: endWp.id,
-          waypointNome: endWp.nome,
-          timestamp: exitTime,
-          recoveredEnd: true,
-          timingError: timingError,
-          timingMethod: resolution.timingMethod,
-        );
-      } catch (_) {
-        await _offlineQueue.queuePassage(
-          eventId: _activeEventId!,
-          userId: _activeUserId!,
-          waypointId: endWp.id,
-          waypointNome: endWp.nome,
-          timestamp: exitTime,
-          timingMethod: resolution.timingMethod,
-        );
-      }
-    }
+    await _persistPassage(
+      waypointId: endWp.id,
+      waypointNome: endWp.nome,
+      timestamp: exitTime,
+      recoveredEnd: true,
+      timingError: timingError,
+      timingMethod: resolution.timingMethod,
+    );
   }
 
   /// Chiude tutte le speciali ancora aperte (FIX 6): chiamato da FINE GARA
@@ -1410,6 +1448,23 @@ class GpsService extends ChangeNotifier {
     final avgSpeedKmh = (zone.lengthMeters / elapsedSeconds) * 3.6;
     if (avgSpeedKmh <= zone.maxSpeedKmh) return;
 
+    // Step 47, Parte 2B — restano attive per l'allenamento (a differenza
+    // del forfait/penalità squadra incompleta): servono ad allenarsi in
+    // condizioni realistiche, vedi richiesta.
+    if (_attemptId != null) {
+      _firestoreService
+          .recordAttemptSpeedZoneViolation(
+            eventId: _activeEventId!,
+            userId: _activeUserId!,
+            attemptId: _attemptId!,
+            zoneId: zone.id,
+            avgSpeedKmh: avgSpeedKmh,
+            limitKmh: zone.maxSpeedKmh,
+            timestamp: exitTs,
+          )
+          .catchError((_) {});
+      return;
+    }
     _firestoreService
         .recordSpeedZoneViolation(
           eventId: _activeEventId!,
@@ -1521,29 +1576,14 @@ class GpsService extends ChangeNotifier {
       _diagLogger?.logRecovery(special.id,
           closedFromOrphan ? 'chiusura_da_porta_orfana' : 'fine_speciale_retroattiva');
 
-      if (_activeEventId != null && _activeUserId != null) {
-        try {
-          await _firestoreService.recordWaypointPassage(
-            eventId: _activeEventId!,
-            userId: _activeUserId!,
-            waypointId: endWp.id,
-            waypointNome: endWp.nome,
-            timestamp: exitTime,
-            recoveredEnd: true,
-            timingError: closedFromOrphan ? 'chiusura_da_porta_orfana' : null,
-            timingMethod: resolution.timingMethod,
-          );
-        } catch (_) {
-          await _offlineQueue.queuePassage(
-            eventId: _activeEventId!,
-            userId: _activeUserId!,
-            waypointId: endWp.id,
-            waypointNome: endWp.nome,
-            timestamp: exitTime,
-            timingMethod: resolution.timingMethod,
-          );
-        }
-      }
+      await _persistPassage(
+        waypointId: endWp.id,
+        waypointNome: endWp.nome,
+        timestamp: exitTime,
+        recoveredEnd: true,
+        timingError: closedFromOrphan ? 'chiusura_da_porta_orfana' : null,
+        timingMethod: resolution.timingMethod,
+      );
     }
   }
 
@@ -1613,37 +1653,20 @@ class GpsService extends ChangeNotifier {
     _bestPassageByWaypoint[endWp.id] =
         (timestamp: now, timingMethod: 'forfait', distanceMeters: null);
 
-    if (_activeEventId != null && _activeUserId != null) {
-      try {
-        await _firestoreService.recordWaypointPassage(
-          eventId: _activeEventId!,
-          userId: _activeUserId!,
-          waypointId: startWp.id,
-          waypointNome: startWp.nome,
-          timestamp: entryTime,
-          timingError: 'speciale_saltata',
-          timingMethod: 'forfait',
-        );
-        await _firestoreService.recordWaypointPassage(
-          eventId: _activeEventId!,
-          userId: _activeUserId!,
-          waypointId: endWp.id,
-          waypointNome: endWp.nome,
-          timestamp: now,
-          timingError: 'speciale_saltata',
-          timingMethod: 'forfait',
-        );
-      } catch (_) {
-        await _offlineQueue.queuePassage(
-          eventId: _activeEventId!,
-          userId: _activeUserId!,
-          waypointId: endWp.id,
-          waypointNome: endWp.nome,
-          timestamp: now,
-          timingMethod: 'forfait',
-        );
-      }
-    }
+    await _persistPassage(
+      waypointId: startWp.id,
+      waypointNome: startWp.nome,
+      timestamp: entryTime,
+      timingError: 'speciale_saltata',
+      timingMethod: 'forfait',
+    );
+    await _persistPassage(
+      waypointId: endWp.id,
+      waypointNome: endWp.nome,
+      timestamp: now,
+      timingError: 'speciale_saltata',
+      timingMethod: 'forfait',
+    );
 
     _recoveryStreamCtrl.add('⏭ ${toSkip.nome} saltata — penalità applicata');
     _diagLogger?.logRecovery(toSkip.id, 'salto_manuale');
@@ -1818,6 +1841,89 @@ class GpsService extends ChangeNotifier {
     _lastRawPositionTs = null;
     _lastFirestoreUpdateTs = null;
     _isRestartingGps = false;
+
+    // Progressiva chilometrica (Step 47): costruita una sola volta qui,
+    // ogni punto annunciabile proiettato una sola volta sulla polilinea di
+    // riferimento. Nessuna traccia caricata (referenceTrack vuota, es.
+    // evento senza GPX): _chainage resta null, gli avvisi mantengono la
+    // sola logica a raggio esistente (nessuna regressione).
+    _pilotProgressiveM = null;
+    _pilotOffTrackDistanceM = null;
+    _pilotChainageSegmentIdx = null;
+    _chainageProgressiveByPointId.clear();
+    _chainage = referenceTrack.length >= 2
+        ? TrackChainage.build(referenceTrack)
+        : null;
+    if (_chainage != null) {
+      final chainage = _chainage!;
+      for (final s in specials) {
+        if (s.annullata) continue;
+        final pIni = chainage.project(
+            LatLng(s.waypointInizio.lat, s.waypointInizio.lng));
+        if (pIni != null) {
+          _chainageProgressiveByPointId[s.waypointInizio.id] = pIni.progressiveM;
+        }
+        final pFin =
+            chainage.project(LatLng(s.waypointFine.lat, s.waypointFine.lng));
+        if (pFin != null) {
+          _chainageProgressiveByPointId[s.waypointFine.id] = pFin.progressiveM;
+        }
+      }
+      for (final z in speedZones) {
+        final p = chainage.project(z.startLatLng);
+        if (p != null) _chainageProgressiveByPointId[z.id] = p.progressiveM;
+      }
+      for (final fp in fuelPoints) {
+        final p = chainage.project(LatLng(fp.lat, fp.lng));
+        if (p != null) _chainageProgressiveByPointId[fp.id] = p.progressiveM;
+      }
+      for (final dp in dangerPoints) {
+        final p = chainage.project(dp.latLng);
+        if (p != null) _chainageProgressiveByPointId[dp.id] = p.progressiveM;
+      }
+    }
+  }
+
+  /// Aggiorna la progressiva del pilota sulla traccia di riferimento (Step
+  /// 47) — chiamata una volta per fix accettato, PRIMA dei calcoli di
+  /// distanza per gli avvisi. Finestra di ricerca attorno all'ultimo
+  /// segmento noto, per non agganciarsi al segmento sbagliato dove il
+  /// percorso passa vicino a sé stesso (es. un tornante stretto).
+  void _updatePilotChainage(LatLng filteredPos) {
+    final chainage = _chainage;
+    if (chainage == null) {
+      _pilotProgressiveM = null;
+      _pilotOffTrackDistanceM = null;
+      return;
+    }
+    final proj = chainage.project(filteredPos,
+        searchStartIdx: _pilotChainageSegmentIdx);
+    if (proj == null) {
+      _pilotProgressiveM = null;
+      _pilotOffTrackDistanceM = null;
+      return;
+    }
+    _pilotProgressiveM = proj.progressiveM;
+    _pilotOffTrackDistanceM = proj.perpendicularDistanceM;
+    _pilotChainageSegmentIdx = proj.segmentIndex;
+  }
+
+  /// Distanza REALE da percorrere (metri, con segno) fino al punto
+  /// annunciabile [pointId] — positiva se davanti, negativa se superato,
+  /// null se il pilota è fuori traccia (>150m dalla polilinea, vedi
+  /// [kChainageMaxOffTrackMeters]) o se questo punto/l'evento non ha una
+  /// progressiva disponibile (nessun GPX caricato). In quel caso il
+  /// chiamante deve sospendere l'avviso basato sulla progressiva, non
+  /// ricadere sulla distanza in linea d'aria (annuncerebbe un numero privo
+  /// di senso, es. un tornante mostrato come "vicino").
+  double? _chainageDistanceTo(String pointId) {
+    final pilotProg = _pilotProgressiveM;
+    final offTrack = _pilotOffTrackDistanceM;
+    if (pilotProg == null || offTrack == null) return null;
+    if (offTrack > kChainageMaxOffTrackMeters) return null;
+    final pointProg = _chainageProgressiveByPointId[pointId];
+    if (pointProg == null) return null;
+    return pointProg - pilotProg;
   }
 
   Future<void> startRecording({
@@ -1842,6 +1948,10 @@ class GpsService extends ChangeNotifier {
     // deve esistere un percorso "che il chiamante ha dimenticato di
     // specificare".
     required String routeVariantId,
+    // Step 47, Parte 2B — non null per un tentativo di allenamento: vedi
+    // [_persistPassage]/[_attemptId]. Null (default) per ogni gara,
+    // comportamento invariato.
+    String? attemptId,
   }) async {
     if (_isRecording) return;
     final hasPermission = await requestPermissions();
@@ -1854,6 +1964,7 @@ class GpsService extends ChangeNotifier {
     _writesBlocked = false;
     _activeEventId = eventId;
     _activeUserId = userId;
+    _attemptId = attemptId;
     _resetSessionState(
       waypoints: waypoints,
       specials: specials,
@@ -1892,12 +2003,20 @@ class GpsService extends ChangeNotifier {
     WakelockPlus.enable().ignore();
     await _imu.start();
 
-    _firestoreService
-        .setRaceStatus(eventId, userId, 'racing', routeVariantId: routeVariantId)
-        .catchError((_) {});
-    _firestoreService
-        .saveRouteVariantUsed(eventId, userId, routeVariantId)
-        .catchError((_) {});
+    // Allenamento (Step 47, Parte 2B): niente raceStatus/routeVariantByUser
+    // (semantica di gara — stato 'racing'/'finished'/'retired', mappa
+    // routeVariantByUser condivisa fra TUTTI i tentativi di un pilota).
+    // Il tentativo è già 'inProgress' dalla sua creazione (vedi
+    // FirestoreService.createAttempt) e la variante percorso si salva sul
+    // singolo documento attempt, non su una mappa per-pilota.
+    if (attemptId == null) {
+      _firestoreService
+          .setRaceStatus(eventId, userId, 'racing', routeVariantId: routeVariantId)
+          .catchError((_) {});
+      _firestoreService
+          .saveRouteVariantUsed(eventId, userId, routeVariantId)
+          .catchError((_) {});
+    }
     _startPositionStream(AppConstants.gpsIntervalTransferMs);
   }
 
@@ -2431,9 +2550,19 @@ class GpsService extends ChangeNotifier {
       await _trySpecialEndRecovery(filteredPos, now);
       if (_disposed) return;
 
+      // Step 47 — progressiva del pilota sulla traccia, calcolata una
+      // volta per fix e riusata da tutti gli avvisi sotto (mai distanza
+      // in linea d'aria: su un percorso di montagna un punto vicino
+      // d'aria può essere lontanissimo da percorrere, e viceversa).
+      _updatePilotChainage(filteredPos);
+
       // Blocco D4: avvisi vocali di avvicinamento a inizio/fine PS e zone
       // a velocità controllata. Soglie/dedupe gestite interamente da
       // VoiceAlertService (D3) — qui solo il calcolo della distanza.
+      // Nessun avviso se il pilota è fuori traccia o senza GPX caricato
+      // (_chainageDistanceTo ritorna null): meglio nessun avviso che uno
+      // basato su una proiezione priva di senso. "Annuncia solo i punti
+      // davanti": distanza negativa (punto superato) esclusa anch'essa.
       if (_voiceAlerts != null) {
         if (_currentSpecialId == null) {
           final nextSpecial = _specials
@@ -2443,54 +2572,64 @@ class GpsService extends ChangeNotifier {
             ..sort((a, b) => a.ordine.compareTo(b.ordine));
           if (nextSpecial.isNotEmpty) {
             final next = nextSpecial.first;
-            final d = _haversineKm(filteredPos,
-                    LatLng(next.waypointInizio.lat, next.waypointInizio.lng)) *
-                1000.0;
-            _voiceAlerts.checkSpecialStartApproach(
-                next.id, _specialNumero(next.id), d);
+            final d = _chainageDistanceTo(next.waypointInizio.id);
+            if (d != null && d > 0) {
+              _voiceAlerts.checkSpecialStartApproach(
+                  next.id, _specialNumero(next.id), d);
+            }
           }
         } else {
           final current =
               _specials.where((s) => s.id == _currentSpecialId).firstOrNull;
           if (current != null) {
-            final d = _haversineKm(filteredPos,
-                    LatLng(current.waypointFine.lat, current.waypointFine.lng)) *
-                1000.0;
-            _voiceAlerts.checkSpecialEndApproach(
-                current.id, _specialNumero(current.id), d);
+            final d = _chainageDistanceTo(current.waypointFine.id);
+            if (d != null && d > 0) {
+              _voiceAlerts.checkSpecialEndApproach(
+                  current.id, _specialNumero(current.id), d);
+            }
           }
         }
 
         for (final zone in _speedZones) {
           if (_passedWaypoints.contains('${zone.id}_start')) continue;
-          final d = _haversineKm(filteredPos, zone.startLatLng) * 1000.0;
-          _voiceAlerts.checkSpeedZoneApproach(zone.id, d, zone.maxSpeedKmh);
+          final d = _chainageDistanceTo(zone.id);
+          if (d != null && d > 0) {
+            _voiceAlerts.checkSpeedZoneApproach(zone.id, d, zone.maxSpeedKmh);
+          }
         }
       }
     }
 
-    // Fuel point passage: mark as passed once within radius, notify exactly once.
-    // After this, the "approaching" banner stops even if a GPS jump brings the
-    // pilot virtually back near the fuel point.
+    // Fuel point passage: la distanza mostrata/annunciata è la progressiva
+    // (Step 47); il raggio di "raggiunto" resta fisico (distanza reale
+    // dal punto, non da percorrere — è il momento in cui il pilota è
+    // fisicamente lì).
     for (final fp in _fuelPoints) {
       if (_passedFuelPoints.contains(fp.id)) continue;
-      final distM = _haversineKm(filteredPos, LatLng(fp.lat, fp.lng)) * 1000.0;
-      _voiceAlerts?.checkFuelPointApproach(fp.id, distM);
-      if (distM <= AppConstants.fuelPointRadiusMeters) {
+      final physicalDistM = _haversineKm(filteredPos, LatLng(fp.lat, fp.lng)) * 1000.0;
+      final chainageDistM = _chainageDistanceTo(fp.id);
+      if (chainageDistM != null && chainageDistM > 0) {
+        _voiceAlerts?.checkFuelPointApproach(fp.id, chainageDistM);
+      }
+      if (physicalDistM <= AppConstants.fuelPointRadiusMeters) {
         _passedFuelPoints.add(fp.id);
         _fuelPointStreamCtrl.add('✅ Punto ristoro raggiunto');
       }
     }
 
-    // Punti pericolo: aggiorna soglie di prossimità avviso (150m) e allerta (50m)
+    // Punti pericolo: la classificazione vicino/allerta/superato (Blocco
+    // C, soglie 150/50/15m) resta sulla distanza FISICA — è prossimità
+    // reale al pericolo, non distanza da percorrere, e deve funzionare
+    // anche fuori traccia. La distanza mostrata/annunciata (Step 47) è
+    // invece la progressiva, calcolata solo per il pericolo effettivamente
+    // in allerta: se non disponibile (fuori traccia) l'avviso non viene
+    // aggiornato questo giro, invece di mostrare un numero in linea d'aria
+    // — voce e banner devono sempre dire la stessa cosa.
     final wasDangerNear = _alertedDangerPoints.isNotEmpty;
     DangerPointModel? warnPoint;
-    double? warnDist;
+    double? warnPhysicalDist;
     for (final dp in _dangerPoints) {
       final distM = WaypointDetector.dangerPointDistance(filteredPos, dp);
-      if (!_passedDangerPoints.contains(dp.id)) {
-        _voiceAlerts?.checkDangerApproach(dp.id, dp.comment, distM);
-      }
 
       // Superato (entro 15m): segna come passato permanentemente per la
       // sessione, notifica una sola volta e non mostrare più avvisi per
@@ -2514,22 +2653,48 @@ class GpsService extends ChangeNotifier {
         _alertedDangerPoints.remove(dp.id);
       }
       if (_alertedDangerPoints.contains(dp.id)) {
-        if (warnDist == null || distM < warnDist) {
-          warnDist = distM;
+        if (warnPhysicalDist == null || distM < warnPhysicalDist) {
+          warnPhysicalDist = distM;
           warnPoint = dp;
         }
       }
     }
-    _warningDangerPoint = warnPoint;
-    _warningDangerDistance = warnDist;
-    if (warnPoint != null && warnDist! <= AppConstants.dangerAlertRadiusMeters) {
+    // Distanza mostrata/annunciata (Step 47): progressiva del pericolo
+    // fisicamente più vicino selezionato sopra. Null se fuori traccia —
+    // il banner/voce restano fermi al valore precedente invece di
+    // mostrare un numero in linea d'aria (vedi commento in cima al blocco).
+    double? warnChainageDist;
+    if (warnPoint != null) {
+      final d = _chainageDistanceTo(warnPoint.id);
+      if (d != null && d > 0) {
+        warnChainageDist = d;
+        _voiceAlerts?.checkDangerApproach(warnPoint.id, warnPoint.comment, d);
+      }
+    }
+    if (warnChainageDist != null) {
+      _warningDangerPoint = warnPoint;
+      _warningDangerDistance = warnChainageDist;
+    } else if (warnPoint == null) {
+      _warningDangerPoint = null;
+      _warningDangerDistance = null;
+    }
+    // Se warnPoint != null ma warnChainageDist è null (fuori traccia): il
+    // warning banner resta al valore precedente, nessun aggiornamento.
+
+    // Stato di allerta (blinking, soglie 50m/60m): resta sulla distanza
+    // FISICA, prossimità reale al pericolo — deve funzionare anche fuori
+    // traccia, dove la progressiva non è disponibile.
+    if (warnPoint != null &&
+        warnPhysicalDist != null &&
+        warnPhysicalDist <= AppConstants.dangerAlertRadiusMeters) {
       _alertDangerPoint = warnPoint;
-      _alertDangerDistance = warnDist;
+      _alertDangerDistance = warnChainageDist ?? warnPhysicalDist;
       _dangerBlinking = true;
     } else if (_dangerBlinking) {
       if (warnPoint != null && warnPoint.id == _alertDangerPoint?.id) {
-        _alertDangerDistance = warnDist;
-        if (warnDist! > AppConstants.dangerAlertClearRadiusMeters) {
+        _alertDangerDistance = warnChainageDist ?? warnPhysicalDist;
+        if (warnPhysicalDist != null &&
+            warnPhysicalDist > AppConstants.dangerAlertClearRadiusMeters) {
           _dangerBlinking = false;
           _alertDangerPoint = null;
           _alertDangerDistance = null;
@@ -2613,6 +2778,10 @@ class GpsService extends ChangeNotifier {
       speedKmh: _geometricSpeedKmh,
       timestamp: now,
       gpsBearingDeg: _bearingDeg,
+      // Step 47 — stessa stima già usata per sigmaAccel adattivo (Step
+      // 46, bearing GPS, mai giroscopio): riduce il dead reckoning in
+      // curva senza introdurre una seconda stima ridondante.
+      angularVelocityDegS: _smoothedAngularVelocityDegS,
     );
 
     _safeNotify();
@@ -2654,6 +2823,7 @@ class GpsService extends ChangeNotifier {
     _mode = GpsMode.idle;
     _activeEventId = null;
     _activeUserId = null;
+    _attemptId = null;
     _currentSpecialId = null;
     _currentSpecialNome = null;
     _zoneEntryTimestamps.clear();

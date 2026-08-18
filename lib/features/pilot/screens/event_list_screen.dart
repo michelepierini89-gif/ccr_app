@@ -177,12 +177,42 @@ class EventListScreen extends ConsumerWidget {
 
           if (events.isEmpty && archived.isEmpty) return _buildEmpty(ref);
 
+          // Step 47, Parte 2E — sezione distinta per gli eventi di
+          // allenamento: sempre disponibili (mai una "data di svolgimento"
+          // passata a renderli meno rilevanti), separati dalle gare.
+          final races = events.where((e) => !e.isAllenamento).toList();
+          final trainings = events.where((e) => e.isAllenamento).toList();
+
           return ListView(
             padding: const EdgeInsets.only(top: 8, bottom: 24),
             children: [
               // Active events
-              for (final event in events)
+              for (final event in races)
                 _buildEventCard(context, event, myRegs),
+
+              if (trainings.isNotEmpty) ...[
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.repeat,
+                          color: AppColors.accent, size: 16),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Allenamenti',
+                        style: TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                for (final event in trainings)
+                  _buildEventCard(context, event, myRegs),
+              ],
 
               // Past events section
               if (archived.isNotEmpty) ...[

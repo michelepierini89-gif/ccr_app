@@ -100,6 +100,20 @@ Se la tappa fa parte di un campionato, i risultati confluiscono nella classifica
 
 ---
 
+## Allenamento
+
+Alcuni eventi sono di allenamento invece che di gara: nessun giorno fisso, nessun orario di partenza da rispettare, nessun tempo massimo. L'evento resta aperto finché l'organizzatore non lo chiude, e nel frattempo si può ripetere il percorso quante volte si vuole.
+
+Ogni ripetizione è un **tentativo** a sé: traccia, tempi e punti di controllo propri, indipendenti dagli altri tentativi. Alla fine di un tentativo si può subito iniziarne un altro.
+
+La classifica di squadra si costruisce diversamente dalla gara: per ogni speciale conta il **miglior tempo** ottenuto da un qualsiasi membro della squadra, in un qualsiasi tentativo, tra tutti quelli completati. Un pilota può allenarsi da solo e migliorare il record della squadra su una singola speciale — non serve essere al completo per contribuire. Le speciali mai completate semplicemente non concorrono, nessun tempo forfettario: si può sempre riprovare. Restano invece attive le penalità per i punti di controllo mancati e per le zone a velocità controllata, per allenarsi in condizioni realistiche.
+
+I risultati dell'allenamento **non contano** per le statistiche di gara del pilota né per la classifica di un campionato — un evento di allenamento non può farne parte. Compaiono però nella sezione statistiche dell'app, con i tentativi effettuati e i migliori tempi personali.
+
+Quando l'organizzatore chiude l'evento, la classifica si congela e non si possono più avviare nuovi tentativi — l'evento resta comunque consultabile.
+
+---
+
 ## Note
 
 - **Non è una gara.** È un giro tra amici. Il cronometro serve a divertirsi, non a farsi male.

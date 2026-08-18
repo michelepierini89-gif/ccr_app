@@ -549,7 +549,13 @@ class _ChampionshipManagementScreenState
                       error: (e, _) => Text('Errore: $e',
                           style:
                               const TextStyle(color: AppColors.error)),
-                      data: (events) {
+                      data: (allEvents) {
+                        // Step 47, Parte 2F — un evento di allenamento non
+                        // può essere assegnato a un campionato (nessuna
+                        // classifica di gara da sommare).
+                        final events = allEvents
+                            .where((e) => !e.isAllenamento)
+                            .toList();
                         if (events.isEmpty) {
                           return const Text(
                             'Nessun evento disponibile',

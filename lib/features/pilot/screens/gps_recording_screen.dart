@@ -11,6 +11,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import '../../../core/models/attempt_model.dart';
 import '../../../core/models/event_model.dart';
 import '../../../core/models/registration_model.dart';
 import '../../../core/models/waypoint_model.dart';
@@ -710,6 +711,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     final gps = ref.read(gpsServiceProvider);
     final finEventId = gps.activeEventId;
     final finUserId = ref.read(authStateProvider).valueOrNull?.uid;
+    final finAttemptId = gps.activeAttemptId;
     // FIX 6: chiude eventuali PS ancora aperte (fine non rilevata) prima
     // di bloccare le scritture — nessun effetto se tutte erano già chiuse
     // regolarmente.
@@ -720,19 +722,23 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     gps.blockFurtherWrites();
     if (finEventId != null && finUserId != null) {
       try {
-        await ref
-            .read(firestoreServiceProvider)
-            .setRaceStatus(finEventId, finUserId, 'finished',
-                finishedAt: DateTime.now());
+        final fs = ref.read(firestoreServiceProvider);
+        // Step 47, Parte 2B — allenamento: chiude il tentativo (mai
+        // raceStatus/withdrawal, semantica di gara) invece di 'finished'.
+        if (finAttemptId != null) {
+          await fs.updateAttemptStatus(finEventId, finUserId, finAttemptId,
+              status: AttemptStatus.completed, finishedAt: DateTime.now());
+        } else {
+          await fs.setRaceStatus(finEventId, finUserId, 'finished',
+              finishedAt: DateTime.now());
+        }
         if (finTrack.isNotEmpty) {
-          await ref
-              .read(firestoreServiceProvider)
-              .savePilotTrack(finEventId, finUserId, finTrack);
+          await fs.savePilotTrack(finEventId, finUserId, finTrack,
+              attemptId: finAttemptId);
         }
         if (finFullSamples.isNotEmpty) {
-          await ref
-              .read(firestoreServiceProvider)
-              .saveFullPilotTrack(finEventId, finUserId, finFullSamples);
+          await fs.saveFullPilotTrack(finEventId, finUserId, finFullSamples,
+              attemptId: finAttemptId);
         }
       } catch (e) {
         _diagLogger.logTrackSaveError('fine_gara', e);
@@ -745,6 +751,24 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     }
     await gps.stopRecording();
     setState(() => _elapsed = Duration.zero);
+    if (finAttemptId != null && mounted) {
+      _offerNewAttempt();
+    }
+  }
+
+  /// Step 47, Parte 2B/2E — "al termine di un tentativo, il pilota trova
+  /// esplicitamente la possibilità di iniziarne uno nuovo".
+  void _offerNewAttempt() {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: const Text('Tentativo concluso.'),
+      backgroundColor: AppColors.success,
+      duration: const Duration(seconds: 6),
+      action: SnackBarAction(
+        label: 'NUOVO TENTATIVO',
+        textColor: Colors.white,
+        onPressed: _startRace,
+      ),
+    ));
   }
 
   /// Handler dedicato al pulsante di avvio (vista pre-partenza). Vedi
@@ -772,6 +796,18 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
 
     try {
       final event = await ref.read(eventProvider(widget.eventId!).future);
+      // Step 47, Parte 2D — evento di allenamento chiuso: classifica
+      // congelata, nessun nuovo tentativo ammesso.
+      if (event != null &&
+          event.isAllenamento &&
+          event.stato == EventStatus.archiviata) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Questo allenamento è stato chiuso dall\'admin.'),
+          backgroundColor: AppColors.warning,
+        ));
+        return;
+      }
       final waypoints = <WaypointModel>[];
       if (event != null) {
         for (final s in event.activeSpeciali) {
@@ -780,6 +816,30 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           waypoints.add(s.waypointFine);
         }
       }
+      // Step 47, Parte 2B — allenamento: riprende il tentativo in corso
+      // (sessione orfana, es. app riavviata a metà) o ne crea uno nuovo.
+      // Nessun tempo massimo/ritiro automatico per questo tipo (Parte 2A).
+      String? attemptId;
+      if (event != null && event.isAllenamento) {
+        final fs = ref.read(firestoreServiceProvider);
+        final inProgress = await fs.getInProgressAttempt(widget.eventId!, user.uid);
+        if (inProgress != null) {
+          attemptId = inProgress.id;
+          // Ripresa (Parte 2B): traccia grezza azzerata come per una
+          // sessione orfana di gara (discardOrphanSession) — i passaggi
+          // waypoint già registrati prima dell'interruzione restano
+          // validi (scritti subito su Firestore, non bufferizzati
+          // localmente), solo la traccia GPS locale riparte da zero.
+          await fs
+              .resetFullPilotTrackForNewSession(widget.eventId!, user.uid,
+                  attemptId: attemptId)
+              .catchError((_) {});
+        } else {
+          final created = await fs.createAttempt(widget.eventId!, user.uid);
+          attemptId = created.id;
+        }
+      }
+
       // Fix (bug test 18/08) — azzera eventuali chunk di una sessione
       // precedente per questo evento/pilota PRIMA del primo flush
       // incrementale (vedi _flushFullTrackIncremental), altrimenti gli id
@@ -787,10 +847,14 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
       // mescolati a quelli della sessione nuova. Best-effort: se fallisce
       // (offline), il primo flush incrementale la ritenterà comunque
       // tramite lo stesso retry-con-refresh-token del resto del percorso.
-      unawaited(ref
-          .read(firestoreServiceProvider)
-          .resetFullPilotTrackForNewSession(widget.eventId!, user.uid)
-          .catchError((_) {}));
+      // Non ripetuto per l'allenamento: già gestito sopra (nuovo tentativo
+      // = niente da azzerare, ripreso = azzerato esplicitamente sopra).
+      if (attemptId == null) {
+        unawaited(ref
+            .read(firestoreServiceProvider)
+            .resetFullPilotTrackForNewSession(widget.eventId!, user.uid)
+            .catchError((_) {}));
+      }
       _lastFlushedFullTrackCount = 0;
       _trackSaveErrorNotified = false;
       _lastFlushSuccessAt = null;
@@ -809,6 +873,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         // preciso momento (START), persistita sul tracking del pilota:
         // eventuali cambi successivi dell'admin non la toccheranno più.
         routeVariantId: event?.activeRouteId ?? 'A',
+        attemptId: attemptId,
       );
       setState(() => _followMode = true);
     } catch (e) {
@@ -877,6 +942,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     final gps = ref.read(gpsServiceProvider);
     final user = ref.read(authStateProvider).valueOrNull;
     final eventId = widget.eventId;
+    final attemptId = gps.activeAttemptId;
     final partialTrack = List.of(gps.localTrack);
     final fullSamples = gps.fullTrackSamples;
     gps.blockFurtherWrites();
@@ -885,21 +951,24 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
 
     if (user != null && eventId != null) {
       try {
-        await ref
-            .read(firestoreServiceProvider)
-            .recordWithdrawal(eventId, user.uid, partialTrack: partialTrack);
-        await ref
-            .read(firestoreServiceProvider)
-            .setRaceStatus(eventId, user.uid, 'retired');
+        final fs = ref.read(firestoreServiceProvider);
+        // Step 47, Parte 2B — allenamento: abbandona il tentativo (niente
+        // notifica admin/penalità, il pilota può semplicemente riprovare)
+        // invece del ritiro di gara.
+        if (attemptId != null) {
+          await fs.updateAttemptStatus(eventId, user.uid, attemptId,
+              status: AttemptStatus.abandoned);
+        } else {
+          await fs.recordWithdrawal(eventId, user.uid, partialTrack: partialTrack);
+          await fs.setRaceStatus(eventId, user.uid, 'retired');
+        }
         if (partialTrack.isNotEmpty) {
-          await ref
-              .read(firestoreServiceProvider)
-              .savePilotTrack(eventId, user.uid, partialTrack);
+          await fs.savePilotTrack(eventId, user.uid, partialTrack,
+              attemptId: attemptId);
         }
         if (fullSamples.isNotEmpty) {
-          await ref
-              .read(firestoreServiceProvider)
-              .saveFullPilotTrack(eventId, user.uid, fullSamples);
+          await fs.saveFullPilotTrack(eventId, user.uid, fullSamples,
+              attemptId: attemptId);
         }
       } catch (e) {
         _diagLogger.logTrackSaveError('ritiro', e);
@@ -912,11 +981,16 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     }
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Ritiro registrato. L\'admin è stato notificato.'),
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(attemptId != null
+            ? 'Tentativo abbandonato.'
+            : 'Ritiro registrato. L\'admin è stato notificato.'),
         backgroundColor: AppColors.warning,
-        duration: Duration(seconds: 4),
+        duration: const Duration(seconds: 4),
       ));
+    }
+    if (attemptId != null && mounted) {
+      _offerNewAttempt();
     }
   }
 
@@ -957,7 +1031,10 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         ? ref.watch(eventStreamProvider(effectiveEventId))
         : null;
     final event = eventAsync?.valueOrNull;
-    final startEnabled = event?.startEnabled ?? true;
+    // Step 47, Parte 2A — l'allenamento non ha una cerimonia di partenza
+    // amministrata: sempre disponibile, nessuna attesa del via admin.
+    final startEnabled =
+        event?.isAllenamento == true || (event?.startEnabled ?? true);
     final canStart = effectiveEventId == null || startEnabled;
 
     // Withdrawal check
@@ -1625,8 +1702,13 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         final pastMinProtection = gps.recordingStart != null &&
             canAutoConcludeRace(
                 recordingStart: gps.recordingStart!, now: DateTime.now());
+        // Step 47, Parte 2B — allenamento: nessun obbligo di completare
+        // tutte le PS per terminare il tentativo, il pilota può riprovare
+        // in un tentativo successivo quelle mancate.
         final canFinish = pastMinProtection &&
-            (allSpecialsDone || _canFinishNearStart(gps, curPos, event));
+            (event?.isAllenamento == true ||
+                allSpecialsDone ||
+                _canFinishNearStart(gps, curPos, event));
         // Blocco D4: "Fine gara disponibile" — idempotente (dedupe interno
         // a VoiceAlertService), sicuro da chiamare ad ogni rebuild.
         if (allSpecialsDone) {
@@ -1645,9 +1727,13 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           flushFailingSince: _flushFailingSince,
         ),
 
-        // Countdown strip (visible once a deadline OR the "no starting
-        // order slot" state is resolved — see _computeDeadlineIfNeeded)
-        if (_raceDeadline != null || _noStartingOrderSlot)
+        // Countdown strip — mai per l'allenamento (Step 47, Parte 2A:
+        // nessun tempo massimo, il conteggio verso una scadenza
+        // inesistente sarebbe fuorviante). Visible once a deadline OR the
+        // "no starting order slot" state is resolved — see
+        // _computeDeadlineIfNeeded.
+        if (event?.isAllenamento != true &&
+            (_raceDeadline != null || _noStartingOrderSlot))
           _CountdownStrip(
             deadline: _raceDeadline,
             raceStartTime: _raceStartTime,
@@ -1702,9 +1788,15 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
             !gps.passedFuelPoints.contains(event!.activeFuelPoint!.id))
           Builder(builder: (context) {
             final fuel = event.activeFuelPoint!;
-            final distance = LocationUtils.haversineDistance(
+            // Trigger fisico (200m reali, "sei vicino"), distanza mostrata
+            // = progressiva (Step 47, stessa che sente il pilota in voce)
+            // — se fuori traccia/non disponibile, nessun banner invece di
+            // un numero in linea d'aria.
+            final physicalDistance = LocationUtils.haversineDistance(
                 curPos.latitude, curPos.longitude, fuel.lat, fuel.lng);
-            if (distance > 200) return const SizedBox.shrink();
+            if (physicalDistance > 200) return const SizedBox.shrink();
+            final distance = gps.chainageDistanceTo(fuel.id);
+            if (distance == null) return const SizedBox.shrink();
             return _FuelPointBanner(distanceMeters: distance);
           }),
 
@@ -1804,10 +1896,21 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                   },
                 ),
                 children: [
-                  TileLayer(
-                    urlTemplate:
-                        'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                    userAgentPackageName: 'com.ccr.ccr_app',
+                  // Step 47 — le etichette con riquadro grigio (nomi
+                  // via/paesi) segnalate come disturbo in navigazione sono
+                  // incorporate nei pixel del tile OSM Standard (nessuna
+                  // scritta disegnata dall'app): niente da rimuovere,
+                  // niente cambio di provider (nessuna dipendenza/ToS
+                  // aggiuntiva). Opacità ridotta sul solo layer di sfondo
+                  // così traccia/marker/porte, disegnati sopra a piena
+                  // opacità, restano il primo piano leggibile.
+                  Opacity(
+                    opacity: 0.55,
+                    child: TileLayer(
+                      urlTemplate:
+                          'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                      userAgentPackageName: 'com.ccr.ccr_app',
+                    ),
                   ),
                   // Event GPX track — colore/larghezza personalizzabili
                   if (_eventTrackPoints.length >= 2)

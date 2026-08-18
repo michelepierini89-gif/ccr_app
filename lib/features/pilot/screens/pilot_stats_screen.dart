@@ -7,6 +7,7 @@ import '../../../core/widgets/user_avatar_by_id.dart';
 import '../../../core/widgets/skeleton_loader.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../providers/pilot_stats_provider.dart';
+import '../providers/training_stats_provider.dart';
 import '../widgets/preferred_team_picker.dart';
 
 class PilotStatsScreen extends ConsumerWidget {
@@ -152,11 +153,76 @@ class PilotStatsScreen extends ConsumerWidget {
               ),
               const SizedBox(height: 24),
               _PreferredTeamSection(stats: stats),
+              const SizedBox(height: 24),
+              const _TrainingStatsSection(),
             ],
           );
         },
       ),
       ),
+    );
+  }
+}
+
+/// Step 47, Parte 2F — sezione dedicata all'allenamento: tentativi
+/// effettuati e migliori tempi personali, separata dalle statistiche di
+/// gara sopra (che non la includono).
+class _TrainingStatsSection extends ConsumerWidget {
+  const _TrainingStatsSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final trainingAsync = ref.watch(trainingStatsProvider);
+    return trainingAsync.when(
+      loading: () => const SizedBox.shrink(),
+      error: (e, _) => const SizedBox.shrink(),
+      data: (events) {
+        if (events.isEmpty) return const SizedBox.shrink();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.repeat, color: AppColors.accent, size: 18),
+                SizedBox(width: 8),
+                Text('Allenamento',
+                    style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold)),
+              ],
+            ),
+            const SizedBox(height: 12),
+            for (final ev in events)
+              Container(
+                margin: const EdgeInsets.only(bottom: 10),
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppColors.cardBackground,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(ev.eventNome,
+                        style: const TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${ev.tentativiCompletati} tentativ${ev.tentativiCompletati == 1 ? 'o' : 'i'} · '
+                      '${ev.migliorTempoPersonalePerPs.length} PS con miglior tempo personale',
+                      style: const TextStyle(
+                          color: AppColors.textSecondary, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 }

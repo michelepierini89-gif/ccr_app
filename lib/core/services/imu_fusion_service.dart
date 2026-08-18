@@ -240,6 +240,30 @@ class ImuFusionService extends ChangeNotifier {
   // meglio una posizione leggermente vecchia che una stimata a vuoto.
   static const int kMaxPredictionWindowMs = 800;
 
+  // ── Dead reckoning ridotto in curva (Step 47) ──
+  // Il dead reckoning proietta in linea retta lungo l'ultimo heading noto:
+  // corretto sui rettilinei (riduce il lag della freccia), sbagliato in
+  // curva (il veicolo percorre un arco, non una retta — misurato allo
+  // Step 46: +7% di scostamento dal percorso reale nei tratti ad alta
+  // curvatura). Riusa la STESSA stima di velocità angolare già calcolata
+  // da GpsService per sigmaAccel adattivo (bearing GPS, mai giroscopio —
+  // vedi [updateWithGps]), non una seconda stima ridondante. La distanza
+  // di proiezione si riduce in proporzione continua (mai a gradini) da
+  // 1.0 (rettilineo) a 0.0 (curva stretta): sotto kCurvatureTaperStartDegS
+  // nessuna riduzione, sopra kCurvatureTaperEndDegS proiezione annullata,
+  // transizione lineare in mezzo.
+  static const double kCurvatureTaperStartDegS = 10.0;
+  static const double kCurvatureTaperEndDegS = 50.0;
+  double _lastAngularVelocityDegS = 0.0;
+
+  double _deadReckoningTaper() {
+    if (_lastAngularVelocityDegS <= kCurvatureTaperStartDegS) return 1.0;
+    if (_lastAngularVelocityDegS >= kCurvatureTaperEndDegS) return 0.0;
+    return 1.0 -
+        (_lastAngularVelocityDegS - kCurvatureTaperStartDegS) /
+            (kCurvatureTaperEndDegS - kCurvatureTaperStartDegS);
+  }
+
   // ── UI throttle ──
   // 16ms = 60Hz: il DOOGEE ha retto bene nel test reale a 50Hz, saliamo al
   // massimo che garantisce ancora un frame pieno a schermo (60fps) per la
@@ -329,6 +353,7 @@ class ImuFusionService extends ChangeNotifier {
     _magneticDeclinationDeg = kDefaultMagneticDeclinationDeg;
     _declinationEstimateDeg = null;
     _declinationSampleCount = 0;
+    _lastAngularVelocityDegS = 0.0;
   }
 
   // ─────────────────────────────────────────────────────
@@ -355,8 +380,10 @@ class ImuFusionService extends ChangeNotifier {
     required double speedKmh,
     required DateTime timestamp,
     double? gpsBearingDeg,
+    double angularVelocityDegS = 0.0,
   }) {
     _gpsAnchorTs = timestamp;
+    _lastAngularVelocityDegS = angularVelocityDegS;
 
     if (_fusedPosition == null) {
       // Prima posizione disponibile: inizializza direttamente
@@ -551,7 +578,10 @@ class ImuFusionService extends ChangeNotifier {
         : kMaxPredictionWindowMs + 1;
     final canPredict = _speedMs.abs() * 3.6 >= kMinPredictionSpeedKmh &&
         msSinceAnchor <= kMaxPredictionWindowMs;
-    final distM = _speedMs.abs() * dt;
+    // Taper continuo in curva (Step 47): 1.0 in rettilineo, verso 0.0 in
+    // curva stretta — vedi [_deadReckoningTaper]. Sui rettilinei il dead
+    // reckoning resta invariato (riduce il lag della freccia).
+    final distM = _speedMs.abs() * dt * _deadReckoningTaper();
     if (canPredict && distM > 0.001) {
       // > 1mm: sposta
       _fusedPosition = _movePosition(

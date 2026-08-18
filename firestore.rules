@@ -127,6 +127,31 @@ service cloud.firestore {
         allow read: if isAdmin();
         allow write: if isOwner(userId);
       }
+
+      // Eventi di allenamento (Step 47, Parte 2B) — un tentativo è
+      // scritto SOLO dal proprio pilota (come il documento pilota di
+      // gara), ma letto da tutti gli autenticati: la classifica (miglior
+      // tempo per PS tra TUTTI i tentativi di TUTTI i piloti, vista anche
+      // da chi non è admin) deve poter leggere i tentativi altrui, non
+      // solo i propri — stessa visibilità di 'passages'/
+      // 'speedZoneViolations' di gara sotto, qui applicata per tentativo.
+      match /attempts/{attemptId} {
+        allow read: if isAuthenticated();
+        allow write: if isOwner(userId);
+
+        match /fullTrackChunks/{chunkId} {
+          allow read: if isAdmin() || isOwner(userId);
+          allow write: if isOwner(userId);
+        }
+        match /passages/{passageId} {
+          allow read: if isAuthenticated();
+          allow write: if isOwner(userId);
+        }
+        match /speedZoneViolations/{violationId} {
+          allow read: if isAuthenticated();
+          allow write: if isOwner(userId);
+        }
+      }
     }
 
     // Percorso alternativo (10/08/2026, Parte 5) — userId -> routeVariantId,

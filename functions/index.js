@@ -307,6 +307,12 @@ exports.autoArchiveEvents = onSchedule(
 
     for (const doc of snapshot.docs) {
       const data = doc.data();
+      // Step 47, Parte 2A — gli eventi di allenamento non hanno un giorno
+      // di svolgimento: 'data' è la data di APERTURA, l'evento resta
+      // disponibile finché l'admin non lo chiude esplicitamente (vedi
+      // AttemptModel/updateAttemptStatus). Nessuna archiviazione
+      // automatica basata sulla data per questo tipo.
+      if (data.tipoEvento === 'allenamento') continue;
       const eventTimestamp = data.data; // campo 'data' → Firestore Timestamp
       if (!eventTimestamp) continue;
 
@@ -355,6 +361,11 @@ exports.enforceMaxRaceTime = onSchedule(
 
     for (const eventDoc of eventsSnap.docs) {
       const eventData = eventDoc.data();
+      // Step 47, Parte 2A — nessun tempo massimo/ritiro automatico per gli
+      // eventi di allenamento (già di fatto esclusi da startingOrder
+      // vuoto sotto, ma esplicito per chiarezza e a prova di errori
+      // futuri).
+      if (eventData.tipoEvento === 'allenamento') continue;
       const maxMinutes = eventData.maxRaceTimeMinutes ?? 270;
       const startingOrder = eventData.startingOrder ?? [];
       if (startingOrder.length === 0) continue;
