@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 18 agosto 2026 (Step 45 completato)  
+**Data aggiornamento:** 18 agosto 2026 (Step 46 completato)  
 **Branch:** main  
 **Versione:** 1.0.2+3
 
@@ -2128,6 +2128,80 @@ timestamp reali per la griglia parametrica atteso dallo Step 40 (vedi
 
 ---
 
+### Step 46 — Soglia accuracy 6m in produzione, sigmaAccel adattivo alla curvatura, metriche su posizione di display (18 agosto 2026) ✅
+
+Seguito diretto allo Step 45: applicati i due interventi validati dalla
+griglia parametrica e implementato per davvero il fattore di adattamento
+alla curvatura (mancante allo Step 45).
+
+**1 — Soglia accuracy 6m: default live**
+- `GpsService.kMaxAccuracyDisplayMeters`: 8.0 → 6.0m, applicato in
+  produzione (non solo nella griglia).
+- Verificato l'effetto sullo scarto fix sui dati reali "Carring CLO 4":
+  6m scarta il 4.8% dei campioni contro lo 0.7% a 8m (+4.1 punti
+  percentuali) — aumento reale ma assoluto contenuto, non a rischio di
+  buchi di traccia con la cadenza fix di un test normale.
+
+**2 — sigmaAccel adattivo alla curvatura (nuovo meccanismo, non esisteva prima):**
+- `GpsService`: nuova stima di velocità angolare dal bearing GPS grezzo
+  (mai giroscopio — richiesto esplicitamente: stima indipendente dai
+  sensori inerziali), smoothing leggero dedicato
+  (`kCurvatureSmoothingAlpha`). In curva sigmaAccel aumenta in proporzione
+  CONTINUA alla curvatura stimata (clamp 1-5×), non a gradini — il Kalman
+  cinematico (moto rettilineo uniforme) si fida di più della misura e
+  meno della predizione proprio nei tratti dove tagliava verso l'esterno.
+- Nuovo campo `GpsPipelineConfig.curvatureAdaptationFactor`, default
+  0.08 — a differenza di `sigmaAccelScale` (multiplier globale, rimasto
+  SOLO test-only: costa reattività ovunque, non solo in curva, il
+  problema segnalato dall'utente), il fattore di curvatura è un nuovo
+  DEFAULT LIVE perché agisce solo quando serve.
+- Griglia su 6 valori (0 → 0.15): miglioramento monotono sia sullo
+  scostamento generale (7.7m → 7.4m) sia sui tratti ad alta curvatura
+  >15°/s (12.9m → 12.3m), MAI a scapito della precisione di aggancio
+  porte virtuali (6/6 costante su tutto il range, distanza media anzi
+  leggermente migliore). Scelto 0.08: margine sotto il valore massimo
+  testato (0.15, ancora in miglioramento) invece di estrapolare oltre i
+  dati misurati.
+- Side-effect trovato dalla suite di regressione: su "Enduro test 01"
+  (`checkpoint_trajectory_test.dart`) `legacy.cpPassedCount` (algoritmo
+  storico, mantenuto solo per confronto A/B, mai in produzione) sceso da
+  16 a 15 per il lieve spostamento della traiettoria Kalman — `fixed`
+  (l'algoritmo realmente in uso) resta 16/20, invariato. Test aggiornato
+  con la nuova realtà empirica.
+
+**3 — Metriche sulla posizione di DISPLAY (non solo REGISTRATA):**
+- La griglia dello Step 45 misurava solo la traccia REGISTRATA (Kalman
+  puro) — mai quella che il pilota vede davvero (Kalman + dead reckoning
+  + predizione di `ImuFusionService`). Nuovo file
+  `test/features/gps/carring_clo4_curvature_display_test.dart`: ricostruisce
+  la GEOMETRIA del dead reckoning (stessi parametri di `ImuFusionService`:
+  blend GPS 95/5, finestra max 800ms, soglia minima 5km/h) alimentata da
+  velocità/bearing derivati dai fix GPS — non un replay dei sensori
+  reali (nessun accelerometro storico disponibile per una sessione
+  passata) — misurata al momento di MASSIMA estrapolazione (appena prima
+  della correzione, il punto più visibile).
+- Risultato: il dead reckoning peggiora l'aderenza proprio in curva
+  (13.4m vs 12.5m della traccia registrata, +7%); disattivandolo (solo
+  ancora GPS, nessuna estrapolazione) il display migliora non solo
+  rispetto a sé stesso ma anche rispetto alla traccia registrata pura
+  (11.8m, -6%) — il blend GPS residuo (95/5) agisce da leggero filtro
+  aggiuntivo senza mai proiettare in avanti. Effetto assoluto modesto in
+  questo dataset (fix fitti, molte fasi "in speciale" a 250-500ms): con
+  gap più larghi (trasferimento) l'effetto atteso è maggiore, non
+  misurabile su questi dati.
+- **Nessuna modifica al codice di `ImuFusionService`** in questo step:
+  solo misura, la decisione se/come ridurre il dead reckoning in curva
+  resta aperta.
+
+**Deploy:**
+- `flutter analyze`: 0 issues (intero progetto)
+- `flutter test`: 104/104 verdi (101 preesistenti + 3 nuovi in
+  `carring_clo4_curvature_display_test.dart`)
+- `firebase deploy --only hosting`
+- `git push origin main`
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**
@@ -2148,7 +2222,7 @@ timestamp reali per la griglia parametrica atteso dallo Step 40 (vedi
 - Rieseguire il confronto raggio/porta/RTS su una gara futura con `pilotTrackFull` reale (timestamp + accuracy veri, non sintetici) per validare i valori assoluti di durata, non solo il confronto qualitativo tra metodi
 - Verificare se la perdita di 2 PS su 5 passando da porta+raggio a porta+RTS (vista nella validazione sintetica) si ripete su dati con cadenza di campionamento reale (250ms in speciale) invece del 1s sintetico usato
 
-**RISOLTO allo Step 45 (griglia parametrica su dati reali):** il test "Carring CLO 4" (17/08) ha fornito i timestamp reali (`fullTrackChunks`, entrambi i piloti) che mancavano dal 09/08. Girata la griglia sigmaAccel×accuracy×jump+RTS su dati reali (vedi Step 45 punto 5) — controllo di coerenza bussola implementato e validato sul log reale (Step 45 punto 2). **Resta aperto, non affrontato allo Step 45:** un vero adattamento di sigmaAccel alla curvatura/velocità angolare non esiste ancora nel codice (oggi sigmaAccel dipende solo da 3 fasce di velocità) — richiede stima della velocità angolare da bearing GPS e la progettazione di un meccanismo nuovo, non solo l'esposizione di un parametro esistente; valutazione modello CTRV e dead reckoning ridotto in curva ancora da fare. I valori della griglia (Step 45) non sono stati fissati come nuovi default in produzione, in attesa di decisione.
+**RISOLTO allo Step 45/46 (griglia parametrica su dati reali + curvatura implementata):** il test "Carring CLO 4" (17/08) ha fornito i timestamp reali (`fullTrackChunks`, entrambi i piloti) che mancavano dal 09/08. Griglia sigmaAccel×accuracy×jump+RTS su dati reali (Step 45 punto 5); controllo di coerenza bussola implementato e validato sul log reale (Step 45 punto 2); soglia accuracy 6m e sigmaAccel adattivo alla curvatura (bearing GPS, mai giroscopio) implementati e messi in produzione allo Step 46, con metrica dedicata sui tratti ad alta curvatura e verifica di non-regressione sulle porte virtuali. Step 46 ha anche esteso la griglia alla posizione di DISPLAY (Kalman+dead reckoning), non solo quella registrata — vedi Step 46 punto 3: il dead reckoning misurato peggiora l'aderenza in curva del 7%, disattivarlo la migliora del 6% rispetto alla registrata pura, ma la RIDUZIONE del dead reckoning in curva non è stata implementata (solo misurata). **Resta aperto:** decidere se/come ridurre il dead reckoning di `ImuFusionService` in curva sulla base dei numeri dello Step 46; valutazione modello CTRV ancora da fare.
 
 **Limiti noti dallo Step 38 (diagnosticati, non risolti — nessuna azione pianificata, solo da tenere a mente):**
 - `_trySpecialStartRecovery`/`_trySpecialEndRecovery`: il tentativo "one-shot" può consumarsi troppo presto durante l'avvicinamento a un waypoint (quando la distanza è ancora calando verso il target, non ancora al minimo), fallendo il lookback e non venendo mai ritentato — osservato su PS4 INIZIO. Il Fix 1 (precedenza) ne limita il danno quando una porta successiva recupera il dato, ma il meccanismo in sé resta fragile. Una revisione (es. tentare al momento di massimo avvicinamento, non al primo ingresso in raggio) richiede test approfonditi su altre gare prima di toccare una logica già più volte tarata sul campo.
