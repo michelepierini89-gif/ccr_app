@@ -48,15 +48,105 @@ class ImuFusionService extends ChangeNotifier {
   // Limita gli scossoni violenti che andrebbero oltre questa soglia.
   static const double kMaxHeadingDeltaPerSample = 8.0;
 
+  // ── Sorgente del display heading in base alla velocità ──
+  // Sopra questa soglia la rotta GPS diventa la sorgente principale del
+  // display heading (misura il movimento reale, non risente di
+  // interferenze magnetiche del veicolo). Sotto l'altra soglia governa la
+  // bussola (la rotta GPS è rumorosa/instabile a bassa velocità). Tra le
+  // due, transizione lineare — vedi [_gpsWeightForDisplay]. La bussola
+  // resta comunque usata per la reattività immediata (variazioni rapide di
+  // direzione, vedi [_updateDisplayHeading]), ma il suo contributo per
+  // campione si riduce con lo stesso peso, e l'ancora GPS in
+  // [updateWithGps] la richiama ad ogni fix verso la rotta reale.
+  static const double kDisplayGpsPrimaryThresholdKmh = 15.0;
+  static const double kDisplayCompassOnlyThresholdKmh = 5.0;
+
+  // Peso di correzione verso il bearing GPS applicato ad ogni fix quando il
+  // GPS è pienamente sorgente primaria (velocità >= soglia sopra) — più
+  // alto di [kHeadingGpsAnchorWeight] (che corregge solo la deriva lenta
+  // del filtro complementare interno): qui il GPS deve guidare il display,
+  // non solo limitarne la deriva.
+  static const double kDisplayGpsAnchorWeight = 0.6;
+
+  double _gpsWeightForDisplay(double speedKmh) {
+    if (speedKmh <= kDisplayCompassOnlyThresholdKmh) return 0.0;
+    if (speedKmh >= kDisplayGpsPrimaryThresholdKmh) return 1.0;
+    return (speedKmh - kDisplayCompassOnlyThresholdKmh) /
+        (kDisplayGpsPrimaryThresholdKmh - kDisplayCompassOnlyThresholdKmh);
+  }
+
+  // ── Controllo di coerenza bussola/GPS ──
+  // Se la bussola diverge dalla rotta GPS oltre questa soglia per più di
+  // [kCompassCoherenceSustainSeconds] consecutivi, è interferenza
+  // magnetica sostenuta (tipicamente il motore/telaio metallico), non
+  // rumore isolato: il display heading smette di seguire la bussola
+  // finché non rientra, affidandosi solo all'ancora GPS. Non esisteva
+  // alcun meccanismo di questo tipo prima di questo fix (verificato — vedi
+  // report): gli scarti di 10-40° osservati nel test del 17/08 passavano
+  // tutti indisturbati. Soglia abbassata da 40° a 25° dopo il replay del
+  // log reale (vedi report per il comportamento misurato).
+  static const double kCompassGpsCoherenceThresholdDeg = 25.0;
+  static const int kCompassCoherenceSustainSeconds = 5;
+  DateTime? _compassDivergingSince;
+  bool _compassLowConfidence = false;
+
+  double? _lastGpsBearingDeg;
+
+  /// Scarto istantaneo fra display heading e rotta GPS, in gradi — null se
+  /// non è ancora arrivato un bearing GPS attendibile. Esposto per
+  /// l'overlay diagnostico.
+  double? get headingErrorDeg => _lastGpsBearingDeg == null
+      ? null
+      : _angularDiff(_lastGpsBearingDeg!, _displayHeadingDeg).abs();
+
   void _updateDisplayHeading(double compassDeg) {
     if (!_headingInitialized) {
       _displayHeadingDeg = compassDeg;
       return;
     }
+    // Bussola inaffidabile (interferenza sostenuta): solo l'ancora GPS in
+    // [updateWithGps] muove il display heading finché non rientra.
+    if (_compassLowConfidence) return;
     double diff = _angularDiff(_displayHeadingDeg, compassDeg);
     diff = diff.clamp(-kMaxHeadingDeltaPerSample, kMaxHeadingDeltaPerSample);
+    final speedKmh = _speedMs * 3.6;
+    final compassAlpha = _displayAlpha() * (1 - _gpsWeightForDisplay(speedKmh));
     _displayHeadingDeg =
-        (_displayHeadingDeg + _displayAlpha() * diff + 360) % 360;
+        (_displayHeadingDeg + compassAlpha * diff + 360) % 360;
+  }
+
+  // ── Declinazione magnetica ──
+  // flutter_compass (Android: Sensor.TYPE_ROTATION_VECTOR +
+  // SensorManager.getOrientation, verificato nel sorgente del plugin —
+  // nessun uso di GeomagneticField) restituisce l'heading rispetto al nord
+  // MAGNETICO, non geografico. La mappa e il bearing GPS sono riferiti al
+  // nord geografico: senza correggere la declinazione ogni lettura bussola
+  // porta un errore sistematico. Default per l'Italia centrale (~2026);
+  // se non è disponibile un modello geomagnetico si affina nel tempo dallo
+  // scarto medio bussola/GPS osservato durante marcia sostenuta e coerente
+  // (vedi [_updateDeclinationEstimate] — solo quando il controllo di
+  // coerenza sopra non segnala divergenza, altrimenti lo scarto è
+  // interferenza, non declinazione).
+  static const double kDefaultMagneticDeclinationDeg = 3.5;
+  double _magneticDeclinationDeg = kDefaultMagneticDeclinationDeg;
+  double? _declinationEstimateDeg;
+  int _declinationSampleCount = 0;
+  static const int kDeclinationMinSamples = 30;
+  static const double kDeclinationEstimateAlpha = 0.02;
+
+  void _updateDeclinationEstimate(
+      double compassDeg, double gpsBearingDeg, double speedKmh) {
+    if (speedKmh < kDisplayGpsPrimaryThresholdKmh) return;
+    final diff = _angularDiff(compassDeg, gpsBearingDeg);
+    if (diff.abs() > kCompassGpsCoherenceThresholdDeg) return;
+    _declinationSampleCount++;
+    _declinationEstimateDeg = _declinationEstimateDeg == null
+        ? diff
+        : _declinationEstimateDeg! * (1 - kDeclinationEstimateAlpha) +
+            diff * kDeclinationEstimateAlpha;
+    if (_declinationSampleCount >= kDeclinationMinSamples) {
+      _magneticDeclinationDeg = _declinationEstimateDeg!.clamp(-10.0, 10.0);
+    }
   }
 
   // Alpha per correzione deriva giroscopio con bussola, velocità-dipendente
@@ -233,6 +323,12 @@ class ImuFusionService extends ChangeNotifier {
     _lastGyroTs = null;
     _lastAccelTs = null;
     _lastUiNotifyTs = null;
+    _compassDivergingSince = null;
+    _compassLowConfidence = false;
+    _lastGpsBearingDeg = null;
+    _magneticDeclinationDeg = kDefaultMagneticDeclinationDeg;
+    _declinationEstimateDeg = null;
+    _declinationSampleCount = 0;
   }
 
   // ─────────────────────────────────────────────────────
@@ -282,6 +378,37 @@ class ImuFusionService extends ChangeNotifier {
     if (_headingInitialized &&
         gpsBearingDeg != null &&
         speedKmh > kHeadingGpsAnchorMinSpeedKmh) {
+      _lastGpsBearingDeg = gpsBearingDeg;
+
+      // Controllo di coerenza bussola/GPS: se la bussola diverge oltre
+      // soglia in modo sostenuto, è interferenza magnetica, non rumore.
+      final compassGpsDiff =
+          _angularDiff(gpsBearingDeg, _displayHeadingDeg).abs();
+      if (compassGpsDiff > kCompassGpsCoherenceThresholdDeg) {
+        _compassDivergingSince ??= timestamp;
+        _compassLowConfidence = timestamp
+                .difference(_compassDivergingSince!)
+                .inSeconds >=
+            kCompassCoherenceSustainSeconds;
+      } else {
+        _compassDivergingSince = null;
+        _compassLowConfidence = false;
+      }
+
+      // Declinazione magnetica: si affina solo quando bussola e GPS sono
+      // coerenti (altrimenti lo scarto osservato è interferenza, non
+      // declinazione) e a marcia sostenuta (rotta GPS affidabile).
+      _updateDeclinationEstimate(_displayHeadingDeg, gpsBearingDeg, speedKmh);
+
+      // Ancora GPS sul display heading: peso crescente con la velocità,
+      // fino a dominante sopra kDisplayGpsPrimaryThresholdKmh.
+      final gpsWeight = _gpsWeightForDisplay(speedKmh) * kDisplayGpsAnchorWeight;
+      if (gpsWeight > 0) {
+        final displayDiff = _angularDiff(_displayHeadingDeg, gpsBearingDeg);
+        _displayHeadingDeg =
+            (_displayHeadingDeg + gpsWeight * displayDiff + 360) % 360;
+      }
+
       final diff = _angularDiff(_headingDeg, gpsBearingDeg);
       _headingDeg =
           (_headingDeg + kHeadingGpsAnchorWeight * diff + 360) % 360;
@@ -301,7 +428,12 @@ class ImuFusionService extends ChangeNotifier {
 
   void _onCompass(CompassEvent event) {
     if (event.heading == null || event.heading!.isNaN) return;
-    final compassDeg = (event.heading! + 360) % 360;
+    final rawCompassDeg = (event.heading! + 360) % 360;
+    // Correzione declinazione magnetica → nord geografico (vedi
+    // kDefaultMagneticDeclinationDeg): applicata qui, a monte, così ogni
+    // uso a valle (display heading, filtro complementare, jump-check) è
+    // già nel riferimento del bearing GPS/mappa.
+    final compassDeg = (rawCompassDeg + _magneticDeclinationDeg + 360) % 360;
 
     _updateDisplayHeading(compassDeg);
 

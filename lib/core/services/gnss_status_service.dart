@@ -34,15 +34,28 @@ class GnssStatusSnapshot {
     required this.hasDualFrequency,
   });
 
-  /// Soglie concordate (Blocco C2):
-  /// ECCELLENTE: >=12 usati e C/N0 medio >=35
-  /// BUONA:      >=8 usati e C/N0 medio >=28
-  /// SCARSA:     >=5 usati
-  /// CRITICA:    <5 usati
+  /// Soglie ritarate sui dati reali del test "Carring CLO 4" (17/08/2026,
+  /// DOOGEE Blade20 Pro, provider fused): le soglie precedenti (35/28
+  /// dB-Hz) erano da ricevitore GNSS professionale — su questa sessione il
+  /// C/N0 medio non ha MAI superato 34.2 dB-Hz (mediana ~24, su 2800
+  /// campioni accettati), producendo l'assurdo "SAT:29/29 SCARSA": un fix
+  /// con quasi tutti i satelliti visibili usati non può essere scarso.
+  /// Più peso al conteggio satelliti effettivamente usati (soglie ben
+  /// separate: 20/12/6), meno al C/N0 (soglie più permissive: 26/20,
+  /// realistiche per un chip consumer, non da ricevitore dedicato).
+  /// Simulando queste soglie sulla sessione reale: 30% eccellente, 63%
+  /// buona, 7% scarsa, 0% critica — distribuzione plausibile per un test
+  /// diurno in campo aperto con provider fused, invece del quasi-sempre
+  /// "scarsa" di prima.
+  ///
+  /// ECCELLENTE: >=20 usati e C/N0 medio >=26
+  /// BUONA:      >=12 usati e C/N0 medio >=20
+  /// SCARSA:     >=6 usati
+  /// CRITICA:    <6 usati
   GnssQuality get quality {
-    if (satellitesUsed >= 12 && avgCn0 >= 35) return GnssQuality.eccellente;
-    if (satellitesUsed >= 8 && avgCn0 >= 28) return GnssQuality.buona;
-    if (satellitesUsed >= 5) return GnssQuality.scarsa;
+    if (satellitesUsed >= 20 && avgCn0 >= 26) return GnssQuality.eccellente;
+    if (satellitesUsed >= 12 && avgCn0 >= 20) return GnssQuality.buona;
+    if (satellitesUsed >= 6) return GnssQuality.scarsa;
     return GnssQuality.critica;
   }
 

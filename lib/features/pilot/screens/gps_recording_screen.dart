@@ -1652,6 +1652,8 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
             deadline: _raceDeadline,
             raceStartTime: _raceStartTime,
             allSpecialsDone: event != null && _allSpecialsCompleted(gps, event),
+            actualRecordingStart: gps.recordingStart,
+            maxRaceTimeMinutes: event?.maxRaceTimeMinutes ?? 270,
           ),
 
         // Mode banner
@@ -2072,6 +2074,17 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                           'V:${imu.fusedSpeedKmh.toStringAsFixed(0)}km/h',
                           style: const TextStyle(
                               color: Colors.white, fontSize: 11),
+                        ),
+                        // Scarto istantaneo DISP/GPS — leggibile a colpo
+                        // d'occhio in overlay, senza fare la sottrazione a
+                        // mente tra GY/GPS/DISP durante il test sul campo.
+                        Text(
+                          'ERR:${(imu.headingErrorDeg ?? 0.0).toStringAsFixed(0)}°',
+                          style: TextStyle(
+                              color: (imu.headingErrorDeg ?? 0.0) > 25.0
+                                  ? Colors.redAccent
+                                  : Colors.white,
+                              fontSize: 11),
                         ),
                         StreamBuilder<GnssStatusSnapshot>(
                           stream: ref.read(gnssStatusServiceProvider).stream,
@@ -2988,50 +3001,29 @@ class _SaveStatusIndicator extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final Color color;
-    final IconData icon;
-    final String label;
+    // Nessun ingombro quando tutto procede bene: l'indicatore compare SOLO
+    // in caso di problema di salvataggio. Lo stato completo (incluso
+    // l'orario dell'ultimo salvataggio riuscito) resta nella notifica
+    // persistente (vedi _updateForegroundNotification), dove serve
+    // davvero — non ha senso ripeterlo qui ingombrando la UI in marcia.
+    if (failingSince == null) return const SizedBox.shrink();
 
-    if (failingSince != null) {
-      final failingFor = DateTime.now().difference(failingSince!);
-      color = failingFor >= _redThreshold ? AppColors.error : Colors.orange;
-      icon = Icons.cloud_off;
-      label = lastSuccessAt != null
-          ? DateFormat('HH:mm').format(lastSuccessAt!)
-          : 'mai riuscito';
-    } else if (lastSuccessAt != null) {
-      color = AppColors.success;
-      icon = Icons.cloud_done;
-      label = DateFormat('HH:mm').format(lastSuccessAt!);
-    } else {
-      color = AppColors.textSecondary;
-      icon = Icons.cloud_upload;
-      label = '—';
-    }
+    final failingFor = DateTime.now().difference(failingSince!);
+    final color = failingFor >= _redThreshold ? AppColors.error : Colors.orange;
 
     return Tooltip(
-      message: failingSince != null
-          ? 'Salvataggio traccia non riuscito'
-          : lastSuccessAt != null
-              ? 'Ultimo salvataggio traccia riuscito'
-              : 'In attesa del primo salvataggio traccia',
+      message: lastSuccessAt != null
+          ? 'Salvataggio traccia non riuscito — ultimo riuscito alle '
+              '${DateFormat('HH:mm').format(lastSuccessAt!)}'
+          : 'Salvataggio traccia non riuscito — mai riuscito',
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        padding: const EdgeInsets.all(4),
         decoration: BoxDecoration(
           color: color.withValues(alpha: 0.15),
-          borderRadius: BorderRadius.circular(20),
+          shape: BoxShape.circle,
           border: Border.all(color: color),
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 12, color: color),
-            const SizedBox(width: 4),
-            Text(label,
-                style: TextStyle(
-                    color: color, fontWeight: FontWeight.bold, fontSize: 11)),
-          ],
-        ),
+        child: Icon(Icons.cloud_off, size: 14, color: color),
       ),
     );
   }
@@ -3799,11 +3791,20 @@ class _CountdownStrip extends StatefulWidget {
   final DateTime? deadline;
   final DateTime? raceStartTime;
   final bool allSpecialsDone;
+  // Fix (17/08) — quando l'orario di partenza ufficiale non è ancora
+  // trascorso (tipico nei test in campo) la striscia deve comunque mostrare
+  // un conto alla rovescia utile, non un messaggio statico: parte dal
+  // momento in cui il pilota ha avviato la registrazione, usando il tempo
+  // massimo gara configurato sull'evento.
+  final DateTime? actualRecordingStart;
+  final int maxRaceTimeMinutes;
 
   const _CountdownStrip({
     required this.deadline,
     required this.raceStartTime,
     required this.allSpecialsDone,
+    required this.actualRecordingStart,
+    required this.maxRaceTimeMinutes,
   });
 
   @override
@@ -3815,6 +3816,7 @@ class _CountdownStripState extends State<_CountdownStrip> {
   Duration _remaining = Duration.zero;
   bool _blink = false;
   bool _notYetStarted = false;
+  bool _usingProvisionalDeadline = false;
 
   @override
   void initState() {
@@ -3826,14 +3828,25 @@ class _CountdownStripState extends State<_CountdownStrip> {
   void _tick(Timer? _) {
     if (!mounted) return;
     final now = DateTime.now();
-    final startTime = widget.raceStartTime;
-    final notYetStarted = startTime != null && now.isBefore(startTime);
-    final deadline = widget.deadline;
-    final rem = (deadline != null && !notYetStarted)
-        ? deadline.difference(now)
+    final officialStart = widget.raceStartTime;
+    final officialNotYetStarted =
+        officialStart != null && now.isBefore(officialStart);
+
+    // Orario ufficiale non ancora trascorso: conteggio provvisorio dal via
+    // effettivo della registrazione, invece del messaggio statico —
+    // l'orario ufficiale resta comunque mostrato come nota (vedi build()).
+    final effectiveDeadline = officialNotYetStarted
+        ? widget.actualRecordingStart
+            ?.add(Duration(minutes: widget.maxRaceTimeMinutes))
+        : widget.deadline;
+
+    final rem = effectiveDeadline != null
+        ? effectiveDeadline.difference(now)
         : Duration.zero;
     setState(() {
-      _notYetStarted = notYetStarted;
+      _notYetStarted = effectiveDeadline == null;
+      _usingProvisionalDeadline =
+          officialNotYetStarted && widget.actualRecordingStart != null;
       _remaining = rem.isNegative ? Duration.zero : rem;
       _blink = now.second % 2 == 0;
     });
@@ -3908,26 +3921,49 @@ class _CountdownStripState extends State<_CountdownStrip> {
 
     final visible = !critical || _blink || done;
 
+    // Nota piccola sull'orario ufficiale: mostrata solo quando il
+    // countdown è provvisorio (partito dal via effettivo del pilota
+    // perché l'orario di partenza ufficiale non è ancora trascorso) —
+    // il valore principale resta sempre il tempo rimanente.
+    final officialStartNote = _usingProvisionalDeadline && widget.raceStartTime != null
+        ? 'ufficiale: ${DateFormat('HH:mm \'del\' dd/MM').format(widget.raceStartTime!.toLocal())}'
+        : null;
+
     return AnimatedOpacity(
       opacity: visible ? 1.0 : 0.0,
       duration: const Duration(milliseconds: 200),
       child: Container(
         width: double.infinity,
-        height: 26,
+        constraints: BoxConstraints(minHeight: officialStartNote != null ? 34 : 26),
         color: stripColor,
         alignment: Alignment.center,
-        child: Text(
-          done
-              ? '✓ Speciali completate'
-              : expired
-                  ? '⏱ Tempo scaduto'
-                  : '⏱ Tempo rimasto: $timeStr',
-          style: TextStyle(
-            color: textColor,
-            fontSize: 11,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0.5,
-          ),
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              done
+                  ? '✓ Speciali completate'
+                  : expired
+                      ? '⏱ Tempo scaduto'
+                      : '⏱ Tempo rimasto: $timeStr',
+              style: TextStyle(
+                color: textColor,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.5,
+              ),
+            ),
+            if (officialStartNote != null)
+              Text(
+                officialStartNote,
+                style: TextStyle(
+                  color: textColor.withValues(alpha: 0.75),
+                  fontSize: 9,
+                  fontWeight: FontWeight.w400,
+                ),
+              ),
+          ],
         ),
       ),
     );

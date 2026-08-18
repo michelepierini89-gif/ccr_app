@@ -178,6 +178,9 @@ class TrackReplayService {
     // nuovo rilevamento su traiettoria: usato solo dal confronto
     // before/after, mai dalle run normali del banco di replay.
     bool legacyCheckpointDetection = false,
+    // Griglia parametrica (Blocco E) — default riproduce esattamente il
+    // comportamento live invariato (vedi GpsPipelineConfig).
+    GpsPipelineConfig pipelineConfig = GpsPipelineConfig.defaults,
   }) async {
     if (samples.length < 2) return ReplayConfigResult.empty(configNome);
 
@@ -190,6 +193,7 @@ class TrackReplayService {
       null, // VoiceAlertService: nessun TTS nel replay
       diag,
       null, // SharedPreferences per useRawLocationManager: irrilevante nel replay
+      pipelineConfig,
     );
 
     gps.startReplaySession(

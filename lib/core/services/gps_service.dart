@@ -22,6 +22,30 @@ import '../utils/kalman_filter.dart';
 
 enum GpsMode { idle, transfer, inSpecial, nearWaypoint }
 
+/// Parametri della pipeline filtri/Kalman, esposti SOLO per il banco di
+/// replay (griglia parametrica, Blocco E) — mai usati per cambiare il
+/// comportamento live: [GpsService] costruito senza questo parametro (il
+/// caso di ogni sessione reale) usa esattamente le stesse costanti di
+/// prima, invariate. Multiplier invece di valori assoluti per
+/// [sigmaAccelScale]/[anchorThresholdScale]: preserva la forma delle
+/// curve già tarate (3 livelli sigmaAccel, 4 livelli soglia anchor),
+/// varia solo la loro scala complessiva.
+class GpsPipelineConfig {
+  final double sigmaAccelScale;
+  final double maxAccuracyDisplayMeters;
+  final double maxSpeedFilterKmh;
+  final double anchorThresholdScale;
+
+  const GpsPipelineConfig({
+    this.sigmaAccelScale = 1.0,
+    this.maxAccuracyDisplayMeters = GpsService.kMaxAccuracyDisplayMeters,
+    this.maxSpeedFilterKmh = GpsService.kMaxSpeedFilterKmh,
+    this.anchorThresholdScale = 1.0,
+  });
+
+  static const GpsPipelineConfig defaults = GpsPipelineConfig();
+}
+
 /// Fix 1 — Esito della regola di precedenza esplicita tra metodi di timing
 /// (vedi `timingMethodRank` in waypoint_detector.dart): [timestamp] e
 /// [timingMethod] sono il valore da usare per il waypoint, [usedExisting] è
@@ -130,12 +154,17 @@ class GpsService extends ChangeNotifier {
   final VoiceAlertService? _voiceAlerts;
   final DiagnosticLogger? _diagLogger;
   final SharedPreferences? _prefs;
+  final GpsPipelineConfig _pipelineConfig;
 
   bool _useRawLocationManager;
   bool get useRawLocationManager => _useRawLocationManager;
 
   GpsService(this._firestoreService, this._offlineQueue, this._imu,
-      [this._gnssStatus, this._voiceAlerts, this._diagLogger, this._prefs])
+      [this._gnssStatus,
+      this._voiceAlerts,
+      this._diagLogger,
+      this._prefs,
+      this._pipelineConfig = GpsPipelineConfig.defaults])
       : _useRawLocationManager =
             _prefs?.getBool(kUseRawLocationManagerPrefsKey) ?? false;
 
@@ -369,6 +398,16 @@ class GpsService extends ChangeNotifier {
   // recuperata, bloccando FINE GARA — vedi anche _tryRecoverSkippedSpecials.
   static const double kSpecialStartRecoveryRadiusMeters = 120.0;
   static const int kSpecialStartRecoveryLookbackSeconds = 30;
+  // Precondizione di densità/freschezza del buffer (Fix 17/08 — PS1 test
+  // "Carring CLO 4"): un singolo fix accettato entro il raggio bastava a
+  // far scattare il recovery, anche in condizioni di segnale debole dove
+  // i fix arrivano radi (ogni 5-7s) e ognuno, isolato, non è
+  // rappresentativo della posizione reale. Richiediamo che gli ultimi
+  // [kMinRecoveryBufferFixes] fix accettati siano TUTTI arrivati negli
+  // ultimi [kMaxRecoveryLastFixAgeSeconds]s: pochi fix sparsi su una
+  // finestra più larga (segnale degradato) non bastano più.
+  static const int kMinRecoveryBufferFixes = 5;
+  static const int kMaxRecoveryLastFixAgeSeconds = 10;
   final Set<String> _recoveryAttempted = {};
   final StreamController<String> _recoveryStreamCtrl =
       StreamController<String>.broadcast();
@@ -582,10 +621,11 @@ class GpsService extends ChangeNotifier {
   /// geometrica corrente: più si va piano, più serve spostamento reale per
   /// muovere la polyline (evita il pattern "a ventaglio" da fermo).
   double _anchorThresholdMeters() {
-    if (_geometricSpeedKmh > 60) return 1.5;
-    if (_geometricSpeedKmh > 20) return 2.5;
-    if (_geometricSpeedKmh > 5) return 4.0;
-    return 3.0;
+    final scale = _pipelineConfig.anchorThresholdScale;
+    if (_geometricSpeedKmh > 60) return 1.5 * scale;
+    if (_geometricSpeedKmh > 20) return 2.5 * scale;
+    if (_geometricSpeedKmh > 5) return 4.0 * scale;
+    return 3.0 * scale;
   }
 
   /// Retroactively detects a missed special-start waypoint.
@@ -638,6 +678,14 @@ class GpsService extends ChangeNotifier {
 
   Future<void> _trySpecialStartRecovery(
       LatLng currentPos, DateTime now) async {
+    // Precondizione buffer (vedi costanti sopra): serve una storia recente
+    // densa di fix accettati, non un singolo punto isolato dopo un gap.
+    if (_recoveryTrack.length < kMinRecoveryBufferFixes) return;
+    final oldestOfRecentIdx = _recoveryTrack.length - kMinRecoveryBufferFixes;
+    final oldestOfRecentAge =
+        now.difference(_recoveryTimestamps[oldestOfRecentIdx]);
+    if (oldestOfRecentAge.inSeconds > kMaxRecoveryLastFixAgeSeconds) return;
+
     for (final special in _specials) {
       if (_disposed) return;
       final inizioId = special.waypointInizio.id;
@@ -1940,7 +1988,7 @@ class GpsService extends ChangeNotifier {
   /// chip GPS), si restringe a step fino al valore finale
   /// [kMaxAccuracyDisplayMeters] una volta che il segnale si è stabilizzato.
   double _currentDisplayAccuracyThreshold(DateTime now) {
-    if (_recordingStart == null) return kMaxAccuracyDisplayMeters;
+    if (_recordingStart == null) return _pipelineConfig.maxAccuracyDisplayMeters;
     final secSinceStart = now.difference(_recordingStart!).inSeconds;
     if (secSinceStart < kAccuracyStartupPhase1Seconds) {
       return kAccuracyStartupThreshold1;
@@ -1948,7 +1996,7 @@ class GpsService extends ChangeNotifier {
     if (secSinceStart < kAccuracyStartupPhase2Seconds) {
       return kAccuracyStartupThreshold2;
     }
-    return kMaxAccuracyDisplayMeters;
+    return _pipelineConfig.maxAccuracyDisplayMeters;
   }
 
   /// Etichetta descrittiva per [wp] (es. "Inizio PS1", "Fine PS3",
@@ -2081,7 +2129,7 @@ class GpsService extends ChangeNotifier {
       if (dtMs > 0) {
         final impliedSpeedKmh = _computeGeometricSpeedKmh(
             _lastAcceptedRawPos!, rawLatLng, Duration(milliseconds: dtMs));
-        if (impliedSpeedKmh > kMaxSpeedFilterKmh) {
+        if (impliedSpeedKmh > _pipelineConfig.maxSpeedFilterKmh) {
           debugPrint(
               'GPS JUMP scartato: ${impliedSpeedKmh.toStringAsFixed(0)} km/h');
           _diagLogger?.logGpsFix(
@@ -2119,7 +2167,7 @@ class GpsService extends ChangeNotifier {
         final kalmanImpliedSpeed = _computeGeometricSpeedKmh(
             _lastAcceptedFilteredPos!, filteredPos,
             Duration(milliseconds: dtMsK));
-        if (kalmanImpliedSpeed > kMaxSpeedFilterKmh * 1.2) {
+        if (kalmanImpliedSpeed > _pipelineConfig.maxSpeedFilterKmh * 1.2) {
           _kalmanFilter.reset();
           filteredPos = _kalmanFilter.filter(
               pos.latitude, pos.longitude, effectiveAccuracy, now);
@@ -2167,11 +2215,12 @@ class GpsService extends ChangeNotifier {
     // Sigma accel dinamico: a velocità più basse il filtro Kalman può
     // smorzare di più (meno dinamica da inseguire); a velocità da enduro
     // serve tolleranza alle brusche variazioni di direzione/velocità.
-    final targetSigma = _geometricSpeedKmh < 10.0
-        ? GpsKalmanFilter.kSigmaAccelWalking
-        : _geometricSpeedKmh < 40.0
-            ? GpsKalmanFilter.kSigmaAccelMedium
-            : GpsKalmanFilter.kSigmaAccelMotorcycle;
+    final targetSigma = (_geometricSpeedKmh < 10.0
+            ? GpsKalmanFilter.kSigmaAccelWalking
+            : _geometricSpeedKmh < 40.0
+                ? GpsKalmanFilter.kSigmaAccelMedium
+                : GpsKalmanFilter.kSigmaAccelMotorcycle) *
+        _pipelineConfig.sigmaAccelScale;
     _kalmanFilter.updateSigmaAccel(targetSigma);
 
     // Circular buffer of last 5 Kalman-filtered points for bearing
