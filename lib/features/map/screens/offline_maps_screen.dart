@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:latlong2/latlong.dart';
 
+import '../../../core/map/map_style.dart';
 import '../../../core/models/event_model.dart';
+import '../../../core/providers/track_appearance_provider.dart';
 import '../../../core/services/offline_tile_service.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/utils/offline_region_utils.dart';
 import '../../pilot/providers/pilot_provider.dart';
 
 class OfflineMapsScreen extends ConsumerStatefulWidget {
@@ -20,20 +22,27 @@ class _OfflineMapsScreenState extends ConsumerState<OfflineMapsScreen> {
   int _total = 0;
   int _cacheSizeBytes = 0;
   String? _activeDownloadEventId;
+  List<OfflineRegionInfo> _regions = const [];
 
   @override
   void initState() {
     super.initState();
-    OfflineTileService.instance.init().then((_) => _refreshCacheSize());
+    OfflineTileService.instance.init().then((_) => _refresh());
   }
 
-  Future<void> _refreshCacheSize() async {
+  Future<void> _refresh() async {
     final size = await OfflineTileService.instance.getCacheSizeBytes();
-    if (mounted) setState(() => _cacheSizeBytes = size);
+    final regions = await OfflineTileService.instance.getRegionInfos();
+    if (mounted) {
+      setState(() {
+        _cacheSizeBytes = size;
+        _regions = regions;
+      });
+    }
   }
 
   Future<void> _downloadEvent(EventModel event) async {
-    final bbox = _eventBbox(event);
+    final bbox = OfflineRegionUtils.eventBoundingBox(event);
     if (bbox == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -43,6 +52,10 @@ class _OfflineMapsScreenState extends ConsumerState<OfflineMapsScreen> {
       );
       return;
     }
+    // Scarica per lo stile ATTUALMENTE selezionato in navigazione (Step 49,
+    // Parte 2c): stili diversi hanno cache separate, scaricare con uno non
+    // rende disponibile l'altro.
+    final style = ref.read(trackAppearanceProvider).mapStyle;
     setState(() {
       _downloading = true;
       _done = 0;
@@ -50,6 +63,9 @@ class _OfflineMapsScreenState extends ConsumerState<OfflineMapsScreen> {
       _activeDownloadEventId = event.id;
     });
     await OfflineTileService.instance.downloadBoundingBox(
+      eventId: event.id,
+      eventNome: event.nome,
+      styleId: style.id,
       sw: bbox.$1,
       ne: bbox.$2,
       minZoom: 10,
@@ -64,10 +80,10 @@ class _OfflineMapsScreenState extends ConsumerState<OfflineMapsScreen> {
       _activeDownloadEventId = null;
     });
     final messenger = ScaffoldMessenger.of(context);
-    await _refreshCacheSize();
+    await _refresh();
     messenger.showSnackBar(
       SnackBar(
-        content: Text('Download completato per ${event.nome}.'),
+        content: Text('Download completato per ${event.nome} (${style.label}).'),
         backgroundColor: AppColors.success,
       ),
     );
@@ -101,7 +117,7 @@ class _OfflineMapsScreenState extends ConsumerState<OfflineMapsScreen> {
     );
     if (ok != true) return;
     await OfflineTileService.instance.clearCache();
-    await _refreshCacheSize();
+    await _refresh();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -112,37 +128,6 @@ class _OfflineMapsScreenState extends ConsumerState<OfflineMapsScreen> {
     }
   }
 
-  /// Returns (SW, NE) bounding box with 10 km padding around all special
-  /// waypoints. Percorso alternativo, Parte 4 — copre SEMPRE l'unione di
-  /// ENTRAMBE le varianti (non solo quella attiva): il cambio di percorso
-  /// può avvenire quando il pilota è già senza connessione, quindi le
-  /// mappe scaricate devono coprire anche il percorso che potrebbe
-  /// diventare attivo dopo.
-  (LatLng, LatLng)? _eventBbox(EventModel event) {
-    final lats = <double>[];
-    final lons = <double>[];
-    final variants = [event.routeAAsVariant, if (event.routeB != null) event.routeB!];
-    for (final variant in variants) {
-      for (final s in variant.speciali) {
-        if (s.annullata) continue;
-        lats.addAll([s.waypointInizio.lat, s.waypointFine.lat]);
-        lons.addAll([s.waypointInizio.lng, s.waypointFine.lng]);
-        for (final cp in s.controlPoints) {
-          lats.add(cp.lat);
-          lons.add(cp.lng);
-        }
-      }
-    }
-    if (lats.isEmpty) return null;
-    const pad = 0.09; // ~10 km
-    final sw = LatLng(
-        lats.reduce((a, b) => a < b ? a : b) - pad,
-        lons.reduce((a, b) => a < b ? a : b) - pad);
-    final ne = LatLng(
-        lats.reduce((a, b) => a > b ? a : b) + pad,
-        lons.reduce((a, b) => a > b ? a : b) + pad);
-    return (sw, ne);
-  }
 
   String _fmtBytes(int bytes) {
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
@@ -183,12 +168,15 @@ class _OfflineMapsScreenState extends ConsumerState<OfflineMapsScreen> {
                   style: TextStyle(color: AppColors.textSecondary)),
             );
           }
+          final currentStyle = ref.watch(trackAppearanceProvider).mapStyle;
           return ListView.builder(
             padding: const EdgeInsets.all(16),
             itemCount: events.length,
             itemBuilder: (ctx, i) {
               final event = events[i];
               final isActive = _activeDownloadEventId == event.id;
+              final eventRegions =
+                  _regions.where((r) => r.eventId == event.id).toList();
               return Card(
                 color: AppColors.cardBackground,
                 margin: const EdgeInsets.only(bottom: 12),
@@ -209,6 +197,64 @@ class _OfflineMapsScreenState extends ConsumerState<OfflineMapsScreen> {
                         style: const TextStyle(
                             color: AppColors.textSecondary, fontSize: 12),
                       ),
+                      // Step 49, Parte 1c/2c — stato reale della cache per
+                      // questo evento, per stile: senza questo il pilota
+                      // non ha modo di sapere se "Scarica mappe" ha
+                      // prodotto qualcosa di effettivamente utilizzabile.
+                      if (eventRegions.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            for (final r in eventRegions)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: (r.styleId == currentStyle.id
+                                          ? AppColors.accent
+                                          : AppColors.border)
+                                      .withValues(alpha: 0.15),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                    color: r.styleId == currentStyle.id
+                                        ? AppColors.accent
+                                        : AppColors.border,
+                                  ),
+                                ),
+                                child: Text(
+                                  '${MapStyle.fromId(r.styleId).label} · '
+                                  '${r.tileCount} tile · '
+                                  'z${r.minZoom}-${r.maxZoom}',
+                                  style: TextStyle(
+                                    color: r.styleId == currentStyle.id
+                                        ? AppColors.accent
+                                        : AppColors.textSecondary,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ],
+                      if (eventRegions.isEmpty) ...[
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Nessuna mappa scaricata per questo evento.',
+                          style: TextStyle(
+                              color: AppColors.warning, fontSize: 11),
+                        ),
+                      ] else if (!eventRegions
+                          .any((r) => r.styleId == currentStyle.id)) ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          'Non scaricata per lo stile attuale (${currentStyle.label}).',
+                          style: const TextStyle(
+                              color: AppColors.warning, fontSize: 11),
+                        ),
+                      ],
                       if (isActive && _downloading) ...[
                         const SizedBox(height: 12),
                         LinearProgressIndicator(
@@ -240,8 +286,10 @@ class _OfflineMapsScreenState extends ConsumerState<OfflineMapsScreen> {
                                   borderRadius: BorderRadius.circular(8)),
                             ),
                             icon: const Icon(Icons.download, size: 18),
-                            label: const Text('Scarica mappe',
-                                style: TextStyle(fontWeight: FontWeight.bold)),
+                            label: Text(
+                                'Scarica mappe (${currentStyle.label})',
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold)),
                           ),
                         ),
                       ],

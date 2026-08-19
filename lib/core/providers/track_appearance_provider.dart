@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../map/map_style.dart';
 import '../services/track_appearance_service.dart';
 import 'offline_provider.dart';
 
@@ -53,6 +54,11 @@ class TrackAppearanceNotifier extends Notifier<TrackAppearanceSettings> {
   Future<void> setTileOpacity(double opacity) async {
     state = state.copyWith(tileOpacity: opacity);
     await ref.read(trackAppearanceServiceProvider).saveTileOpacity(opacity);
+  }
+
+  Future<void> setMapStyle(MapStyle style) async {
+    state = state.copyWith(mapStyle: style);
+    await ref.read(trackAppearanceServiceProvider).saveMapStyle(style);
   }
 }
 

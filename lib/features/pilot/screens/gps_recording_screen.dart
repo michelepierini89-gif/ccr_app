@@ -15,12 +15,15 @@ import '../../../core/models/attempt_model.dart';
 import '../../../core/models/event_model.dart';
 import '../../../core/models/registration_model.dart';
 import '../../../core/models/waypoint_model.dart';
+import '../../../core/map/ccr_tile_provider.dart';
+import '../../../core/map/map_style.dart';
 import '../../../core/providers/track_appearance_provider.dart';
 import '../../../core/services/battery_setup_service.dart';
 import '../../../core/services/diagnostic_logger.dart';
 import '../../../core/services/gnss_status_service.dart';
 import '../../../core/services/gps_service.dart';
 import '../../../core/services/imu_fusion_service.dart';
+import '../../../core/services/offline_tile_service.dart';
 import '../../../core/services/voice_alert_service.dart';
 import '../../../core/services/track_appearance_service.dart';
 import '../../../core/services/gpx_parser.dart';
@@ -1920,19 +1923,25 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                   // Step 47 — le etichette con riquadro grigio (nomi
                   // via/paesi) segnalate come disturbo in navigazione sono
                   // incorporate nei pixel del tile OSM Standard (nessuna
-                  // scritta disegnata dall'app): niente da rimuovere,
-                  // niente cambio di provider (nessuna dipendenza/ToS
-                  // aggiuntiva). Opacità ridotta sul solo layer di sfondo
-                  // così traccia/marker/porte, disegnati sopra a piena
-                  // opacità, restano il primo piano leggibile. Regolabile
-                  // dal pilota (rifiniture Step 47): il fisso 0.55
-                  // sbiadiva anche strade/sentieri, non solo le etichette.
+                  // scritta disegnata dall'app): niente da rimuovere.
+                  // Opacità ridotta sul solo layer di sfondo così traccia/
+                  // marker/porte, disegnati sopra a piena opacità, restano
+                  // il primo piano leggibile. Regolabile dal pilota
+                  // (rifiniture Step 47). Step 49 — stile selezionabile
+                  // (OSM/OpenTopoMap, vedi `MapStyle`) e `CcrTileProvider`
+                  // cache-first: legge da `OfflineTileService` prima della
+                  // rete, mostra uno sfondo neutro se il tile manca in
+                  // entrambe (mai un riquadro vuoto).
                   Opacity(
                     opacity: trackAppearance.tileOpacity,
                     child: TileLayer(
-                      urlTemplate:
-                          'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                      urlTemplate: trackAppearance.mapStyle.urlTemplate,
+                      subdomains: trackAppearance.mapStyle.subdomains,
+                      maxNativeZoom: trackAppearance.mapStyle.maxNativeZoom,
+                      maxZoom: MapStyle.maxUiZoom.toDouble(),
                       userAgentPackageName: 'com.ccr.ccr_app',
+                      tileProvider: CcrTileProvider(
+                          styleId: trackAppearance.mapStyle.id),
                     ),
                   ),
                   // Event GPX track — colore/larghezza personalizzabili
@@ -2089,6 +2098,73 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                       ),
                     ]),
                 ],
+              ),
+
+              // Step 49, Parte 1c/2b — attribuzione stile (sempre visibile,
+              // obbligatoria per OpenTopoMap) + indicatore discreto quando
+              // la mappa sta girando sulla sola cache offline (rete assente
+              // E ultimo tile servito da cache, non solo "cache usata" che
+              // sarebbe vero quasi sempre dato che è la prima fonte
+              // consultata).
+              Positioned(
+                left: 12,
+                bottom: 12,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ListenableBuilder(
+                      listenable: Listenable.merge([
+                        OfflineTileService.instance.networkReachable,
+                        OfflineTileService.instance.lastServeSource,
+                      ]),
+                      builder: (context, _) {
+                        final offline =
+                            !OfflineTileService.instance.networkReachable.value;
+                        final fromCache =
+                            OfflineTileService.instance.lastServeSource.value ==
+                                TileServeSource.cache;
+                        if (!offline || !fromCache) return const SizedBox();
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 4),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: AppColors.cardBackground
+                                .withValues(alpha: 0.85),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.cloud_off,
+                                  size: 12, color: AppColors.warning),
+                              SizedBox(width: 4),
+                              Text('Mappa da cache offline',
+                                  style: TextStyle(
+                                      color: AppColors.warning,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w600)),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: AppColors.cardBackground.withValues(alpha: 0.7),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        trackAppearance.mapStyle.attribution,
+                        style: const TextStyle(
+                            color: AppColors.textSecondary, fontSize: 9),
+                      ),
+                    ),
+                  ],
+                ),
               ),
 
               // Fix (pulizia schermata navigazione, bug test 18/08) —
@@ -2620,6 +2696,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     double refTrackWidth = current.refTrackWidth;
     var debugPanelVisible = current.debugPanelVisible;
     double tileOpacity = current.tileOpacity;
+    MapStyle mapStyle = current.mapStyle;
 
     final voiceService = ref.read(voiceAlertServiceProvider);
     var voiceSettings = voiceService.settings;
@@ -2656,6 +2733,24 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                         fontSize: 16,
                         fontWeight: FontWeight.bold)),
                 const SizedBox(height: 12),
+                const Text('Stile',
+                    style: TextStyle(color: AppColors.textSecondary)),
+                const SizedBox(height: 8),
+                SegmentedButton<MapStyle>(
+                  segments: MapStyle.values
+                      .map((s) => ButtonSegment(value: s, label: Text(s.label)))
+                      .toList(),
+                  selected: {mapStyle},
+                  onSelectionChanged: (sel) =>
+                      setSheetState(() => mapStyle = sel.first),
+                  style: SegmentedButton.styleFrom(
+                    backgroundColor: AppColors.background,
+                    foregroundColor: AppColors.textSecondary,
+                    selectedBackgroundColor: AppColors.accent,
+                    selectedForegroundColor: Colors.white,
+                  ),
+                ),
+                const SizedBox(height: 16),
                 Text('Opacità sfondo: ${(tileOpacity * 100).round()}%',
                     style: const TextStyle(color: AppColors.textSecondary)),
                 Slider(
@@ -2949,6 +3044,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                       await notifier.setRefTrackWidth(refTrackWidth);
                       await notifier.setDebugPanelVisible(debugPanelVisible);
                       await notifier.setTileOpacity(tileOpacity);
+                      await notifier.setMapStyle(mapStyle);
                       await voiceService.updateSettings(voiceSettings);
                       if (sheetCtx.mounted) Navigator.pop(sheetCtx);
                     },

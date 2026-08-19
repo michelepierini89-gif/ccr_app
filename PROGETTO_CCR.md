@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 19 agosto 2026 (Step 48 completato)  
+**Data aggiornamento:** 19 agosto 2026 (Step 49 completato)  
 **Branch:** main  
 **Versione:** 1.0.2+3
 
@@ -2417,14 +2417,129 @@ enforceMaxRaceTime` (Parte 1, verificato sha256) + `firebase deploy
 
 ---
 
+### Step 49 — Cache mappe offline effettivamente utilizzata, OpenTopoMap come stile navigazione, verifica copertura varianti (19 agosto 2026) ✅
+
+Bug grave segnalato allo Step 48 (scoperta collaterale, non risolta lì):
+il download "Mappe offline" scriveva i tile su disco ma il `TileLayer` in
+navigazione non li leggeva mai — la cache non serviva a nulla, e in gara,
+senza copertura, il pilota restava senza mappa proprio quando gli serviva.
+
+**Perché la cache non veniva letta:** `TileLayer` di flutter_map usa un
+`TileProvider` per ottenere ogni immagine — se non specificato esplicitamente,
+usa il default `NetworkTileProvider`, che parla solo con la rete. Il
+`TileLayer` in `gps_recording_screen.dart` non passava mai un `tileProvider`
+custom: `OfflineTileService` (scritto per il download) e il rendering della
+mappa erano due percorsi di codice completamente separati, mai collegati da
+nessuna parte — non un bug di percorso/nome file, un componente mancante
+fin dall'inizio.
+
+**Parte 1 — fix:**
+- Nuovo `CcrTileProvider`/`lib/core/map/ccr_tile_provider.dart`
+  (`TileProvider` + `ImageProvider` custom): per ogni tile, prima
+  `OfflineTileService.getTileBytes` (cache locale), poi la rete solo se
+  assente. Un tile arrivato dalla rete viene scritto in cache
+  opportunisticamente (non solo quelli scaricati esplicitamente da "Mappe
+  offline") — uso intensivo della cache invece di richieste ripetute.
+  Collegato al `TileLayer` di navigazione con `tileProvider:
+  CcrTileProvider(styleId: ...)`.
+- **(b) Schema di denominazione allineato per costruzione:**
+  `OfflineTileService.tilesForBoundingBox` (nuovo, pubblico, pura
+  geometria) genera l'elenco (z,x,y) sia per il download sia — tramite lo
+  stesso `getTileBytes(styleId,z,x,y)` — per la lettura: un solo punto che
+  decide lo schema, non due copie che potevano disallinearsi. Path su
+  disco ora `osm_tiles/{styleId}/{z}/{x}/{y}.png` (era `osm_tiles/{z}/{x}/{y}.png`,
+  senza stile — vedi Parte 2).
+- **(c) Visibilità cache/rete:** `OfflineTileService.lastServeSource`/
+  `networkReachable` (`ValueNotifier`, aggiornati da `CcrTileProvider` ad
+  ogni tile) pilotano un indicatore discreto in basso a sinistra sulla
+  mappa ("Mappa da cache offline"), mostrato solo quando la rete è
+  irraggiungibile E l'ultimo tile è arrivato dalla cache — non ogni volta
+  che la cache viene consultata (sarebbe quasi sempre, essendo la prima
+  fonte). In "Mappe offline", ogni regione scaricata mostra ora stile,
+  numero di tile e range di zoom effettivi (`OfflineRegionInfo`, manifest
+  separato dai byte dei tile su SharedPreferences — necessario perché
+  "quanti tile a quali zoom" non è ricavabile in modo univoco dalla sola
+  cartella quando più regioni si sovrappongono).
+- **(d) Mai un riquadro vuoto:** tile assente sia in cache che in rete →
+  PNG a tinta unita generato una volta con `dart:ui` (grigio-blu chiaro,
+  deliberatamente più chiaro del nero selezionabile per traccia/freccia in
+  "Aspetto traccia", non solo diverso dallo sfondo app scuro).
+- **(e) Verifica end-to-end — esito:** nessun device fisico collegato in
+  questo ambiente (stesso limite già annotato per gli altri test su
+  hardware reale in "Prossimi Step"), quindi verificato con un test
+  automatico che riproduce esattamente lo scenario richiesto in modo
+  deterministico: un tile pre-scritto in cache (stesso metodo
+  `writeTileBytes` usato a valle di un vero download) resta risolvibile e
+  navigabile puntando il `TileLayer` verso un host che rifiuta la
+  connessione all'istante (rete assente simulata senza attese di
+  timeout/DNS, più deterministico di un vero toggle di rete non
+  controllabile da qui); un tile MAI scaricato, con la stessa rete
+  assente, cade sul placeholder neutro invece di un errore/riquadro vuoto.
+  `test/core/map/ccr_tile_provider_test.dart`, 2/2 verdi. **Resta in
+  "Prossimi Step" un test manuale su device reale** (scaricare da UI,
+  modalità aereo, verifica visiva) — non eseguibile in questo ambiente.
+
+**Parte 2 — OpenTopoMap:**
+- `lib/core/map/map_style.dart`, nuovo `enum MapStyle` (`osm`/
+  `openTopoMap`) con URL/subdomini/zoom nativo/attribuzione — unica fonte
+  usata sia dal rendering che dal download, non due configurazioni che
+  potevano disallinearsi.
+- (a) Selettore stile in "Aspetto traccia" → sezione "Mappa"
+  (`SegmentedButton`), accanto a opacità/traccia/freccia. Persistito
+  (`TrackAppearanceSettings.mapStyle`, default `osm`).
+- (b) Attribuzione sempre visibile in basso a sinistra sulla mappa
+  (testo statico, non un link — nessuna dipendenza `url_launcher` nel
+  progetto): "© OpenStreetMap contributors" per OSM, "Dati mappa: ©
+  OpenStreetMap contributors, SRTM · Stile: © OpenTopoMap (CC-BY-SA)" per
+  OpenTopoMap, come richiesto dalla sua policy d'uso. Uso intensivo della
+  cache — vedi Parte 1a — è l'altro requisito della policy.
+- (c) Cache separata per stile (vedi Parte 1b, path con `{styleId}`):
+  scaricare una regione con OSM non la rende disponibile con OpenTopoMap.
+  "Mappe offline" mostra per evento tutte le regioni scaricate con il loro
+  stile; se lo stile attualmente attivo in navigazione non ha una regione
+  scaricata per quell'evento, un avviso lo segnala esplicitamente invece
+  di lasciarlo scoprire in gara.
+- (d) **Zoom massimo OpenTopoMap — verificato empiricamente:** confronto
+  sha del tile reale alla stessa posizione a z=16,17,18,19 — z16/z17 hanno
+  contenuto diverso (nativi), z18 e z19 sono byte-per-byte IDENTICI a un
+  upscale del tile z17. **Zoom nativo massimo: 17.** `MapStyle.
+  openTopoMap.maxNativeZoom = 17` con `TileLayer.maxZoom = 19` (uguale per
+  entrambi gli stili): oltre il 17, flutter_map fa da sé l'upscale
+  client-side dall'ultimo tile nativo in cache — stesso identico
+  risultato visivo del server, senza scaricare/cachare duplicati inutili.
+  Il download (`downloadBoundingBox`) applica lo stesso limite
+  (`OfflineTileService.cappedMaxZoomFor`, testato).
+
+**Parte 3 — verifica copertura varianti:** la logica che copre l'unione di
+ENTRAMBE le varianti di percorso (non solo quella attiva) esisteva già dal
+10/08 ma, con la cache mai letta, non era mai stata verificata sul campo.
+Estratta in `OfflineRegionUtils.eventBoundingBox` (era un metodo privato
+di `offline_maps_screen.dart`) proprio per essere testabile senza montare
+un widget: **confermata corretta** — 3 test dedicati, incluso il caso che
+dimostra l'unione (percorso B creato ma NON attivo, `activeRouteId`
+resta 'A' di default: il bbox include comunque l'area di B, non solo
+quella della variante correntemente in vigore) e un caso "nessuna
+speciale su nessuna variante" → nessuna area.
+
+**Deploy:** `flutter analyze` 0 issues, `flutter test` 129/129 verdi (117
+preesistenti + 12 nuovi: 3 `offline_region_utils_test.dart`, 7
+`offline_tile_service_test.dart`, 2 `ccr_tile_provider_test.dart`).
+`path_provider_platform_interface` aggiunta a `dev_dependencies` (mock
+cache dir nei test, era solo transitiva). `firebase deploy --only
+hosting`, `git push origin main`.
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**
 - Ripristinare regole Storage granulari per produzione (Firestore è già granulare dallo Step 16) — vedi `storage.rules`, TODO ancora aperto
 
-**Mappa (Step 48):**
-- Decidere se integrare OpenTopoMap (o altro stile) come opzione selezionabile in navigazione — valutato e raccomandato allo Step 48, non ancora integrato, in attesa di conferma esplicita prima di procedere.
-- Collegare `OfflineTileService` (cache tile su disco) al `TileLayer` reale — scoperto allo Step 48 che il download "mappe offline" non viene mai letto a runtime, quindi oggi non produce alcun beneficio offline effettivo.
+**RISOLTO allo Step 49:** OpenTopoMap integrato come stile selezionabile (era "da proporre" allo Step 48); `OfflineTileService` ora collegata al `TileLayer` reale tramite `CcrTileProvider` — la cache offline produce un beneficio reale, verificato con test automatico (rete simulata assente, non un device reale — vedi sotto).
+
+**Mappa — test su device reale (Step 49, non eseguibile in questo ambiente):**
+- Scaricare una regione da "Mappe offline" su un device reale, attivare la modalità aereo, verificare visivamente che la mappa resti navigabile in `gps_recording_screen.dart` ai livelli di zoom scaricati (la verifica automatica dello Step 49 simula "rete assente" con un host che rifiuta la connessione, non un vero stato di rete di sistema).
+- Verificare il consumo di storage reale di una cache multi-stile (OSM + OpenTopoMap) su un evento con area ampia, non solo il conteggio tile teorico.
 
 **Test su device reale (Step 36 — mai testati su hardware):**
 - Verificare `isForegroundServiceActive`/`openManufacturerBatterySettings`/aggiornamento notifica con contatore su almeno un device Xiaomi/Oppo/Samsung reale — i componenti nativi dei produttori sono percorsi non ufficiali, potrebbero non esistere su tutte le ROM

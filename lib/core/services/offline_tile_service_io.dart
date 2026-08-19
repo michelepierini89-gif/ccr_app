@@ -10,40 +10,53 @@ Future<void> initCacheDir() async {
   if (!_cacheDir!.existsSync()) _cacheDir!.createSync(recursive: true);
 }
 
-File _tileFile(int z, int x, int y) {
-  final dir = Directory('${_cacheDir!.path}/$z/$x');
+// Rifiniture Step 49 — un livello di cartella in più per lo stile
+// (`osm`/`opentopomap`): scaricare una regione con uno stile non deve mai
+// far risultare "presente" un tile dell'altro stile alla stessa (z,x,y).
+File _tileFile(String styleId, int z, int x, int y) {
+  final dir = Directory('${_cacheDir!.path}/$styleId/$z/$x');
   if (!dir.existsSync()) dir.createSync(recursive: true);
   return File('${dir.path}/$y.png');
 }
 
-Future<bool> tileExists(int z, int x, int y) async {
+Future<bool> tileExists(String styleId, int z, int x, int y) async {
   if (_cacheDir == null) return false;
-  return _tileFile(z, x, y).existsSync();
+  return _tileFile(styleId, z, x, y).existsSync();
 }
 
-Future<Uint8List?> getTileBytes(int z, int x, int y) async {
+Future<Uint8List?> getTileBytes(String styleId, int z, int x, int y) async {
   if (_cacheDir == null) return null;
-  final f = _tileFile(z, x, y);
+  final f = _tileFile(styleId, z, x, y);
   if (!f.existsSync()) return null;
   return f.readAsBytes();
 }
 
-Future<void> writeTileBytes(int z, int x, int y, Uint8List bytes) async {
+Future<void> writeTileBytes(
+    String styleId, int z, int x, int y, Uint8List bytes) async {
   if (_cacheDir == null) return;
-  await _tileFile(z, x, y).writeAsBytes(bytes);
+  await _tileFile(styleId, z, x, y).writeAsBytes(bytes);
 }
 
-Future<int> getCacheSizeBytes() async {
+Future<int> getCacheSizeBytes([String? styleId]) async {
   if (_cacheDir == null || !_cacheDir!.existsSync()) return 0;
+  final root = styleId == null
+      ? _cacheDir!
+      : Directory('${_cacheDir!.path}/$styleId');
+  if (!root.existsSync()) return 0;
   int total = 0;
-  await for (final entity in _cacheDir!.list(recursive: true)) {
+  await for (final entity in root.list(recursive: true)) {
     if (entity is File) total += await entity.length();
   }
   return total;
 }
 
-Future<void> clearCache() async {
+Future<void> clearCache([String? styleId]) async {
   if (_cacheDir == null) return;
-  if (_cacheDir!.existsSync()) await _cacheDir!.delete(recursive: true);
-  await _cacheDir!.create(recursive: true);
+  if (styleId == null) {
+    if (_cacheDir!.existsSync()) await _cacheDir!.delete(recursive: true);
+    await _cacheDir!.create(recursive: true);
+    return;
+  }
+  final dir = Directory('${_cacheDir!.path}/$styleId');
+  if (dir.existsSync()) await dir.delete(recursive: true);
 }

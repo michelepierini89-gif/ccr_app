@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../map/map_style.dart';
 import '../theme/app_colors.dart';
 
 /// Impostazioni di aspetto per la traccia pilota, la freccia di posizione
@@ -19,6 +20,10 @@ class TrackAppearanceSettings {
   // pilota: il default fisso 0.55 sbiadiva anche strade/sentieri, non solo
   // le etichette che doveva attenuare.
   final double tileOpacity;
+  // Step 49 — stile del tile di sfondo, selezionabile accanto a opacità/
+  // traccia/freccia (OSM Standard o OpenTopoMap, quest'ultimo con sentieri
+  // e curve di livello più utili in fuoristrada).
+  final MapStyle mapStyle;
 
   const TrackAppearanceSettings({
     required this.trackWidth,
@@ -29,6 +34,7 @@ class TrackAppearanceSettings {
     required this.refTrackWidth,
     required this.debugPanelVisible,
     required this.tileOpacity,
+    required this.mapStyle,
   });
 
   TrackAppearanceSettings copyWith({
@@ -40,6 +46,7 @@ class TrackAppearanceSettings {
     double? refTrackWidth,
     bool? debugPanelVisible,
     double? tileOpacity,
+    MapStyle? mapStyle,
   }) {
     return TrackAppearanceSettings(
       trackWidth: trackWidth ?? this.trackWidth,
@@ -50,6 +57,7 @@ class TrackAppearanceSettings {
       refTrackWidth: refTrackWidth ?? this.refTrackWidth,
       debugPanelVisible: debugPanelVisible ?? this.debugPanelVisible,
       tileOpacity: tileOpacity ?? this.tileOpacity,
+      mapStyle: mapStyle ?? this.mapStyle,
     );
   }
 }
@@ -88,6 +96,7 @@ class TrackAppearanceService {
   static const _refTrackWidthKey = 'track_appearance_ref_track_width';
   static const _debugPanelVisibleKey = 'track_appearance_debug_panel_visible';
   static const _tileOpacityKey = 'track_appearance_tile_opacity';
+  static const _mapStyleKey = 'track_appearance_map_style';
 
   final SharedPreferences _prefs;
 
@@ -119,6 +128,7 @@ class TrackAppearanceService {
       refTrackWidth: refTrackWidth,
       debugPanelVisible: _prefs.getBool(_debugPanelVisibleKey) ?? true,
       tileOpacity: tileOpacity,
+      mapStyle: MapStyle.fromId(_prefs.getString(_mapStyleKey)),
     );
   }
 
@@ -145,4 +155,7 @@ class TrackAppearanceService {
 
   Future<void> saveTileOpacity(double opacity) => _prefs.setDouble(
       _tileOpacityKey, opacity.clamp(minTileOpacity, maxTileOpacity));
+
+  Future<void> saveMapStyle(MapStyle style) =>
+      _prefs.setString(_mapStyleKey, style.id);
 }
