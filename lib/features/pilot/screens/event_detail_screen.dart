@@ -14,6 +14,7 @@ import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/gpx_utils.dart';
+import '../../../core/utils/time_format_utils.dart';
 import '../../../core/widgets/skeleton_loader.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../admin/providers/admin_provider.dart';
@@ -21,6 +22,7 @@ import '../../map/danger_marker_icon.dart';
 import '../../map/screens/track_map_screen.dart';
 import '../../timing/screens/timing_screen.dart';
 import '../providers/pilot_provider.dart';
+import '../providers/training_stats_provider.dart';
 import 'race_result_screen.dart';
 
 class EventDetailScreen extends ConsumerStatefulWidget {
@@ -459,6 +461,7 @@ class _EventDetailScreenState extends ConsumerState<EventDetailScreen> {
                   eventNome: event.nome,
                   maxSquadra: event.maxSquadra,
                   isArchived: event.stato == EventStatus.archiviata,
+                  isTraining: event.isAllenamento,
                 ),
               ],
             ),
@@ -478,12 +481,14 @@ class _PilotRegistrationSection extends ConsumerStatefulWidget {
   final String eventNome;
   final int maxSquadra;
   final bool isArchived;
+  final bool isTraining;
 
   const _PilotRegistrationSection({
     required this.eventId,
     required this.eventNome,
     required this.maxSquadra,
     this.isArchived = false,
+    this.isTraining = false,
   });
 
   @override
@@ -769,6 +774,16 @@ class _PilotRegistrationSectionState
                             },
                           ),
                         ],
+                        // Rifiniture Step 47 — miglior tempo personale e
+                        // record squadra per PS, direttamente in pagina
+                        // (senza passare dalle Statistiche): è
+                        // l'informazione principale in un allenamento.
+                        if (widget.isTraining &&
+                            reg.stato == RegistrationStatus.approvato &&
+                            reg.squadraId != null) ...[
+                          const SizedBox(height: 12),
+                          _TrainingBestTimesCard(eventId: widget.eventId),
+                        ],
                         // GPS button for approved pilots
                         if (reg.stato == RegistrationStatus.approvato) ...[
                           const SizedBox(height: 16),
@@ -979,6 +994,126 @@ class _PilotRegistrationSectionState
                       fontWeight: FontWeight.bold, letterSpacing: 0.5)),
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Rifiniture Step 47: miglior tempo personale + record squadra ───────────────
+
+/// Mostrato nella pagina evento di un allenamento (non nelle Statistiche,
+/// dove esisteva già solo il tempo personale): per PS, il miglior tempo
+/// PERSONALE del pilota ([trainingStatsProvider], già scritto allo Step 47)
+/// e il record di SQUADRA fra tutti i tentativi completati di tutti i
+/// membri ([myTrainingTeamBestProvider], nuovo qui, riusa
+/// `TrainingClassificaEngine` mai collegato a nessuna UI finora).
+class _TrainingBestTimesCard extends ConsumerWidget {
+  final String eventId;
+  const _TrainingBestTimesCard({required this.eventId});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final event = ref.watch(eventProvider(eventId)).valueOrNull;
+    if (event == null) return const SizedBox();
+
+    final myBestAsync = ref.watch(trainingStatsProvider);
+    final teamEntryAsync = ref.watch(myTrainingTeamBestProvider(eventId));
+    final myStats = myBestAsync.valueOrNull
+        ?.where((s) => s.eventId == eventId)
+        .firstOrNull;
+    final teamEntry = teamEntryAsync.valueOrNull;
+
+    final specialiIds = <String>{
+      ...?myStats?.migliorTempoPersonalePerPs.keys,
+      ...?teamEntry?.bestBySpecialId.keys,
+    };
+    // Nessun tentativo completato ancora — niente da mostrare (evita una
+    // card vuota sopra il pulsante GPS prima della prima PS).
+    if (specialiIds.isEmpty) return const SizedBox();
+
+    // Nome PS da ENTRAMBE le varianti percorso (un tentativo può essere
+    // stato corso su A o su B, vedi AttemptModel.routeVariantId) — non solo
+    // quella attualmente attiva sull'evento.
+    final orderedIds = <String>[];
+    for (final variant in [
+      event.routeAAsVariant,
+      if (event.routeB != null) event.routeB!,
+    ]) {
+      for (final s in variant.speciali) {
+        if (specialiIds.contains(s.id) && !orderedIds.contains(s.id)) {
+          orderedIds.add(s.id);
+        }
+      }
+    }
+    final nomeById = <String, String>{
+      for (final variant in [
+        event.routeAAsVariant,
+        if (event.routeB != null) event.routeB!,
+      ])
+        for (final s in variant.speciali) s.id: s.nome,
+    };
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.cardBackground,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.emoji_events_outlined,
+                  color: AppColors.accent, size: 18),
+              SizedBox(width: 8),
+              Text('I miei tempi',
+                  style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          for (final id in orderedIds)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Text(nomeById[id] ?? id,
+                        style: const TextStyle(
+                            color: AppColors.textSecondary, fontSize: 13)),
+                  ),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        myStats?.migliorTempoPersonalePerPs[id] != null
+                            ? TimeFormatUtils.formatRaceTime(
+                                myStats!.migliorTempoPersonalePerPs[id]!)
+                            : '—',
+                        style: const TextStyle(
+                            color: AppColors.textPrimary,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13),
+                      ),
+                      if (teamEntry?.bestBySpecialId[id] != null)
+                        Text(
+                          'Squadra: ${TimeFormatUtils.formatRaceTime(teamEntry!.bestBySpecialId[id]!.tempo.tempo)}'
+                          ' (${teamEntry.bestBySpecialId[id]!.userName})',
+                          style: const TextStyle(
+                              color: AppColors.textSecondary, fontSize: 11),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
         ],
       ),
     );

@@ -770,12 +770,11 @@ class GpsService extends ChangeNotifier {
   /// regola "nessun tempo forfettario in allenamento" si applica a valle,
   /// nel motore classifica dedicato, non qui).
   ///
-  /// Nessuna coda offline per i tentativi: `OfflineQueueService.
-  /// queuePassage` risincronizza sempre sulla collezione piatta di gara
-  /// (mai attempt-aware) — instradarci un fallback di allenamento
-  /// scriverebbe nel posto sbagliato. Un tentativo è comunque a basso
-  /// rischio per definizione: se un passaggio va perso, il pilota rifà il
-  /// tentativo.
+  /// Rifiniture Step 47 — coda offline estesa anche ai tentativi
+  /// (`OfflineQueueService.queuePassage(attemptId: ...)` instrada la
+  /// riproduzione verso `recordAttemptWaypointPassage`): un allenamento è
+  /// il caso d'uso con più probabilità di trovarsi senza copertura, perdere
+  /// un passaggio lì costa un intero tentativo da rifare.
   Future<void> _persistPassage({
     required String waypointId,
     required String waypointNome,
@@ -801,7 +800,15 @@ class GpsService extends ChangeNotifier {
           timingMethod: timingMethod,
         );
       } catch (_) {
-        // Best-effort (vedi doc sopra): nessuna coda offline per i tentativi.
+        await _offlineQueue.queuePassage(
+          eventId: _activeEventId!,
+          userId: _activeUserId!,
+          waypointId: waypointId,
+          waypointNome: waypointNome,
+          timestamp: timestamp,
+          timingMethod: timingMethod,
+          attemptId: _attemptId,
+        );
       }
       return;
     }

@@ -1,6 +1,9 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/models/attempt_model.dart';
+import '../../../core/models/classifica_model.dart';
+import '../../../core/models/registration_model.dart';
 import '../../../core/services/classifica_engine.dart';
+import '../../../core/services/training_classifica_engine.dart';
 import '../../admin/providers/admin_provider.dart';
 import '../../auth/providers/auth_provider.dart';
 
@@ -70,4 +73,67 @@ final trainingStatsProvider =
     ));
   }
   return result;
+});
+
+/// Rifiniture Step 47 — record di SQUADRA su un evento di allenamento,
+/// mostrato direttamente nella pagina dettaglio evento del pilota (senza
+/// passare dalle Statistiche): riusa [TrainingClassificaEngine] (già
+/// scritto allo Step 47, mai collegato a una UI) filtrato alla sola
+/// squadra dell'utente — evita di scaricare tentativi/passaggi di tutte le
+/// altre squadre iscritte all'evento, che la classifica completa
+/// richiederebbe.
+final myTrainingTeamBestProvider =
+    FutureProvider.family<TrainingClassificaEntry?, String>(
+        (ref, eventId) async {
+  final user = ref.watch(authStateProvider).valueOrNull;
+  if (user == null) return null;
+  final svc = ref.watch(firestoreServiceProvider);
+
+  final event = await svc.getEvent(eventId);
+  if (event == null || !event.isAllenamento) return null;
+
+  final allRegs = await svc.getRegistrations(eventId).first;
+  final myReg = allRegs.where((r) => r.userId == user.uid).firstOrNull;
+  if (myReg?.squadraId == null) return null;
+
+  final teamRegs = allRegs
+      .where((r) =>
+          r.squadraId == myReg!.squadraId &&
+          r.stato == RegistrationStatus.approvato)
+      .toList();
+  final memberIds = teamRegs.map((r) => r.userId).toSet();
+
+  final allCompleted = await svc.getCompletedAttemptsForEvent(eventId);
+  final teamAttempts =
+      allCompleted.where((a) => memberIds.contains(a.userId)).toList();
+  if (teamAttempts.isEmpty) return null;
+
+  final teams = await svc.getTeams(eventId).first;
+  final penalties = await svc.getEffectivePenaltySettings(eventId);
+
+  final passagesByAttemptId = <String, List<WaypointPassageRecord>>{};
+  final violationsByAttemptId = <String, List<SpeedZoneViolation>>{};
+  for (final attempt in teamAttempts) {
+    passagesByAttemptId[attempt.id] = await svc.getAttemptPassagesOnce(
+        eventId, attempt.userId, attempt.id);
+    violationsByAttemptId[attempt.id] =
+        await svc.getAttemptSpeedZoneViolationsOnce(
+            eventId, attempt.userId, attempt.id);
+  }
+
+  final userNames = {
+    for (final r in teamRegs) r.userId: '${r.nome} ${r.cognome}',
+  };
+
+  final entries = TrainingClassificaEngine.compute(
+    event: event,
+    registrations: teamRegs,
+    teams: teams,
+    completedAttempts: teamAttempts,
+    passagesByAttemptId: passagesByAttemptId,
+    speedViolationsByAttemptId: violationsByAttemptId,
+    userNames: userNames,
+    penalties: penalties,
+  );
+  return entries.firstOrNull;
 });

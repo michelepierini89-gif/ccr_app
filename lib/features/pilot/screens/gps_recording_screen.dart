@@ -886,15 +886,23 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
   }
 
   Future<void> _confirmWithdrawal() async {
+    final gps = ref.read(gpsServiceProvider);
+    // Determina il contesto PRIMA dei dialoghi (non solo per la
+    // persistenza a valle, già corretta): un tentativo di allenamento si
+    // abbandona, non ci si "ritira" da una gara — vedi rifiniture Step 47.
+    final isTraining = gps.activeAttemptId != null;
+
     final first = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.cardBackground,
-        title: const Text('Conferma ritiro',
-            style: TextStyle(color: AppColors.textPrimary)),
-        content: const Text(
-          'Sei sicuro di volerti ritirare dalla gara?',
-          style: TextStyle(color: AppColors.textSecondary),
+        title: Text(isTraining ? 'Conferma abbandono' : 'Conferma ritiro',
+            style: const TextStyle(color: AppColors.textPrimary)),
+        content: Text(
+          isTraining
+              ? 'Sei sicuro di voler abbandonare questo tentativo?'
+              : 'Sei sicuro di volerti ritirare dalla gara?',
+          style: const TextStyle(color: AppColors.textSecondary),
         ),
         actions: [
           TextButton(
@@ -918,10 +926,14 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         backgroundColor: AppColors.cardBackground,
         title: const Text('Ultima conferma',
             style: TextStyle(color: AppColors.error)),
-        content: const Text(
-          'Questa azione non può essere annullata.\n'
-          'La traccia parziale verrà salvata e l\'admin verrà notificato.',
-          style: TextStyle(color: AppColors.textSecondary),
+        content: Text(
+          isTraining
+              ? 'Questa azione non può essere annullata.\n'
+                  'La traccia parziale verrà salvata; potrai avviare un '
+                  'nuovo tentativo subito dopo.'
+              : 'Questa azione non può essere annullata.\n'
+                  'La traccia parziale verrà salvata e l\'admin verrà notificato.',
+          style: const TextStyle(color: AppColors.textSecondary),
         ),
         actions: [
           TextButton(
@@ -932,14 +944,14 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           ElevatedButton(
             onPressed: () => Navigator.of(ctx).pop(true),
             style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
-            child: const Text('CONFERMO IL RITIRO'),
+            child: Text(
+                isTraining ? 'CONFERMO L\'ABBANDONO' : 'CONFERMO IL RITIRO'),
           ),
         ],
       ),
     );
     if (confirmed != true || !mounted) return;
 
-    final gps = ref.read(gpsServiceProvider);
     final user = ref.read(authStateProvider).valueOrNull;
     final eventId = widget.eventId;
     final attemptId = gps.activeAttemptId;
@@ -1147,7 +1159,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           children: [
             CircularProgressIndicator(color: AppColors.accent),
             SizedBox(height: 16),
-            Text('Verifica stato gara…',
+            Text('Verifica stato sessione…',
                 style: TextStyle(color: AppColors.textSecondary)),
           ],
         ),
@@ -1219,6 +1231,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           locationAlwaysOk: _locationAlwaysOk,
           batteryOptOk: _batteryOptOk,
           gpsSignalOk: pos != null,
+          isTraining: event?.isAllenamento == true,
           onFixLocation: _fixLocationPermission,
           onFixBattery: _fixBatteryOptimization,
           onGpsSignalTap: _showGpsSignalTip,
@@ -1527,6 +1540,10 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     final dateFmt = DateFormat('dd/MM/yyyy', 'it');
     final pilotTrack = statusData?['pilotTrack'] as List<dynamic>?;
     final hasGpsData = pilotTrack != null && pilotTrack.isNotEmpty;
+    // Rifiniture Step 47 — un allenamento chiuso dall'admin arriva qui
+    // (stato archiviata, vedi EventType.allenamento) ma non ha un "giorno
+    // di svolgimento" come una gara: 'data' è la data di APERTURA.
+    final isTraining = event.isAllenamento;
 
     return Column(
       children: [
@@ -1543,10 +1560,10 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                   size: 72,
                 ),
                 const SizedBox(height: 16),
-                const Text(
-                  'Gara conclusa',
+                Text(
+                  isTraining ? 'Allenamento concluso' : 'Gara conclusa',
                   textAlign: TextAlign.center,
-                  style: TextStyle(
+                  style: const TextStyle(
                     color: AppColors.textPrimary,
                     fontSize: 22,
                     fontWeight: FontWeight.bold,
@@ -1554,7 +1571,9 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Questa gara si è svolta il ${dateFmt.format(event.data)}',
+                  isTraining
+                      ? 'L\'organizzatore ha chiuso questo allenamento.'
+                      : 'Questa gara si è svolta il ${dateFmt.format(event.data)}',
                   textAlign: TextAlign.center,
                   style: const TextStyle(
                       color: AppColors.textSecondary, fontSize: 14),
@@ -1585,10 +1604,12 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                     ),
                   )
                 else
-                  const Text(
-                    'Non hai partecipato a questa gara',
+                  Text(
+                    isTraining
+                        ? 'Non hai registrato tentativi in questo allenamento'
+                        : 'Non hai partecipato a questa gara',
                     textAlign: TextAlign.center,
-                    style: TextStyle(
+                    style: const TextStyle(
                         color: AppColors.textSecondary, fontSize: 13),
                   ),
               ],
@@ -1903,9 +1924,11 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                   // niente cambio di provider (nessuna dipendenza/ToS
                   // aggiuntiva). Opacità ridotta sul solo layer di sfondo
                   // così traccia/marker/porte, disegnati sopra a piena
-                  // opacità, restano il primo piano leggibile.
+                  // opacità, restano il primo piano leggibile. Regolabile
+                  // dal pilota (rifiniture Step 47): il fisso 0.55
+                  // sbiadiva anche strade/sentieri, non solo le etichette.
                   Opacity(
-                    opacity: 0.55,
+                    opacity: trackAppearance.tileOpacity,
                     child: TileLayer(
                       urlTemplate:
                           'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -2385,7 +2408,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                         message: _isTimeExpired
                             ? 'Tempo scaduto — ritiro automatico in corso'
                             : !pastMinProtection
-                                ? 'Non puoi terminare la gara nei primi '
+                                ? 'Non puoi terminare nei primi '
                                     '${minRaceProtection.inMinutes} minuti '
                                     'dall\'avvio'
                                 : canFinish
@@ -2417,11 +2440,13 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                           // un textScaleFactor di sistema più alto o uno
                           // schermo stretto, il testo si restringe invece
                           // di troncarsi (osservato su "SALTA SPECIALE").
-                          label: const FittedBox(
+                          label: FittedBox(
                             fit: BoxFit.scaleDown,
                             child: Text(
-                              'FINE GARA',
-                              style: TextStyle(
+                              event?.isAllenamento == true
+                                  ? 'FINE TENTATIVO'
+                                  : 'FINE GARA',
+                              style: const TextStyle(
                                   fontWeight: FontWeight.bold,
                                   letterSpacing: 1),
                             ),
@@ -2451,11 +2476,13 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                                 borderRadius: BorderRadius.circular(12)),
                           ),
                           icon: const Icon(Icons.flag, size: 20),
-                          label: const FittedBox(
+                          label: FittedBox(
                             fit: BoxFit.scaleDown,
                             child: Text(
-                              'RITIRO',
-                              style: TextStyle(
+                              event?.isAllenamento == true
+                                  ? 'ABBANDONA'
+                                  : 'RITIRO',
+                              style: const TextStyle(
                                 fontSize: 13,
                                 fontWeight: FontWeight.bold,
                                 letterSpacing: 1.0,
@@ -2592,6 +2619,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     Color refTrackColor = current.refTrackColor;
     double refTrackWidth = current.refTrackWidth;
     var debugPanelVisible = current.debugPanelVisible;
+    double tileOpacity = current.tileOpacity;
 
     final voiceService = ref.read(voiceAlertServiceProvider);
     var voiceSettings = voiceService.settings;
@@ -2622,6 +2650,29 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                         fontSize: 18,
                         fontWeight: FontWeight.bold)),
                 const SizedBox(height: 16),
+                const Text('Mappa',
+                    style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold)),
+                const SizedBox(height: 12),
+                Text('Opacità sfondo: ${(tileOpacity * 100).round()}%',
+                    style: const TextStyle(color: AppColors.textSecondary)),
+                Slider(
+                  value: tileOpacity,
+                  min: TrackAppearanceService.minTileOpacity,
+                  max: TrackAppearanceService.maxTileOpacity,
+                  divisions: ((TrackAppearanceService.maxTileOpacity -
+                              TrackAppearanceService.minTileOpacity) /
+                          0.05)
+                      .round(),
+                  activeColor: AppColors.accent,
+                  label: '${(tileOpacity * 100).round()}%',
+                  onChanged: (v) => setSheetState(() => tileOpacity = v),
+                ),
+                const SizedBox(height: 24),
+                const Divider(color: AppColors.border),
+                const SizedBox(height: 8),
                 Text('Larghezza: ${width.toStringAsFixed(1)}',
                     style: const TextStyle(color: AppColors.textSecondary)),
                 Container(
@@ -2875,7 +2926,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                       style: TextStyle(color: AppColors.textPrimary)),
                   subtitle: const Text(
                       'Mostra heading, bearing e satelliti sulla mappa '
-                      'durante la gara.',
+                      'durante la sessione.',
                       style: TextStyle(
                           color: AppColors.textSecondary, fontSize: 12)),
                   value: debugPanelVisible,
@@ -2897,6 +2948,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
                       await notifier.setRefTrackColor(refTrackColor);
                       await notifier.setRefTrackWidth(refTrackWidth);
                       await notifier.setDebugPanelVisible(debugPanelVisible);
+                      await notifier.setTileOpacity(tileOpacity);
                       await voiceService.updateSettings(voiceSettings);
                       if (sheetCtx.mounted) Navigator.pop(sheetCtx);
                     },
@@ -3217,6 +3269,7 @@ class _PrepChecklistCard extends StatelessWidget {
   final bool locationAlwaysOk;
   final bool batteryOptOk;
   final bool gpsSignalOk;
+  final bool isTraining;
   final VoidCallback onFixLocation;
   final VoidCallback onFixBattery;
   final VoidCallback onGpsSignalTap;
@@ -3226,6 +3279,7 @@ class _PrepChecklistCard extends StatelessWidget {
     required this.locationAlwaysOk,
     required this.batteryOptOk,
     required this.gpsSignalOk,
+    this.isTraining = false,
     required this.onFixLocation,
     required this.onFixBattery,
     required this.onGpsSignalTap,
@@ -3246,8 +3300,8 @@ class _PrepChecklistCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Preparazione gara',
-              style: TextStyle(
+          Text(isTraining ? 'Preparazione allenamento' : 'Preparazione gara',
+              style: const TextStyle(
                   color: AppColors.textPrimary,
                   fontSize: 13,
                   fontWeight: FontWeight.bold)),

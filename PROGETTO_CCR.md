@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 18 agosto 2026 (Step 47 completato)  
+**Data aggiornamento:** 19 agosto 2026 (Step 48 completato)  
 **Branch:** main  
 **Versione:** 1.0.2+3
 
@@ -2313,12 +2313,118 @@ curva, e nuovo tipo di evento "allenamento" con tentativi multipli.
 - `firebase deploy --only hosting,firestore:rules`
 - `git push origin main`
 
+### Step 48 — Deploy Cloud Functions Step 47, opacità mappa configurabile, rifiniture allenamento (19 agosto 2026) ✅
+
+Tre interventi richiesti sullo Step 47 appena concluso: il deploy rimasto in
+sospeso (urgente — rischio di chiusure automatiche indebite su un
+allenamento), leggibilità della mappa in navigazione, rifiniture sul flusso
+allenamento (testi, informazione principale in pagina, robustezza offline).
+
+**Parte 1 — deploy Cloud Functions (urgente):**
+- `autoArchiveEvents`/`enforceMaxRaceTime` (esclusione `tipoEvento ==
+  'allenamento'`, scritta ma non deployata allo Step 47) deployate con
+  `firebase deploy --only functions:autoArchiveEvents,functions:enforceMaxRaceTime`.
+- **Verifica non fermata all'esito del comando** (stesso principio del
+  confronto ruleset dello Step 43): script Node one-off
+  (`tools/` pattern, token OAuth di `firebase login`, mai un service
+  account key) che interroga la Cloud Functions v2 REST API, scarica
+  l'archivio sorgente effettivamente attivo (`buildConfig.source.
+  storageSource`) e confronta lo sha256 di `index.js` con quello del
+  repo — **identico byte-per-byte**, `state: ACTIVE`, `updateTime`
+  coerente col deploy appena eseguito. Le due funzioni condividono lo
+  stesso archivio sorgente (un solo upload per l'intero codebase
+  `functions/`), quindi la verifica su una copre entrambe.
+
+**Parte 2 — leggibilità mappa in navigazione:**
+- `TrackAppearanceSettings.tileOpacity` (nuovo campo, persistito su
+  SharedPreferences come gli altri parametri di aspetto): opacità del tile
+  di sfondo regolabile dal pilota in "Aspetto traccia" → sezione "Mappa"
+  (nuovo slider, 30%-100%), default alzato da 0.55 (fisso, sbiadiva anche
+  strade/sentieri) a **0.75**.
+- **Stile tile alternativo — valutato, NON integrato** (da proporre
+  all'utente prima di un'eventuale integrazione, come richiesto):
+  **OpenTopoMap**
+  (`tile.opentopomap.org`) raccomandato — stile topografico su dati OSM +
+  SRTM, sentieri/mulattiere e morfologia (curve di livello) molto più
+  evidenti delle etichette urbane, nessuna chiave richiesta, stesso schema
+  URL `{z}/{x}/{y}.png` di OSM Standard (endpoint verificato raggiungibile,
+  200 OK). Alternativa scartata: CyclOSM (endpoint raggiungibile anch'esso,
+  ma taglio ciclabile-urbano, meno pertinente al fuoristrada). Thunderforest
+  Outdoors non valutato oltre: richiede comunque una API key (anche se
+  gratuita) con rate limit, frizione maggiore di OpenTopoMap per un
+  progetto hobby.
+- **Scoperta collaterale, non risolta qui:** `OfflineTileService`
+  (`offline_maps_screen.dart`) scarica e cachea i tile OSM su file locale,
+  ma il `TileLayer` di `gps_recording_screen.dart` usa il provider di rete
+  di default di `flutter_map` — la cache su disco non viene mai letta a
+  runtime. Il download "mappe offline" oggi non produce alcun beneficio
+  offline reale. Resta da collegare (un `TileProvider` custom che consulta
+  `OfflineTileService` prima della rete) — non toccato in questo step,
+  segnalato per una decisione futura.
+
+**Parte 3 — rifiniture allenamento:**
+- a) **Testi "gara" in contesto allenamento**, oltre al dialogo RITIRO
+  segnalato: audit di tutte le occorrenze di "gara" in
+  `gps_recording_screen.dart` visibili al pilota. Corretti — dialogo
+  RITIRO (`Conferma abbandono`/`Sei sicuro di voler abbandonare questo
+  tentativo?`/`CONFERMO L'ABBANDONO`, testo sull'admin NON notificato
+  rimosso perché falso per un tentativo), bottoni FINE GARA/RITIRO →
+  "FINE TENTATIVO"/"ABBANDONA" quando `event.isAllenamento`, tooltip
+  minimo-durata (rimossa la parola "gara", vale per entrambi), checklist
+  pre-partenza "Preparazione gara" → "Preparazione allenamento",
+  `_buildRaceOver` (evento archiviato: un allenamento chiuso dall'admin ci
+  arriva anche lui) "Gara conclusa"/"si è svolta il..."/"Non hai
+  partecipato" → varianti allenamento senza riferimento a una data di
+  svolgimento (che per l'allenamento non esiste, `data` è apertura).
+  Due testi generici minori (spinner "Verifica stato gara…", sottotitolo
+  pannello debug) resi neutri. **Non toccati deliberatamente:**
+  `_buildRaceDone` (raceStatus finished/retired) — mai raggiungibile in
+  allenamento, che non scrive mai `raceStatus`; il testo lì resta
+  corretto per la gara senza bisogno di branching.
+- b) **Miglior tempo personale + record squadra in pagina evento**: nuova
+  card in `event_detail_screen.dart` (sopra il pulsante GPS, visibile solo
+  per eventi di allenamento con iscrizione approvata), niente passaggio
+  dalle Statistiche. Riusa `trainingStatsProvider` (Step 47, tempo
+  personale) e un nuovo `myTrainingTeamBestProvider` che finalmente
+  collega `TrainingClassificaEngine.compute` (scritto allo Step 47, mai
+  richiamato da nessuna UI/provider fino ad ora) — filtrato alla sola
+  squadra dell'utente per evitare di scaricare tentativi/passaggi di tutte
+  le altre squadre iscritte (userebbe `getCompletedAttemptsForEvent`,
+  collection-group query già pronta, ma su tutto l'evento). Nomi PS
+  risolti su ENTRAMBE le varianti percorso A/B (un tentativo può essere
+  stato corso su una qualunque delle due).
+- c) **Coda offline estesa ai tentativi** — valutata e giudicata
+  contenuta, implementata: `OfflineQueueService.queuePassage` accetta un
+  `attemptId` opzionale, `_syncList` sceglie in replay fra
+  `recordAttemptWaypointPassage` (attempt) e `recordWaypointPassage`
+  (gara, invariato) in base alla sua presenza. `GpsService._persistPassage`
+  ora rimette in coda un passaggio di tentativo fallito invece di
+  scartarlo silenziosamente (comportamento precedente, doc-commentato
+  come scelta deliberata allo Step 47 — qui invertita perché estendere la
+  struttura dati esistente costava poche righe, non un intervento
+  strutturale). 2 test dedicati in `test/core/services/
+  offline_queue_attempt_test.dart` (replay verso la sottocollezione giusta
+  per un tentativo, comportamento gara invariato).
+- **Prossimi Step, voce Step 46 aggiornata:** la riduzione del dead
+  reckoning in curva, lasciata aperta a fine Step 46, è stata implementata
+  allo Step 47 (vedi sezione corrispondente) — rimossa da "resta aperto".
+
+**Deploy:** `flutter analyze` 0 issues, `flutter test` 117/117 verdi (115
+preesistenti + 2 nuovi in `offline_queue_attempt_test.dart`),
+`firebase deploy --only functions:autoArchiveEvents,functions:
+enforceMaxRaceTime` (Parte 1, verificato sha256) + `firebase deploy
+--only hosting` (Parte 2/3), `git push origin main`.
+
 ---
 
 ## Prossimi Step
 
 **Produzione / sicurezza:**
 - Ripristinare regole Storage granulari per produzione (Firestore è già granulare dallo Step 16) — vedi `storage.rules`, TODO ancora aperto
+
+**Mappa (Step 48):**
+- Decidere se integrare OpenTopoMap (o altro stile) come opzione selezionabile in navigazione — valutato e raccomandato allo Step 48, non ancora integrato, in attesa di conferma esplicita prima di procedere.
+- Collegare `OfflineTileService` (cache tile su disco) al `TileLayer` reale — scoperto allo Step 48 che il download "mappe offline" non viene mai letto a runtime, quindi oggi non produce alcun beneficio offline effettivo.
 
 **Test su device reale (Step 36 — mai testati su hardware):**
 - Verificare `isForegroundServiceActive`/`openManufacturerBatterySettings`/aggiornamento notifica con contatore su almeno un device Xiaomi/Oppo/Samsung reale — i componenti nativi dei produttori sono percorsi non ufficiali, potrebbero non esistere su tutte le ROM
@@ -2335,7 +2441,7 @@ curva, e nuovo tipo di evento "allenamento" con tentativi multipli.
 - Rieseguire il confronto raggio/porta/RTS su una gara futura con `pilotTrackFull` reale (timestamp + accuracy veri, non sintetici) per validare i valori assoluti di durata, non solo il confronto qualitativo tra metodi
 - Verificare se la perdita di 2 PS su 5 passando da porta+raggio a porta+RTS (vista nella validazione sintetica) si ripete su dati con cadenza di campionamento reale (250ms in speciale) invece del 1s sintetico usato
 
-**RISOLTO allo Step 45/46 (griglia parametrica su dati reali + curvatura implementata):** il test "Carring CLO 4" (17/08) ha fornito i timestamp reali (`fullTrackChunks`, entrambi i piloti) che mancavano dal 09/08. Griglia sigmaAccel×accuracy×jump+RTS su dati reali (Step 45 punto 5); controllo di coerenza bussola implementato e validato sul log reale (Step 45 punto 2); soglia accuracy 6m e sigmaAccel adattivo alla curvatura (bearing GPS, mai giroscopio) implementati e messi in produzione allo Step 46, con metrica dedicata sui tratti ad alta curvatura e verifica di non-regressione sulle porte virtuali. Step 46 ha anche esteso la griglia alla posizione di DISPLAY (Kalman+dead reckoning), non solo quella registrata — vedi Step 46 punto 3: il dead reckoning misurato peggiora l'aderenza in curva del 7%, disattivarlo la migliora del 6% rispetto alla registrata pura, ma la RIDUZIONE del dead reckoning in curva non è stata implementata (solo misurata). **Resta aperto:** decidere se/come ridurre il dead reckoning di `ImuFusionService` in curva sulla base dei numeri dello Step 46; valutazione modello CTRV ancora da fare.
+**RISOLTO allo Step 45/46/47 (griglia parametrica su dati reali + curvatura + riduzione dead reckoning implementate):** il test "Carring CLO 4" (17/08) ha fornito i timestamp reali (`fullTrackChunks`, entrambi i piloti) che mancavano dal 09/08. Griglia sigmaAccel×accuracy×jump+RTS su dati reali (Step 45 punto 5); controllo di coerenza bussola implementato e validato sul log reale (Step 45 punto 2); soglia accuracy 6m e sigmaAccel adattivo alla curvatura (bearing GPS, mai giroscopio) implementati e messi in produzione allo Step 46, con metrica dedicata sui tratti ad alta curvatura e verifica di non-regressione sulle porte virtuali. Step 46 ha anche esteso la griglia alla posizione di DISPLAY (Kalman+dead reckoning), non solo quella registrata: il dead reckoning misurato peggiorava l'aderenza in curva del 7%, disattivarlo la migliorava del 6% rispetto alla registrata pura. Allo Step 47, taper continuo sulla distanza di proiezione del dead reckoning guidato dalla velocità angolare (stessa stima usata per sigmaAccel, nessuna ridondanza): invariato <10°/s, annullato >50°/s. Risultato su Carring CLO4: 13.4m (+7%) → 13.3m (+6%) — guadagno reale ma piccolo, il dataset ha fix già fitti che limitano quanto il DR può divergere. Valutazione modello CTRV ancora da fare (non prioritario dato il guadagno marginale misurato).
 
 **Limiti noti dallo Step 38 (diagnosticati, non risolti — nessuna azione pianificata, solo da tenere a mente):**
 - `_trySpecialStartRecovery`/`_trySpecialEndRecovery`: il tentativo "one-shot" può consumarsi troppo presto durante l'avvicinamento a un waypoint (quando la distanza è ancora calando verso il target, non ancora al minimo), fallendo il lookback e non venendo mai ritentato — osservato su PS4 INIZIO. Il Fix 1 (precedenza) ne limita il danno quando una porta successiva recupera il dato, ma il meccanismo in sé resta fragile. Una revisione (es. tentare al momento di massimo avvicinamento, non al primo ingresso in raggio) richiede test approfonditi su altre gare prima di toccare una logica già più volte tarata sul campo.

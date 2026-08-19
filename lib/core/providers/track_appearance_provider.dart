@@ -49,6 +49,11 @@ class TrackAppearanceNotifier extends Notifier<TrackAppearanceSettings> {
         .read(trackAppearanceServiceProvider)
         .saveDebugPanelVisible(visible);
   }
+
+  Future<void> setTileOpacity(double opacity) async {
+    state = state.copyWith(tileOpacity: opacity);
+    await ref.read(trackAppearanceServiceProvider).saveTileOpacity(opacity);
+  }
 }
 
 final trackAppearanceProvider =

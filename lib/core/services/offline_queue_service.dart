@@ -54,6 +54,10 @@ class OfflineQueueService extends ChangeNotifier {
     required String waypointNome,
     required DateTime timestamp,
     String timingMethod = 'radius',
+    // Rifiniture Step 47 — non-null per un passaggio di allenamento: la
+    // riproduzione (vedi _syncList sotto) instrada verso la sottocollezione
+    // del tentativo invece che verso la collezione piatta di gara.
+    String? attemptId,
   }) async {
     final list = _getList(_kPassagesKey)
       ..add({
@@ -63,6 +67,7 @@ class OfflineQueueService extends ChangeNotifier {
         'waypointNome': waypointNome,
         'timestamp': timestamp.toIso8601String(),
         'timingMethod': timingMethod,
+        'attemptId': ?attemptId,
       });
     await _saveList(_kPassagesKey, list);
     debugPrint('OfflineQueue: passage queued (${list.length} pending)');
@@ -153,14 +158,28 @@ class OfflineQueueService extends ChangeNotifier {
     try {
       synced += await _syncList(
         _kPassagesKey,
-        (p) => firestore.recordWaypointPassage(
-          eventId: p['eventId'] as String,
-          userId: p['userId'] as String,
-          waypointId: p['waypointId'] as String,
-          waypointNome: p['waypointNome'] as String,
-          timestamp: DateTime.parse(p['timestamp'] as String),
-          timingMethod: p['timingMethod'] as String? ?? 'radius',
-        ),
+        (p) {
+          final attemptId = p['attemptId'] as String?;
+          if (attemptId != null) {
+            return firestore.recordAttemptWaypointPassage(
+              eventId: p['eventId'] as String,
+              userId: p['userId'] as String,
+              attemptId: attemptId,
+              waypointId: p['waypointId'] as String,
+              waypointNome: p['waypointNome'] as String,
+              timestamp: DateTime.parse(p['timestamp'] as String),
+              timingMethod: p['timingMethod'] as String? ?? 'radius',
+            );
+          }
+          return firestore.recordWaypointPassage(
+            eventId: p['eventId'] as String,
+            userId: p['userId'] as String,
+            waypointId: p['waypointId'] as String,
+            waypointNome: p['waypointNome'] as String,
+            timestamp: DateTime.parse(p['timestamp'] as String),
+            timingMethod: p['timingMethod'] as String? ?? 'radius',
+          );
+        },
       );
 
       synced += await _syncList(
