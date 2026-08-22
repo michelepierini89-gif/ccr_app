@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:share_plus/share_plus.dart';
@@ -58,14 +59,26 @@ class _DiagnosticLogsScreenState extends State<DiagnosticLogsScreen> {
             ? const Center(
                 child: CircularProgressIndicator(color: AppColors.accent))
             : files.isEmpty
-                ? const Center(
+                ? Center(
                     child: Padding(
-                      padding: EdgeInsets.all(24),
+                      padding: const EdgeInsets.all(24),
                       child: Text(
-                        'Nessun log tecnico locale. Un log viene creato ad '
-                        'ogni sessione GPS (gara o tentativo di allenamento) '
-                        'e resta su questo dispositivo.',
-                        style: TextStyle(
+                        // Diagnosi (22/08/2026, punto 4): il logger scrive
+                        // già durante un tentativo di allenamento, ma MAI
+                        // su web (`DiagnosticLogger.isActive`/`listAll`
+                        // sono condizionati a `!kIsWeb` — nessun file system
+                        // locale persistente nel browser). Distingue questo
+                        // caso da "nessuna sessione ancora registrata", che
+                        // altrimenti sembrerebbe un bug identico.
+                        kIsWeb
+                            ? 'I log tecnici non sono disponibili nella '
+                                'versione web: richiedono un file locale sul '
+                                'dispositivo. Usa l\'app installata (APK) '
+                                'per una sessione con log tecnico.'
+                            : 'Nessun log tecnico locale. Un log viene creato '
+                                'ad ogni sessione GPS (gara o tentativo di '
+                                'allenamento) e resta su questo dispositivo.',
+                        style: const TextStyle(
                             color: AppColors.textSecondary, fontSize: 13),
                         textAlign: TextAlign.center,
                       ),

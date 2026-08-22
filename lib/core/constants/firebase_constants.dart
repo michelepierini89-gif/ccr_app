@@ -40,4 +40,14 @@ class FirebaseConstants {
   // usata dagli eventi di gara (documento pilota singolo, passages piatto
   // sull'evento) resta invariata.
   static const String attempts = 'attempts';
+  // Riepilogo pubblico tempi PS di un tentativo concluso (Step 51) —
+  // tracking/{eventId}/trainingResults/{attemptId}, PIATTA sull'evento
+  // (mai annidata sotto pilots/{userId} come 'attempts' sopra) apposta per
+  // essere leggibile con una query di collezione normale: una
+  // collectionGroup query su 'attempts' non è mai autorizzata da un match
+  // Firestore a profondità fissa come quello sopra, ed è lì che si
+  // verificava il permission-denied della classifica di allenamento. Il
+  // documento tentativo (contiene `pilotTrack`, posizioni GPS) resta
+  // owner+admin — questa collezione contiene SOLO tempi/esiti per PS.
+  static const String trainingResults = 'trainingResults';
 }

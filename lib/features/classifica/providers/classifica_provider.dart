@@ -54,15 +54,18 @@ final routeVariantByUserProvider =
 /// Classifica di un evento di allenamento (bug segnalato dopo il primo test
 /// sul campo, 22/08/2026): "I miei tempi"/"Classifica" risultavano vuoti
 /// perché [classificaProvider] leggeva SEMPRE `tracking/{eventId}/passages`
-/// (percorso di gara), mai le sottocollezioni `attempts/{attemptId}/passages`
-/// dove l'allenamento scrive davvero (verificato su Firestore: i tentativi
-/// erano presenti e completi, il problema era solo in lettura — CASO B).
-/// Converte [TrainingClassificaEntry] (miglior tempo per PS fra TUTTI i
-/// tentativi completati di TUTTI i membri squadra, vedi
-/// [TrainingClassificaEngine]) in [ClassificaEntry] per riusare
-/// TimingScreen/ClassificaScreen senza duplicare la UI — stesso approccio
-/// già usato da `myTrainingTeamBestProvider` (Step 48), qui esteso a TUTTE
-/// le squadre dell'evento invece della sola squadra dell'utente.
+/// (percorso di gara), mai i dati dell'allenamento (verificato su
+/// Firestore: i tentativi erano presenti e completi, il problema era solo
+/// in lettura — CASO B). Sorgente dati riscritta allo Step 51: legge
+/// `tracking/{eventId}/trainingResults` (riepilogo pubblico, SOLO
+/// tempi/esiti per PS) invece di una collectionGroup query su `attempts`
+/// (mai autorizzata per un non-admin, ed esponeva `pilotTrack`). Converte
+/// [TrainingClassificaEntry] (miglior tempo per PS fra TUTTI i tentativi
+/// completati di TUTTI i membri squadra, vedi [TrainingClassificaEngine])
+/// in [ClassificaEntry] per riusare TimingScreen/ClassificaScreen senza
+/// duplicare la UI — stesso approccio già usato da
+/// `myTrainingTeamBestProvider` (Step 48), qui esteso a TUTTE le squadre
+/// dell'evento invece della sola squadra dell'utente.
 final trainingClassificaProvider =
     FutureProvider.family<List<ClassificaEntry>, String>(
         (ref, eventId) async {
@@ -74,21 +77,10 @@ final trainingClassificaProvider =
   final approved =
       regs.where((r) => r.stato == RegistrationStatus.approvato).toList();
 
-  final allCompleted = await svc.getCompletedAttemptsForEvent(eventId);
-  if (allCompleted.isEmpty) return const [];
+  final results = await svc.getTrainingResultsForEvent(eventId);
+  if (results.isEmpty) return const [];
 
   final teams = await ref.watch(teamsProvider(eventId).future);
-  final penalties = await svc.getEffectivePenaltySettings(eventId);
-
-  final passagesByAttemptId = <String, List<WaypointPassageRecord>>{};
-  final violationsByAttemptId = <String, List<SpeedZoneViolation>>{};
-  for (final attempt in allCompleted) {
-    passagesByAttemptId[attempt.id] = await svc.getAttemptPassagesOnce(
-        eventId, attempt.userId, attempt.id);
-    violationsByAttemptId[attempt.id] =
-        await svc.getAttemptSpeedZoneViolationsOnce(
-            eventId, attempt.userId, attempt.id);
-  }
 
   final userNames = {
     for (final r in approved) r.userId: r.nomeCompleto,
@@ -98,11 +90,8 @@ final trainingClassificaProvider =
     event: event,
     registrations: approved,
     teams: teams,
-    completedAttempts: allCompleted,
-    passagesByAttemptId: passagesByAttemptId,
-    speedViolationsByAttemptId: violationsByAttemptId,
+    results: results,
     userNames: userNames,
-    penalties: penalties,
   );
 
   final memberIdsBySquadra = <String, Set<String>>{};

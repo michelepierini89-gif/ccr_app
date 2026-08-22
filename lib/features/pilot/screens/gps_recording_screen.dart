@@ -32,6 +32,7 @@ import '../../../core/services/gpx_parser.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/firebase_error_handler.dart';
+import '../../../core/utils/event_practicability.dart';
 import '../../../core/utils/heading_display_utils.dart';
 import '../../../core/utils/location_utils.dart';
 import '../../../core/utils/race_session_guard.dart';
@@ -731,8 +732,26 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
         // Step 47, Parte 2B — allenamento: chiude il tentativo (mai
         // raceStatus/withdrawal, semantica di gara) invece di 'finished'.
         if (finAttemptId != null) {
+          final now = DateTime.now();
+          final attemptBeforeClose =
+              await fs.getAttemptOnce(finEventId, finUserId, finAttemptId);
           await fs.updateAttemptStatus(finEventId, finUserId, finAttemptId,
-              status: AttemptStatus.completed, finishedAt: DateTime.now());
+              status: AttemptStatus.completed, finishedAt: now);
+          // Step 51 — pubblica il riepilogo pubblico (SOLO tempi per PS,
+          // mai pilotTrack) da cui legge la classifica di allenamento: il
+          // documento tentativo resta owner+admin, la classifica non lo
+          // legge più direttamente.
+          final finEvent = await fs.getEvent(finEventId);
+          if (finEvent != null && attemptBeforeClose != null) {
+            await fs.publishTrainingResult(
+              event: finEvent,
+              userId: finUserId,
+              attemptId: finAttemptId,
+              attemptNumber: attemptBeforeClose.attemptNumber,
+              routeVariantId: attemptBeforeClose.routeVariantId,
+              completedAt: now,
+            );
+          }
         } else {
           await fs.setRaceStatus(finEventId, finUserId, 'finished',
               finishedAt: DateTime.now());
@@ -1159,9 +1178,7 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           statusData: myStatusData,
           eventId: effectiveEventId,
           retired: true);
-    } else if (event != null &&
-        (event.stato == EventStatus.archiviata ||
-            event.data.toMidnight().isBefore(DateTime.now()))) {
+    } else if (event != null && !isEventPracticable(event)) {
       body = _buildRaceOver(
           event: event,
           statusData: myStatusData,

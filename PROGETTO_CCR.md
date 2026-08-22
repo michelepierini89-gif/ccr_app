@@ -2641,6 +2641,153 @@ main`.
 
 ---
 
+### Step 51 — Regole Firestore per i tentativi, fuga posizioni GPS, evento di allenamento chiuso, log tecnici assenti (22 agosto 2026) ✅
+
+Quattro problemi bloccanti dal primo giro di test sul campo
+dell'allenamento (Step 50): i primi due (regole/classifica di squadra)
+decisi insieme prima di scrivere codice, come richiesto.
+
+**Punto 1/2 — regole dei tentativi e fuga di posizioni GPS (verificati
+dal vivo su Firestore prod, non solo a codice):**
+- Verificato con chiamate REST reali come pilota non-admin/non-owner
+  (account di test `test.pilota.audit@ccr-enduro-test.com`, già usato
+  allo Step 10): le regole di `attempts` introdotte allo Step 47
+  ESISTEVANO già (`read: isAuthenticated()`), quindi "nessuna regola le
+  copre" non era la causa letterale — ma una **collectionGroup query**
+  su `attempts` (`getCompletedAttemptsForEvent`, usata dalla classifica
+  di allenamento) risultava comunque in `PERMISSION_DENIED` per un
+  pilota reale: un `match` Firestore a profondità fissa non autorizza
+  MAI una collectionGroup query per un non-admin (solo il bypass
+  `/{document=**}` lo fa) — quella era la causa reale del
+  permission-denied.
+- **Fuga di dati confermata dal vivo, priorità massima:** lo stesso
+  test ha mostrato che il documento `attempts/{attemptId}` contiene
+  `pilotTrack` (posizioni GPS grezze, scritto da `savePilotTrack` a
+  fine tentativo) — con la regola `isAuthenticated()` un pilota
+  qualunque poteva leggere `pilotTrack` di un altro pilota. Chiusa
+  PER PRIMA, prima di qualunque altro intervento: `attempts` e tutto
+  ciò che vi è annidato (`fullTrackChunks`/`passages`/
+  `speedZoneViolations`) portati a `isAdmin() || isOwner(userId)`,
+  stesso criterio del documento pilota padre. Deploy immediato solo di
+  `firestore:rules`, poi riverificato dal vivo con lo stesso account:
+  lettura di un tentativo altrui → `403 PERMISSION_DENIED` (prima era
+  `200`, con `pilotTrack` incluso nella risposta), lettura del proprio
+  tentativo → invariata.
+- **Soluzione per la classifica — stesso modello delle gare, non
+  inventato:** per le gare la classifica lato pilota non legge mai
+  `tracking/{eventId}/pilots/{userId}` (privato): legge
+  `tracking/{eventId}/passages` (piatto sull'evento, solo
+  waypointId+timestamp, mai posizioni, aperto a tutti gli
+  autenticati). Stesso schema replicato per l'allenamento: nuova
+  collezione PIATTA `tracking/{eventId}/trainingResults/{attemptId}`
+  (mai annidata sotto `pilots/{userId}` come `attempts` — apposta per
+  restare una query di collezione normale, non una collectionGroup),
+  con SOLO tempi/esiti per PS (`TrainingSpecialSummary`/
+  `TrainingResultModel`, nuovo `lib/core/models/
+  training_result_model.dart`), MAI posizioni. Regola: lettura per
+  tutti gli autenticati, creazione/aggiornamento solo se
+  `request.resource.data.userId == request.auth.uid` (nessuno spacciato
+  per un altro pilota — verificato dal vivo: `403` sul tentativo).
+- **Scritto ad OGNI chiusura di tentativo, non solo sui record**
+  (decisione esplicita, come richiesto): più semplice/robusto (nessuna
+  lettura preventiva dei record altrui prima di decidere se scrivere,
+  nessuna corsa critica fra compagni che chiudono in contemporanea) e
+  serve anche allo storico personale futuro. La logica "è il miglior
+  tempo di squadra" resta interamente in lettura, in
+  `TrainingClassificaEngine` (riscritto per leggere
+  `List<TrainingResultModel>` invece di ricalcolare da passaggi grezzi
+  incrociati fra piloti). `FirestoreService.publishTrainingResult`
+  (chiamato da `_finishRace` in `gps_recording_screen.dart` subito dopo
+  `updateAttemptStatus(status: completed)`) calcola i tempi dalle
+  passages/violazioni del proprio tentativo (owner-only, nessun
+  problema di permessi) e pubblica il riepilogo.
+- **Ricognizione di TUTTE le strutture Firestore usate dal codice**
+  (richiesta esplicitamente): trovata UN'ALTRA struttura scoperta,
+  indipendente dall'allenamento — `tracking/{eventId}/officialTimes/
+  {userId}` (tempi ufficiali ricalcolati post-gara, Blocco B),
+  introdotta senza regola dedicata e coperta finora solo dal bypass
+  admin: qualunque pilota che guardasse la classifica di una GARA con
+  tempi ufficiali già ricalcolati avrebbe ricevuto permission-denied
+  (`classificaProvider` guarda `officialTimesStreamProvider` per
+  tutti, non solo l'admin). Aggiunta regola: lettura per tutti gli
+  autenticati, scrittura solo admin (il ricalcolo legge già
+  `fullTrackChunks` di ogni pilota, admin-only — un non-admin non
+  potrebbe comunque completarlo).
+
+**Punto 3 — evento di allenamento chiuso al pilota ma aperto
+all'admin:** in `gps_recording_screen.dart`, la scelta fra vista attiva
+e "evento concluso" considerava chiuso qualunque evento con
+`data.toMidnight()` passata, indipendentemente dal tipo — corretto per
+una gara (`data` = giorno di svolgimento), sbagliato per un allenamento
+(`data` = solo apertura, chiusura solo esplicita dell'admin). La
+categorizzazione lato lista eventi (`getOpenEvents`/`getArchivedEvents`,
+solo su `stato`) e la visibilità del bottone GPS in
+`event_detail_screen.dart` (solo su `EventStatus.archiviata`) erano già
+corrette — verificato, nessun'altra occorrenza nel codice. Estratta la
+logica in `lib/core/utils/event_practicability.dart`
+(`isEventPracticable`, per tipo evento) per renderla testabile senza
+montare la schermata; nuovo `test/core/utils/event_practicability_test.dart`
+(4 casi, incluso quello richiesto: allenamento con data passata resta
+praticabile finché non archiviato).
+
+**Punto 4 — nessun log tecnico dopo due tentativi:** confermato (come
+già allo Step 50) che `DiagnosticLogger.startSession` viene chiamato
+incondizionatamente da `GpsService.startRecording`, indipendente dal
+tipo evento, e che scrittura (`getApplicationDocumentsDirectory` in
+`diagnostic_logger.dart`) e lettura (stessa chiamata in
+`diagnostic_log_files_service.dart`) usano esattamente lo stesso
+percorso — nessuna delle due ipotesi del prompt (percorso diverso,
+logger solo in gara) regge alla lettura del codice. Causa reale
+identificata: `DiagnosticLogger.isActive` è condizionato a `!kIsWeb` —
+su web NON viene mai scritto alcun file (per design, nessun file system
+persistente nel browser), e `DiagnosticLogFilesService.listAll()`
+ritorna esplicitamente vuoto sul web. Il test sul campo è quasi
+certamente avvenuto sulla PWA web (unico target di ogni deploy di
+questo progetto, `firebase deploy --only hosting`), dove il log è
+un'assenza per design, non un bug del percorso allenamento — la
+schermata mostrava però lo stesso messaggio generico "nessun log
+ancora", indistinguibile da un bug reale. Intervento minimo (non un
+remedio strutturale: costruire logging lato browser sarebbe
+sproporzionato per questo caso): `DiagnosticLogsScreen`/
+`exportAttemptDiagnosticLog` mostrano ora un messaggio distinto su web
+("non disponibile nella versione web, usa l'app installata") invece del
+messaggio generico "nessuna sessione ancora".
+
+**Punto 5 — controllo stabile sulle regole:** nuovo
+`test/firestore_rules_coverage_test.dart`. Automatico al 100% sarebbe
+fragile (i percorsi sono costruiti da helper/costanti, non stringhe
+letterali nel punto di lettura): scelta una via di mezzo, come
+suggerito — una lista MANO a mano di percorsi realmente usati dal
+codice (`kFirestorePathsUsedByApp`, verificata contro ogni
+`.collection(...)` in `FirestoreService`/`AuthService`, le uniche due
+classi che toccano Firestore direttamente), confrontata dal test con le
+regole REALI lette da `firestore.rules` (non trascritte a mano una
+seconda volta: un parser a pila di parentesi ricostruisce il percorso
+nidificato completo di ogni `match`). Il bypass admin globale è
+escluso dal confronto — altrimenti il test non avrebbe mai scoperto il
+bug di questa sessione, "coperto" solo da quello. Verificato che il
+test fallisce davvero rimuovendo la regola `officialTimes` (ripristinata
+subito dopo). Ha già trovato la scoperta del punto 1/2 durante la
+scrittura.
+
+**Deploy:** `flutter analyze` 0 issues, `flutter test` 137/137 verdi
+(131 preesistenti + 4 nuovi in `event_practicability_test.dart` + 2
+nuovi in `firestore_rules_coverage_test.dart`; i 4 test di
+`training_classifica_engine_test.dart` riscritti per la nuova sorgente
+dati, non aggiunti). `firebase deploy --only firestore:rules` (deploy
+separato e immediato
+per il punto 1/2, PRIMA di continuare con il resto, per chiudere la
+fuga di posizioni il prima possibile — riverificato dal vivo come
+sopra) poi di nuovo a fine sessione con la regola `officialTimes`
+aggiunta, `firebase deploy --only hosting`, `git push origin main`.
+Verificato dal vivo post-deploy (non solo l'esito del comando): un
+pilota non-admin legge i propri tentativi/classifica di allenamento
+correttamente, non legge più `pilotTrack` altrui, non può scrivere un
+riepilogo `trainingResults` spacciandosi per un altro pilota, legge
+`officialTimes` di una gara.
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**

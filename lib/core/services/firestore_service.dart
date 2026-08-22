@@ -12,7 +12,9 @@ import '../models/registration_model.dart';
 import '../models/team_model.dart';
 import '../models/gps_point_model.dart';
 import '../models/classifica_model.dart';
+import '../models/training_result_model.dart';
 import '../models/user_model.dart';
+import 'classifica_engine.dart';
 import 'track_smoother.dart';
 
 class FirestoreService {
@@ -1032,6 +1034,16 @@ class FirestoreService {
     return AttemptModel.fromFirestore(snap.docs.first);
   }
 
+  /// Il tentativo [attemptId], se esiste — usato da `_finishRace` per
+  /// leggere `attemptNumber`/`routeVariantId` prima di pubblicare il
+  /// riepilogo tempi (Step 51, `publishTrainingResult`).
+  Future<AttemptModel?> getAttemptOnce(
+      String eventId, String userId, String attemptId) async {
+    final doc = await _attemptsRef(eventId, userId).doc(attemptId).get();
+    if (!doc.exists) return null;
+    return AttemptModel.fromFirestore(doc);
+  }
+
   /// Chiude un tentativo (completed/abandoned) — chiamato da FINE
   /// GARA/RITIRO nella pipeline allenamento (mai per timeout: nessun
   /// tempo massimo negli eventi di allenamento, vedi Parte 2A).
@@ -1114,21 +1126,70 @@ class FirestoreService {
     return snap.docs.map(SpeedZoneViolation.fromFirestore).toList();
   }
 
-  /// TUTTI i tentativi COMPLETATI di TUTTI i piloti su [eventId] — usato
-  /// dal motore classifica allenamento (Parte 2C, miglior tempo per PS fra
-  /// tutti i tentativi di tutta la squadra) e dalla vista admin "tentativi
-  /// per pilota" (Parte 2E). Collection group query sul nome
-  /// `attempts` (univoco nello schema, mai usato altrove) filtrata per
-  /// `eventId` — necessario perché il path non lo esprime direttamente in
-  /// una query su più pilot.
-  Future<List<AttemptModel>> getCompletedAttemptsForEvent(
+  // ── Riepilogo pubblico tempi PS di allenamento (Step 51) ───────────────
+  // tracking/{eventId}/trainingResults/{attemptId} — SOSTITUISCE la vecchia
+  // getCompletedAttemptsForEvent (collectionGroup query su 'attempts'): un
+  // match Firestore a profondità fissa come quello di 'attempts' sopra non
+  // autorizza MAI una collectionGroup query per un utente non-admin (solo
+  // il bypass /{document=**} lo fa, motivo per cui la classifica falliva
+  // con permission-denied per ogni pilota). Questa collezione è PIATTA
+  // sull'evento (nessuna nesting sotto pilots/{userId}), quindi una query
+  // di collezione normale basta — e contiene solo tempi/esiti per PS, mai
+  // `pilotTrack`/posizioni.
+
+  CollectionReference<Map<String, dynamic>> _trainingResultsRef(
+          String eventId) =>
+      _db
+          .collection(FirebaseConstants.tracking)
+          .doc(eventId)
+          .collection(FirebaseConstants.trainingResults);
+
+  /// Calcola i tempi per PS del tentativo appena concluso (dalle SUE
+  /// passages/speedZoneViolations — leggibili solo dal proprietario, che è
+  /// esattamente chi chiama questo metodo) e pubblica il riepilogo, sempre
+  /// (non solo sui record: scelta esplicita, vedi PROGETTO_CCR.md). Chiamato
+  /// da `GpsRecordingScreen._finishRace()` subito dopo `updateAttemptStatus`
+  /// con `status: completed`.
+  Future<void> publishTrainingResult({
+    required EventModel event,
+    required String userId,
+    required String attemptId,
+    required int attemptNumber,
+    String? routeVariantId,
+    required DateTime completedAt,
+  }) =>
+      _withTokenRefreshRetry(() async {
+        final variant =
+            event.routeVariant(routeVariantId ?? event.activeRouteId) ??
+                event.routeAAsVariant;
+        final passages =
+            await getAttemptPassagesOnce(event.id, userId, attemptId);
+        final violations = await getAttemptSpeedZoneViolationsOnce(
+            event.id, userId, attemptId);
+        final penalties = await getEffectivePenaltySettings(event.id);
+        final speciali = ClassificaEngine.computeSpeciali(
+            variant, passages, violations, penalties, {userId}, const {});
+        final result = TrainingResultModel(
+          attemptId: attemptId,
+          userId: userId,
+          attemptNumber: attemptNumber,
+          routeVariantId: routeVariantId,
+          completedAt: completedAt,
+          speciali:
+              speciali.map(TrainingSpecialSummary.fromSpecialTempo).toList(),
+        );
+        await _trainingResultsRef(event.id)
+            .doc(attemptId)
+            .set(result.toFirestore());
+      });
+
+  /// Tutti i riepiloghi pubblicati per [eventId] — usato dal motore
+  /// classifica allenamento (miglior tempo per PS fra tutti i tentativi di
+  /// tutta la squadra) e dalle statistiche di squadra del pilota.
+  Future<List<TrainingResultModel>> getTrainingResultsForEvent(
       String eventId) async {
-    final snap = await _db
-        .collectionGroup(FirebaseConstants.attempts)
-        .where('eventId', isEqualTo: eventId)
-        .where('status', isEqualTo: AttemptStatus.completed.name)
-        .get();
-    return snap.docs.map(AttemptModel.fromFirestore).toList();
+    final snap = await _trainingResultsRef(eventId).get();
+    return snap.docs.map(TrainingResultModel.fromFirestore).toList();
   }
 
   Future<void> recordWaypointPassage({

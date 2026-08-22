@@ -1,6 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/models/attempt_model.dart';
-import '../../../core/models/classifica_model.dart';
 import '../../../core/models/registration_model.dart';
 import '../../../core/services/classifica_engine.dart';
 import '../../../core/services/training_classifica_engine.dart';
@@ -77,11 +76,12 @@ final trainingStatsProvider =
 
 /// Rifiniture Step 47 — record di SQUADRA su un evento di allenamento,
 /// mostrato direttamente nella pagina dettaglio evento del pilota (senza
-/// passare dalle Statistiche): riusa [TrainingClassificaEngine] (già
-/// scritto allo Step 47, mai collegato a una UI) filtrato alla sola
-/// squadra dell'utente — evita di scaricare tentativi/passaggi di tutte le
-/// altre squadre iscritte all'evento, che la classifica completa
-/// richiederebbe.
+/// passare dalle Statistiche): riusa [TrainingClassificaEngine] filtrato
+/// alla sola squadra dell'utente. Sorgente dati riscritta allo Step 51 —
+/// legge `tracking/{eventId}/trainingResults` (riepilogo pubblico) invece
+/// di una collectionGroup query su `attempts` più le passages/violazioni
+/// di ogni membro (mai autorizzata per un non-admin, vedi
+/// [trainingClassificaProvider]).
 final myTrainingTeamBestProvider =
     FutureProvider.family<TrainingClassificaEntry?, String>(
         (ref, eventId) async {
@@ -103,23 +103,12 @@ final myTrainingTeamBestProvider =
       .toList();
   final memberIds = teamRegs.map((r) => r.userId).toSet();
 
-  final allCompleted = await svc.getCompletedAttemptsForEvent(eventId);
-  final teamAttempts =
-      allCompleted.where((a) => memberIds.contains(a.userId)).toList();
-  if (teamAttempts.isEmpty) return null;
+  final allResults = await svc.getTrainingResultsForEvent(eventId);
+  final teamResults =
+      allResults.where((r) => memberIds.contains(r.userId)).toList();
+  if (teamResults.isEmpty) return null;
 
   final teams = await svc.getTeams(eventId).first;
-  final penalties = await svc.getEffectivePenaltySettings(eventId);
-
-  final passagesByAttemptId = <String, List<WaypointPassageRecord>>{};
-  final violationsByAttemptId = <String, List<SpeedZoneViolation>>{};
-  for (final attempt in teamAttempts) {
-    passagesByAttemptId[attempt.id] = await svc.getAttemptPassagesOnce(
-        eventId, attempt.userId, attempt.id);
-    violationsByAttemptId[attempt.id] =
-        await svc.getAttemptSpeedZoneViolationsOnce(
-            eventId, attempt.userId, attempt.id);
-  }
 
   final userNames = {
     for (final r in teamRegs) r.userId: '${r.nome} ${r.cognome}',
@@ -129,11 +118,8 @@ final myTrainingTeamBestProvider =
     event: event,
     registrations: teamRegs,
     teams: teams,
-    completedAttempts: teamAttempts,
-    passagesByAttemptId: passagesByAttemptId,
-    speedViolationsByAttemptId: violationsByAttemptId,
+    results: teamResults,
     userNames: userNames,
-    penalties: penalties,
   );
   return entries.firstOrNull;
 });

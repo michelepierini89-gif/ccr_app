@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:share_plus/share_plus.dart';
@@ -20,8 +21,11 @@ Future<void> exportAttemptDiagnosticLog(
   );
   if (!context.mounted) return;
   if (matches.isEmpty) {
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-      content: Text('Nessun log tecnico trovato per questo tentativo'),
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(kIsWeb
+          ? 'Log tecnico non disponibile: la versione web non scrive '
+              'file locali. Usa l\'app installata.'
+          : 'Nessun log tecnico trovato per questo tentativo'),
     ));
     return;
   }

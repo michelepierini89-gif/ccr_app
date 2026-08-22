@@ -129,14 +129,20 @@ service cloud.firestore {
       }
 
       // Eventi di allenamento (Step 47, Parte 2B) — un tentativo è
-      // scritto SOLO dal proprio pilota (come il documento pilota di
-      // gara), ma letto da tutti gli autenticati: la classifica (miglior
-      // tempo per PS tra TUTTI i tentativi di TUTTI i piloti, vista anche
-      // da chi non è admin) deve poter leggere i tentativi altrui, non
-      // solo i propri — stessa visibilità di 'passages'/
-      // 'speedZoneViolations' di gara sotto, qui applicata per tentativo.
+      // scritto SOLO dal proprio pilota, letto SOLO dal proprietario e
+      // dall'admin: stesso criterio del documento pilota padre sopra,
+      // perché il documento tentativo contiene `pilotTrack` (posizioni
+      // GPS grezze, scritto da savePilotTrack a fine tentativo/ritiro) —
+      // MAI leggibile da un pilota estraneo (fix Step 51, era
+      // `isAuthenticated()`: qualunque utente autenticato poteva leggere
+      // le posizioni GPS di chiunque altro). Stesso criterio esteso a
+      // tutto ciò che vi è annidato (chunk traccia, passaggi, violazioni
+      // zona velocità). La classifica di allenamento (miglior tempo per
+      // PS tra tutti i piloti) NON legge più da qui: legge dal riepilogo
+      // pubblico in tracking/{eventId}/trainingResults sotto, popolato
+      // dal proprietario alla chiusura di ogni tentativo.
       match /attempts/{attemptId} {
-        allow read: if isAuthenticated();
+        allow read: if isAdmin() || isOwner(userId);
         allow write: if isOwner(userId);
 
         match /fullTrackChunks/{chunkId} {
@@ -144,14 +150,33 @@ service cloud.firestore {
           allow write: if isOwner(userId);
         }
         match /passages/{passageId} {
-          allow read: if isAuthenticated();
+          allow read: if isAdmin() || isOwner(userId);
           allow write: if isOwner(userId);
         }
         match /speedZoneViolations/{violationId} {
-          allow read: if isAuthenticated();
+          allow read: if isAdmin() || isOwner(userId);
           allow write: if isOwner(userId);
         }
       }
+    }
+
+    // Riepilogo pubblico dei tempi per prova speciale di un tentativo di
+    // allenamento concluso (Step 51) — SOLO tempi/esiti per PS, MAI
+    // posizioni GPS: a differenza di tracking/{eventId}/pilots/{userId}/
+    // attempts sopra (owner+admin, contiene pilotTrack), questa collezione
+    // è piatta sull'evento (non annidata sotto pilots/{userId}) proprio
+    // per essere leggibile con una query di collezione normale — non una
+    // collectionGroup query, che le regole non autorizzano per un match a
+    // profondità fissa come quello sopra. Scritto (creato/aggiornato) dal
+    // proprietario del tentativo ad ogni chiusura (non solo sui record:
+    // più semplice, più robusto, serve anche allo storico personale — la
+    // logica "è il miglior tempo di squadra" resta tutta in lettura, in
+    // TrainingClassificaEngine).
+    match /tracking/{eventId}/trainingResults/{attemptId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated() &&
+          request.resource.data.userId == request.auth.uid;
+      allow delete: if false;
     }
 
     // Percorso alternativo (10/08/2026, Parte 5) — userId -> routeVariantId,
@@ -161,6 +186,21 @@ service cloud.firestore {
     match /tracking/{eventId}/routeVariantByUser/{userId} {
       allow read: if isAuthenticated();
       allow write: if isOwner(userId);
+    }
+
+    // Tempi ufficiali ricalcolati post-gara (Blocco B) — scoperta durante la
+    // ricognizione Step 51 (punto 1): introdotta senza regola dedicata,
+    // coperta finora SOLO dal bypass admin sopra — ogni pilota che
+    // guardasse la classifica di un evento con tempi ufficiali già
+    // ricalcolati avrebbe ricevuto permission-denied (classificaProvider
+    // guarda `officialTimesStreamProvider` per TUTTI, non solo l'admin).
+    // Scritto SOLO dall'admin (il ricalcolo in TimingScreen legge
+    // `fullTrackChunks` di ogni pilota, già admin-only: un pilota non
+    // potrebbe comunque completare il calcolo), letto da tutti gli
+    // autenticati come 'passages' sotto.
+    match /tracking/{eventId}/officialTimes/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
     }
 
     // Passaggi ai waypoint — tutti gli autenticati leggono/scrivono (classifica)

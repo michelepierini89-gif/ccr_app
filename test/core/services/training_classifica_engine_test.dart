@@ -1,18 +1,21 @@
-/// Test per [TrainingClassificaEngine] (Step 47, Parte 2C) — regole
-/// diverse dalla gara: nessun tempo forfettario per le PS non completate
-/// (semplicemente non concorrono), nessuna penalità per squadra
-/// incompleta, il tempo di squadra per PS è il MIGLIOR tempo fra tutti i
-/// tentativi completati di tutti i membri.
+/// Test per [TrainingClassificaEngine] (Step 47, Parte 2C; sorgente dati
+/// riscritta Step 51) — regole diverse dalla gara: nessun tempo forfettario
+/// per le PS non completate (semplicemente non concorrono), nessuna
+/// penalità per squadra incompleta, il tempo di squadra per PS è il
+/// MIGLIOR tempo fra tutti i tentativi completati di tutti i membri.
+/// Dallo Step 51 il motore legge [TrainingResultModel] (il riepilogo
+/// pubblico già calcolato alla chiusura del tentativo), non più passaggi
+/// grezzi — vedi `firestore_service_test.dart`/`FirestoreService.
+/// publishTrainingResult` per il calcolo a monte.
 library;
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ccr_app/core/models/attempt_model.dart';
-import 'package:ccr_app/core/models/classifica_model.dart';
 import 'package:ccr_app/core/models/event_model.dart';
 import 'package:ccr_app/core/models/registration_model.dart';
 import 'package:ccr_app/core/models/special_model.dart';
 import 'package:ccr_app/core/models/team_model.dart';
+import 'package:ccr_app/core/models/training_result_model.dart';
 import 'package:ccr_app/core/models/waypoint_model.dart';
 import 'package:ccr_app/core/services/training_classifica_engine.dart';
 
@@ -73,56 +76,52 @@ void main() {
 
   const userNames = {'pilotaA': 'Mario Rossi', 'pilotaB': 'Luigi Verdi'};
 
-  WaypointPassageRecord passage(String userId, String wpId, DateTime ts) =>
-      WaypointPassageRecord(
-          id: '$userId-$wpId-${ts.millisecondsSinceEpoch}',
-          userId: userId,
-          waypointId: wpId,
-          waypointNome: wpId,
-          timestamp: ts);
+  TrainingSpecialSummary ps1Summary(Duration tempo,
+          {bool skipped = false, bool notDetected = false, String? timingError}) =>
+      TrainingSpecialSummary(
+        specialeId: 'ps1',
+        specialeNome: 'PS1',
+        ordine: 0,
+        tempo: tempo,
+        controlPointsOk: true,
+        skipped: skipped,
+        notDetected: notDetected,
+        timingError: timingError,
+      );
+
+  TrainingResultModel result(
+    String userId,
+    String attemptId,
+    int attemptNumber,
+    List<TrainingSpecialSummary> speciali,
+  ) =>
+      TrainingResultModel(
+        attemptId: attemptId,
+        userId: userId,
+        attemptNumber: attemptNumber,
+        routeVariantId: null,
+        completedAt: DateTime(2026, 1, 1, 9, 5),
+        speciali: speciali,
+      );
 
   test('il tempo di squadra è il MIGLIORE fra tutti i tentativi di tutti i membri', () {
-    final base = DateTime(2026, 1, 1, 9, 0, 0);
-    // Tentativo 1 (pilotaA): PS1 in 60s.
-    final attempt1 = AttemptModel(
-        id: 'att1',
-        eventId: 'ev1',
-        userId: 'pilotaA',
-        attemptNumber: 1,
-        status: AttemptStatus.completed,
-        startedAt: base);
-    // Tentativo 1 (pilotaB): PS1 in 45s — migliore.
-    final attempt2 = AttemptModel(
-        id: 'att2',
-        eventId: 'ev1',
-        userId: 'pilotaB',
-        attemptNumber: 1,
-        status: AttemptStatus.completed,
-        startedAt: base);
+    // Tentativo 1 (pilotaA): PS1 in 60s. Tentativo 1 (pilotaB): PS1 in
+    // 45s — migliore.
+    final results = [
+      result('pilotaA', 'att1', 1, [ps1Summary(const Duration(seconds: 60))]),
+      result('pilotaB', 'att2', 1, [ps1Summary(const Duration(seconds: 45))]),
+    ];
 
-    final passagesByAttemptId = {
-      'att1': [
-        passage('pilotaA', 'ps1-in', base),
-        passage('pilotaA', 'ps1-fine', base.add(const Duration(seconds: 60))),
-      ],
-      'att2': [
-        passage('pilotaB', 'ps1-in', base),
-        passage('pilotaB', 'ps1-fine', base.add(const Duration(seconds: 45))),
-      ],
-    };
-
-    final result = TrainingClassificaEngine.compute(
+    final out = TrainingClassificaEngine.compute(
       event: event,
       registrations: registrations,
       teams: teams,
-      completedAttempts: [attempt1, attempt2],
-      passagesByAttemptId: passagesByAttemptId,
-      speedViolationsByAttemptId: const {},
+      results: results,
       userNames: userNames,
     );
 
-    expect(result, hasLength(1));
-    final entry = result.first;
+    expect(out, hasLength(1));
+    final entry = out.first;
     expect(entry.specialiCompletati, 1);
     final best = entry.bestBySpecialId['ps1']!;
     expect(best.tempo.tempo, const Duration(seconds: 45));
@@ -131,34 +130,21 @@ void main() {
   });
 
   test('un pilota da solo può migliorare il record della squadra su una PS', () {
-    final base = DateTime(2026, 1, 1, 9, 0, 0);
-    // Solo pilotaA registra un tentativo — nessun compagno necessario.
-    final attempt = AttemptModel(
-        id: 'att1',
-        eventId: 'ev1',
-        userId: 'pilotaA',
-        attemptNumber: 1,
-        status: AttemptStatus.completed,
-        startedAt: base);
+    final results = [
+      result('pilotaA', 'att1', 1, [ps1Summary(const Duration(seconds: 50))]),
+    ];
 
-    final result = TrainingClassificaEngine.compute(
+    final out = TrainingClassificaEngine.compute(
       event: event,
       registrations: registrations,
       teams: teams,
-      completedAttempts: [attempt],
-      passagesByAttemptId: {
-        'att1': [
-          passage('pilotaA', 'ps1-in', base),
-          passage('pilotaA', 'ps1-fine', base.add(const Duration(seconds: 50))),
-        ],
-      },
-      speedViolationsByAttemptId: const {},
+      results: results,
       userNames: userNames,
     );
 
-    expect(result, hasLength(1));
+    expect(out, hasLength(1));
     // Nessuna penalità per squadra incompleta: il tempo è netto.
-    expect(result.first.tempoTotale, const Duration(seconds: 50));
+    expect(out.first.tempoTotale, const Duration(seconds: 50));
   });
 
   test('una PS non completata (nessun tentativo valido) semplicemente non concorre — '
@@ -175,32 +161,20 @@ void main() {
     );
     final eventWithPs2 = event.copyWith(specialiRouteA: [ps1, ps2]);
 
-    final base = DateTime(2026, 1, 1, 9, 0, 0);
-    final attempt = AttemptModel(
-        id: 'att1',
-        eventId: 'ev1',
-        userId: 'pilotaA',
-        attemptNumber: 1,
-        status: AttemptStatus.completed,
-        startedAt: base);
+    final results = [
+      // Solo PS1 completata in questo tentativo — PS2 mai tentata.
+      result('pilotaA', 'att1', 1, [ps1Summary(const Duration(seconds: 50))]),
+    ];
 
-    final result = TrainingClassificaEngine.compute(
+    final out = TrainingClassificaEngine.compute(
       event: eventWithPs2,
       registrations: registrations,
       teams: teams,
-      completedAttempts: [attempt],
-      // Solo PS1 completata in questo tentativo — PS2 mai tentata.
-      passagesByAttemptId: {
-        'att1': [
-          passage('pilotaA', 'ps1-in', base),
-          passage('pilotaA', 'ps1-fine', base.add(const Duration(seconds: 50))),
-        ],
-      },
-      speedViolationsByAttemptId: const {},
+      results: results,
       userNames: userNames,
     );
 
-    final entry = result.first;
+    final entry = out.first;
     expect(entry.specialiCompletati, 1);
     expect(entry.totaleSpeciali, 2);
     expect(entry.bestBySpecialId.containsKey('ps2'), isFalse);
@@ -209,45 +183,22 @@ void main() {
   });
 
   test('una PS saltata volontariamente non concorre (non conta come tempo pessimo)', () {
-    final base = DateTime(2026, 1, 1, 9, 0, 0);
-    final attempt = AttemptModel(
-        id: 'att1',
-        eventId: 'ev1',
-        userId: 'pilotaA',
-        attemptNumber: 1,
-        status: AttemptStatus.completed,
-        startedAt: base);
+    final results = [
+      result('pilotaA', 'att1', 1, [
+        ps1Summary(const Duration(seconds: 5),
+            skipped: true, timingError: 'speciale_saltata'),
+      ]),
+    ];
 
-    final result = TrainingClassificaEngine.compute(
+    final out = TrainingClassificaEngine.compute(
       event: event,
       registrations: registrations,
       teams: teams,
-      completedAttempts: [attempt],
-      passagesByAttemptId: {
-        'att1': [
-          WaypointPassageRecord(
-              id: 'p1',
-              userId: 'pilotaA',
-              waypointId: 'ps1-in',
-              waypointNome: 'Inizio PS1',
-              timestamp: base,
-              timingError: 'speciale_saltata',
-              timingMethod: 'forfait'),
-          WaypointPassageRecord(
-              id: 'p2',
-              userId: 'pilotaA',
-              waypointId: 'ps1-fine',
-              waypointNome: 'Fine PS1',
-              timestamp: base.add(const Duration(seconds: 5)),
-              timingError: 'speciale_saltata',
-              timingMethod: 'forfait'),
-        ],
-      },
-      speedViolationsByAttemptId: const {},
+      results: results,
       userNames: userNames,
     );
 
-    expect(result.first.specialiCompletati, 0);
-    expect(result.first.bestBySpecialId, isEmpty);
+    expect(out.first.specialiCompletati, 0);
+    expect(out.first.bestBySpecialId, isEmpty);
   });
 }

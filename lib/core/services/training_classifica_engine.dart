@@ -1,10 +1,8 @@
 import '../models/classifica_model.dart';
-import '../models/attempt_model.dart';
 import '../models/event_model.dart';
-import '../models/penalty_settings_model.dart';
 import '../models/registration_model.dart';
 import '../models/team_model.dart';
-import 'classifica_engine.dart';
+import '../models/training_result_model.dart';
 
 /// Il miglior tempo di una squadra su una PS (Step 47, Parte 2C), con chi
 /// l'ha realizzato e in quale tentativo — a differenza della gara (dove il
@@ -66,15 +64,17 @@ class TrainingClassificaEntry {
       );
 }
 
-/// Classifica per eventi di allenamento (Step 47, Parte 2C) — separata da
-/// [ClassificaEngine] (gara): riusa [ClassificaEngine.computeSpeciali] per
-/// il calcolo del tempo/CP/zone velocità di una singola PS da un elenco di
-/// passaggi (stessa identica logica), ma con regole di aggregazione
-/// diverse, richieste esplicitamente:
+/// Classifica per eventi di allenamento (Step 47, Parte 2C; sorgente dati
+/// riscritta Step 51) — separata da [ClassificaEngine] (gara), con regole
+/// di aggregazione diverse, richieste esplicitamente:
 ///   - nessun tempo forfettario per le PS non completate: non concorrono
 ///   - nessuna penalità per squadra incompleta: ci si allena anche da soli
-///   - le penalità CP mancati/zona velocità restano (già dentro
-///     [ClassificaEngine.computeSpeciali], invariate)
+///   - le penalità CP mancati/zona velocità restano (già dentro il
+///     riepilogo [TrainingResultModel], calcolate una volta alla chiusura
+///     del tentativo da `FirestoreService.publishTrainingResult` — questo
+///     motore NON ricalcola più da passaggi grezzi: leggerli fra piloti
+///     diversi richiederebbe una collectionGroup query mai autorizzata per
+///     un non-admin, ed esporrebbe `pilotTrack`, vedi Step 51)
 ///   - il tempo di squadra per ogni PS è il MIGLIOR tempo fra TUTTI i
 ///     tentativi COMPLETATI di TUTTI i membri, non un pool di passaggi
 ///     implicito come in gara (qui i tentativi sono sessioni indipendenti,
@@ -86,11 +86,8 @@ class TrainingClassificaEngine {
     required EventModel event,
     required List<RegistrationModel> registrations,
     required List<TeamModel> teams,
-    required List<AttemptModel> completedAttempts,
-    required Map<String, List<WaypointPassageRecord>> passagesByAttemptId,
-    required Map<String, List<SpeedZoneViolation>> speedViolationsByAttemptId,
+    required List<TrainingResultModel> results,
     required Map<String, String> userNames,
-    PenaltySettingsModel penalties = const PenaltySettingsModel(),
   }) {
     final approved = registrations
         .where((r) => r.stato == RegistrationStatus.approvato && r.squadraId != null)
@@ -109,26 +106,22 @@ class TrainingClassificaEngine {
 
       final best = <String, TrainingSpecialBest>{};
       var referenceVariant = event.routeAAsVariant;
-      for (final attempt in completedAttempts.where((a) => memberIds.contains(a.userId))) {
-        final variant = event.routeVariant(attempt.routeVariantId ?? event.activeRouteId) ??
-            event.routeAAsVariant;
-        referenceVariant = variant;
-        final passages = passagesByAttemptId[attempt.id] ?? const [];
-        final violations = speedViolationsByAttemptId[attempt.id] ?? const [];
-        final speciali = ClassificaEngine.computeSpeciali(
-            variant, passages, violations, penalties, {attempt.userId}, const {});
-        for (final st in speciali) {
-          final valido = !st.skipped &&
-              !st.notDetected &&
-              st.timingError != 'rilevamento_non_valido';
+      for (final result in results.where((r) => memberIds.contains(r.userId))) {
+        referenceVariant =
+            event.routeVariant(result.routeVariantId ?? event.activeRouteId) ??
+                event.routeAAsVariant;
+        for (final summary in result.speciali) {
+          final valido = !summary.skipped &&
+              !summary.notDetected &&
+              summary.timingError != 'rilevamento_non_valido';
           if (!valido) continue;
-          final current = best[st.specialeId];
-          if (current == null || st.tempo < current.tempo.tempo) {
-            best[st.specialeId] = TrainingSpecialBest(
-              tempo: st,
-              userId: attempt.userId,
-              userName: userNames[attempt.userId] ?? '?',
-              attemptNumber: attempt.attemptNumber,
+          final current = best[summary.specialeId];
+          if (current == null || summary.tempo < current.tempo.tempo) {
+            best[summary.specialeId] = TrainingSpecialBest(
+              tempo: summary.toSpecialTempo(),
+              userId: result.userId,
+              userName: userNames[result.userId] ?? '?',
+              attemptNumber: result.attemptNumber,
             );
           }
         }
