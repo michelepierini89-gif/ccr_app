@@ -6,6 +6,7 @@ import '../../../core/models/penalty_settings_model.dart';
 import '../../../core/models/registration_model.dart';
 import '../../../core/models/user_model.dart';
 import '../../../core/services/classifica_engine.dart';
+import '../../../core/services/training_classifica_engine.dart';
 import '../../admin/providers/admin_provider.dart';
 import '../../auth/providers/auth_provider.dart';
 
@@ -50,12 +51,99 @@ final routeVariantByUserProvider =
         .watch(firestoreServiceProvider)
         .routeVariantByUserStream(eventId));
 
+/// Classifica di un evento di allenamento (bug segnalato dopo il primo test
+/// sul campo, 22/08/2026): "I miei tempi"/"Classifica" risultavano vuoti
+/// perché [classificaProvider] leggeva SEMPRE `tracking/{eventId}/passages`
+/// (percorso di gara), mai le sottocollezioni `attempts/{attemptId}/passages`
+/// dove l'allenamento scrive davvero (verificato su Firestore: i tentativi
+/// erano presenti e completi, il problema era solo in lettura — CASO B).
+/// Converte [TrainingClassificaEntry] (miglior tempo per PS fra TUTTI i
+/// tentativi completati di TUTTI i membri squadra, vedi
+/// [TrainingClassificaEngine]) in [ClassificaEntry] per riusare
+/// TimingScreen/ClassificaScreen senza duplicare la UI — stesso approccio
+/// già usato da `myTrainingTeamBestProvider` (Step 48), qui esteso a TUTTE
+/// le squadre dell'evento invece della sola squadra dell'utente.
+final trainingClassificaProvider =
+    FutureProvider.family<List<ClassificaEntry>, String>(
+        (ref, eventId) async {
+  final svc = ref.watch(firestoreServiceProvider);
+  final event = await svc.getEvent(eventId);
+  if (event == null || !event.isAllenamento) return const [];
+
+  final regs = await ref.watch(registrationsProvider(eventId).future);
+  final approved =
+      regs.where((r) => r.stato == RegistrationStatus.approvato).toList();
+
+  final allCompleted = await svc.getCompletedAttemptsForEvent(eventId);
+  if (allCompleted.isEmpty) return const [];
+
+  final teams = await ref.watch(teamsProvider(eventId).future);
+  final penalties = await svc.getEffectivePenaltySettings(eventId);
+
+  final passagesByAttemptId = <String, List<WaypointPassageRecord>>{};
+  final violationsByAttemptId = <String, List<SpeedZoneViolation>>{};
+  for (final attempt in allCompleted) {
+    passagesByAttemptId[attempt.id] = await svc.getAttemptPassagesOnce(
+        eventId, attempt.userId, attempt.id);
+    violationsByAttemptId[attempt.id] =
+        await svc.getAttemptSpeedZoneViolationsOnce(
+            eventId, attempt.userId, attempt.id);
+  }
+
+  final userNames = {
+    for (final r in approved) r.userId: r.nomeCompleto,
+  };
+
+  final entries = TrainingClassificaEngine.compute(
+    event: event,
+    registrations: approved,
+    teams: teams,
+    completedAttempts: allCompleted,
+    passagesByAttemptId: passagesByAttemptId,
+    speedViolationsByAttemptId: violationsByAttemptId,
+    userNames: userNames,
+    penalties: penalties,
+  );
+
+  final memberIdsBySquadra = <String, Set<String>>{};
+  for (final r in approved) {
+    if (r.squadraId == null) continue;
+    memberIdsBySquadra.putIfAbsent(r.squadraId!, () => {}).add(r.userId);
+  }
+
+  return entries
+      .map((e) => ClassificaEntry(
+            entryId: e.entryId,
+            teamNome: e.teamNome,
+            membriNomi: e.membriNomi,
+            membriIds: memberIdsBySquadra[e.entryId] ?? const {},
+            specialiCompletati:
+                e.bestBySpecialId.values.map((b) => b.tempo).toList(),
+            totaleSpeciali: e.totaleSpeciali,
+            tempoTotale: e.tempoTotale,
+            punteggioTotale: e.punteggioTotale,
+            posizione: e.posizione,
+            ritirato: false,
+            isLive: false,
+          ))
+      .toList();
+});
+
 /// Computes the live ranking. Returns `AsyncValue<List<ClassificaEntry>>`.
 /// Re-runs whenever any underlying stream emits a new value.
 final classificaProvider =
     Provider.family<AsyncValue<List<ClassificaEntry>>, String>(
         (ref, eventId) {
   final eventAv = ref.watch(eventStreamProvider(eventId));
+  final event = eventAv.valueOrNull;
+
+  // Allenamento — percorso di lettura completamente diverso (vedi
+  // trainingClassificaProvider sopra): nessuna delle stream di gara sotto
+  // (passages/withdrawals/live tracking) contiene mai dati per un
+  // allenamento, quindi non ha senso aspettarle prima di rispondere.
+  if (event != null && event.isAllenamento) {
+    return ref.watch(trainingClassificaProvider(eventId));
+  }
   final passAv = ref.watch(passagesStreamProvider(eventId));
   final regsAv = ref.watch(registrationsProvider(eventId));
   final teamsAv = ref.watch(teamsProvider(eventId));
@@ -88,7 +176,6 @@ final classificaProvider =
   final err = eventAv.error ?? passAv.error ?? regsAv.error;
   if (err != null) return AsyncValue.error(err, StackTrace.empty);
 
-  final event = eventAv.valueOrNull;
   final passages = passAv.valueOrNull;
   final regs = regsAv.valueOrNull;
   if (event == null || passages == null || regs == null) {

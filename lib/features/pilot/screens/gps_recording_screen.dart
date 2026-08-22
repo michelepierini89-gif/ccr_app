@@ -8,8 +8,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../../core/models/attempt_model.dart';
 import '../../../core/models/event_model.dart';
@@ -759,6 +761,29 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
     }
   }
 
+  /// Punto 2 del test sul campo 22/08/2026 — esporta il log tecnico della
+  /// sessione corrente (o appena conclusa: `_diagLogger` mantiene il
+  /// riferimento al file fino al prossimo `startSession`, cioè fino
+  /// all'avvio di un nuovo tentativo). Stesso codice di
+  /// `RaceResultScreen._exportDiagnosticLog`, qui raggiungibile anche in
+  /// allenamento (dove quella schermata non esiste).
+  Future<void> _exportCurrentSessionLog() async {
+    final path = _diagLogger.currentFilePath;
+    if (path == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Nessun log tecnico disponibile per questa sessione'),
+        ));
+      }
+      return;
+    }
+    await _diagLogger.flush();
+    await SharePlus.instance.share(ShareParams(
+      files: [XFile(path)],
+      subject: 'CCR — log tecnico allenamento',
+    ));
+  }
+
   /// Step 47, Parte 2B/2E — "al termine di un tentativo, il pilota trova
   /// esplicitamente la possibilità di iniziarne uno nuovo".
   void _offerNewAttempt() {
@@ -1205,6 +1230,8 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           elapsed: null,
           isRecording: false,
           onSettingsTap: _showTrackAppearanceSheet,
+          onExportLogTap:
+              event?.isAllenamento == true ? _exportCurrentSessionLog : null,
         ),
         if (!canStart)
           _WaitingBanner(),
@@ -1223,6 +1250,13 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
             present: approvedTeamCount,
             minRequired: event!.minSquadra,
           ),
+        // Punto 4d del test sul campo 22/08/2026 — se il pilota naviga con
+        // uno stile mappa per cui non ha scaricato nulla per QUESTO evento,
+        // avvisalo prima di partire (era scoperto solo in mezzo al
+        // percorso, senza connessione, come "Mappe offline" già segnalava
+        // ma solo a chi visitava quella schermata).
+        if (effectiveEventId != null)
+          _OfflineMapCoverageBanner(eventId: effectiveEventId),
         // Banner informativo non bloccante: il pulsante START sopra resta
         // sempre attivo a prescindere dal segnale GPS, questo è solo un
         // avviso che il chip sta ancora acquisendo.
@@ -1550,7 +1584,12 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
 
     return Column(
       children: [
-        _TopBar(eventId: eventId, elapsed: null, isRecording: false),
+        _TopBar(
+          eventId: eventId,
+          elapsed: null,
+          isRecording: false,
+          onExportLogTap: isTraining ? _exportCurrentSessionLog : null,
+        ),
         Expanded(
           child: SingleChildScrollView(
             padding: const EdgeInsets.fromLTRB(24, 32, 24, 24),
@@ -1749,6 +1788,8 @@ class _GpsRecordingScreenState extends ConsumerState<GpsRecordingScreen>
           onSettingsTap: _showTrackAppearanceSheet,
           lastFlushSuccessAt: _lastFlushSuccessAt,
           flushFailingSince: _flushFailingSince,
+          onExportLogTap:
+              event?.isAllenamento == true ? _exportCurrentSessionLog : null,
         ),
 
         // Countdown strip — mai per l'allenamento (Step 47, Parte 2A:
@@ -3136,6 +3177,11 @@ class _TopBar extends ConsumerWidget {
   final VoidCallback? onSettingsTap;
   final DateTime? lastFlushSuccessAt;
   final DateTime? flushFailingSince;
+  // Punto 2 del test sul campo 22/08/2026 — l'esportazione del log tecnico
+  // era raggiungibile SOLO dal riepilogo post-gara (mai esistente in
+  // allenamento): reso raggiungibile qui, sia prima che durante un
+  // tentativo, non solo a fine sessione.
+  final VoidCallback? onExportLogTap;
 
   const _TopBar(
       {required this.eventId,
@@ -3143,7 +3189,8 @@ class _TopBar extends ConsumerWidget {
       required this.isRecording,
       this.onSettingsTap,
       this.lastFlushSuccessAt,
-      this.flushFailingSince});
+      this.flushFailingSince,
+      this.onExportLogTap});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -3222,6 +3269,13 @@ class _TopBar extends ConsumerWidget {
               failingSince: flushFailingSince,
             ),
           ],
+          if (onExportLogTap != null)
+            IconButton(
+              onPressed: onExportLogTap,
+              icon: const Icon(Icons.bug_report_outlined,
+                  color: AppColors.textSecondary),
+              tooltip: 'Esporta log tecnico',
+            ),
           if (onSettingsTap != null)
             IconButton(
               onPressed: onSettingsTap,
@@ -3563,6 +3617,80 @@ class _RouteChangedRecentlyBanner extends StatelessWidget {
                   fontWeight: FontWeight.w600,
                   fontSize: 13),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Punto 4d del test sul campo 22/08/2026 — nessuna mappa offline scaricata
+/// per questo evento con lo stile mappa attualmente selezionato: senza
+/// connessione la mappa resterebbe grigia. Non verifica la copertura
+/// geometrica esatta (già mostrata in dettaglio in "Mappe offline"), solo
+/// la presenza di ALMENO una regione per (evento, stile) — stesso livello
+/// di granularità già usato lì.
+class _OfflineMapCoverageBanner extends ConsumerStatefulWidget {
+  final String eventId;
+  const _OfflineMapCoverageBanner({required this.eventId});
+
+  @override
+  ConsumerState<_OfflineMapCoverageBanner> createState() =>
+      _OfflineMapCoverageBannerState();
+}
+
+class _OfflineMapCoverageBannerState
+    extends ConsumerState<_OfflineMapCoverageBanner> {
+  List<OfflineRegionInfo>? _regions;
+
+  @override
+  void initState() {
+    super.initState();
+    // Best-effort: se il path_provider non è disponibile (es. nei test
+    // widget senza plugin mockato) il banner semplicemente non appare,
+    // stesso principio già in uso in OfflineTileService.downloadTile.
+    OfflineTileService.instance.getRegionInfos().then((all) {
+      if (mounted) {
+        setState(() => _regions =
+            all.where((r) => r.eventId == widget.eventId).toList());
+      }
+    }).catchError((Object _) {
+      // _regions resta null: il banner non appare, mai un falso "nessuna
+      // mappa scaricata" solo perché il servizio non era disponibile.
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final regions = _regions;
+    if (regions == null) return const SizedBox.shrink();
+    final style = ref.watch(trackAppearanceProvider).mapStyle;
+    if (regions.any((r) => r.styleId == style.id)) return const SizedBox.shrink();
+
+    return Container(
+      width: double.infinity,
+      color: AppColors.warning.withValues(alpha: 0.12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: Row(
+        children: [
+          const Icon(Icons.map_outlined, color: AppColors.warning, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              regions.isEmpty
+                  ? 'Nessuna mappa offline scaricata per questo evento. '
+                      'Senza connessione la mappa resterà vuota.'
+                  : 'Nessuna mappa offline scaricata per lo stile attuale '
+                      '(${style.label}). Senza connessione la mappa resterà '
+                      'vuota.',
+              style: const TextStyle(
+                  color: AppColors.warning, fontSize: 12, fontWeight: FontWeight.w600),
+            ),
+          ),
+          TextButton(
+            onPressed: () => context.push('/pilot/offline-maps'),
+            child: const Text('Scarica',
+                style: TextStyle(color: AppColors.warning, fontSize: 12)),
           ),
         ],
       ),

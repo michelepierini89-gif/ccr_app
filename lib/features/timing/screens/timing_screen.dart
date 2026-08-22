@@ -427,12 +427,20 @@ class TimingScreen extends ConsumerStatefulWidget {
 
 class _TimingScreenState extends ConsumerState<TimingScreen> {
   Future<void> _onRefresh() async {
+    // Allenamento — classificaProvider delega a trainingClassificaProvider
+    // (FutureProvider, cache propria): va invalidato esplicitamente, non
+    // basta invalidare classificaProvider che si limiterebbe a
+    // riguardarlo senza forzarne il ricalcolo.
+    ref.invalidate(trainingClassificaProvider(widget.eventId));
     ref.invalidate(classificaProvider(widget.eventId));
   }
 
   @override
   Widget build(BuildContext context) {
     final classAv = ref.watch(classificaProvider(widget.eventId));
+    final isTraining =
+        ref.watch(eventStreamProvider(widget.eventId)).valueOrNull?.isAllenamento ??
+            false;
 
     return classAv.when(
       loading: () => const Center(
@@ -445,11 +453,13 @@ class _TimingScreenState extends ConsumerState<TimingScreen> {
           return _AdminTimingView(
               eventId: widget.eventId,
               entries: entries,
+              isTraining: isTraining,
               onRefresh: _onRefresh);
         }
         return _PilotTimingView(
             eventId: widget.eventId,
             entries: entries,
+            isTraining: isTraining,
             onRefresh: _onRefresh);
       },
     );
@@ -461,12 +471,14 @@ class _TimingScreenState extends ConsumerState<TimingScreen> {
 class _AdminTimingView extends ConsumerWidget {
   final String eventId;
   final List<ClassificaEntry> entries;
+  final bool isTraining;
   final Future<void> Function() onRefresh;
 
   const _AdminTimingView({
     required this.eventId,
     required this.entries,
     required this.onRefresh,
+    this.isTraining = false,
   });
 
   String _buildCsv() {
@@ -550,7 +562,7 @@ class _AdminTimingView extends ConsumerWidget {
     return Column(
       children: [
         if (mixedEntries.isNotEmpty) _MixedRouteVariantsBanner(entries: mixedEntries),
-        _CpDisputesBanner(eventId: eventId),
+        if (!isTraining) _CpDisputesBanner(eventId: eventId),
         Container(
           color: AppColors.cardBackground,
           padding:
@@ -563,7 +575,7 @@ class _AdminTimingView extends ConsumerWidget {
                     color: AppColors.textSecondary, fontSize: 13),
               ),
               const Spacer(),
-              _RecalculateOfficialTimesButton(eventId: eventId),
+              if (!isTraining) _RecalculateOfficialTimesButton(eventId: eventId),
               TextButton.icon(
                 onPressed: () => _exportCsv(context),
                 icon: const Icon(Icons.download, size: 16,
@@ -682,12 +694,14 @@ class _CpDisputesBanner extends ConsumerWidget {
 class _PilotTimingView extends ConsumerWidget {
   final String eventId;
   final List<ClassificaEntry> entries;
+  final bool isTraining;
   final Future<void> Function() onRefresh;
 
   const _PilotTimingView({
     required this.eventId,
     required this.entries,
     required this.onRefresh,
+    this.isTraining = false,
   });
 
   @override
@@ -773,7 +787,11 @@ class _PilotTimingView extends ConsumerWidget {
             ...entry.specialiCompletati.map(
               (s) => _SpecialTimingRow(special: s),
             ),
-          if (entry.ritirato || entry.hasFinished) ...[
+          // "Vedi traccia" apre il riepilogo post-gara (RaceResultScreen),
+          // che legge raceStatus/pilotTrack di GARA — mai scritti da un
+          // allenamento (tentativi indipendenti, vedi
+          // training_attempts_history_screen.dart per l'equivalente).
+          if (!isTraining && (entry.ritirato || entry.hasFinished)) ...[
             const SizedBox(height: 20),
             SizedBox(
               width: double.infinity,

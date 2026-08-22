@@ -105,9 +105,17 @@ class OfflineTileService {
     await platform.writeTileBytes(styleId, z, x, y, bytes);
   }
 
-  Future<void> downloadTile(String styleId, int z, int x, int y) async {
-    if (kIsWeb) return;
-    if (await tileExists(styleId, z, x, y)) return;
+  /// Ritorna `true` se al termine il tile è effettivamente presente su
+  /// disco (già presente, o appena scritto) — `false` se il download è
+  /// fallito (rete assente/errore/timeout). Il valore di ritorno guida il
+  /// conteggio in [downloadBoundingBox]: prima di questo fix `tileCount`
+  /// contava SEMPRE tutti i tile richiesti, anche quelli falliti in
+  /// silenzio (`catch (_) {}` sotto), disallineando quanto dichiarato da
+  /// "Mappe offline" da quanto realmente scaricato (punto 4a del test sul
+  /// campo 22/08/2026).
+  Future<bool> downloadTile(String styleId, int z, int x, int y) async {
+    if (kIsWeb) return false;
+    if (await tileExists(styleId, z, x, y)) return true;
     final style = MapStyle.fromId(styleId);
     final url = _urlFor(style, z, x, y);
     try {
@@ -116,8 +124,12 @@ class OfflineTileService {
       }).timeout(const Duration(seconds: 10));
       if (res.statusCode == 200) {
         await platform.writeTileBytes(styleId, z, x, y, res.bodyBytes);
+        return true;
       }
-    } catch (_) {}
+      return false;
+    } catch (_) {
+      return false;
+    }
   }
 
   String _urlFor(MapStyle style, int z, int x, int y) {
@@ -148,7 +160,7 @@ class OfflineTileService {
     required LatLng sw,
     required LatLng ne,
     int minZoom = 10,
-    int maxZoom = 16,
+    int maxZoom = 17,
     void Function(int done, int total)? onProgress,
   }) async {
     if (kIsWeb) return;
@@ -157,8 +169,13 @@ class OfflineTileService {
     final tiles =
         tilesForBoundingBox(sw: sw, ne: ne, minZoom: minZoom, maxZoom: cappedMaxZoom);
     int done = 0;
+    // Punto 4a — solo i tile REALMENTE persistiti su disco entrano nel
+    // conteggio dichiarato (vedi downloadTile): prima di questo fix un
+    // download parzialmente fallito (rete instabile a metà) dichiarava
+    // comunque "tutti scaricati", lasciando buchi silenziosi nella regione.
+    int persisted = 0;
     for (final (z, x, y) in tiles) {
-      await downloadTile(styleId, z, x, y);
+      if (await downloadTile(styleId, z, x, y)) persisted++;
       done++;
       onProgress?.call(done, tiles.length);
     }
@@ -168,7 +185,7 @@ class OfflineTileService {
       styleId: styleId,
       minZoom: minZoom,
       maxZoom: cappedMaxZoom,
-      tileCount: tiles.length,
+      tileCount: persisted,
       downloadedAt: DateTime.now(),
     ));
   }

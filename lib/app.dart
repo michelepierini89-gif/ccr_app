@@ -33,6 +33,7 @@ import 'features/classifica/screens/classifica_screen.dart';
 import 'features/map/screens/offline_maps_screen.dart';
 import 'features/pilot/screens/regolamento_screen.dart';
 import 'features/pilot/screens/guida_screen.dart';
+import 'features/pilot/screens/training_attempts_history_screen.dart';
 import 'features/admin/screens/users_list_screen.dart';
 
 final _routerProvider = Provider<GoRouter>((ref) {
@@ -210,6 +211,13 @@ final _routerProvider = Provider<GoRouter>((ref) {
                 builder: (context, state) {
                   final eventId = state.pathParameters['id']!;
                   return RegolamentoScreen(eventId: eventId);
+                },
+              ),
+              GoRoute(
+                path: 'attempts',
+                builder: (context, state) {
+                  final eventId = state.pathParameters['id']!;
+                  return TrainingAttemptsHistoryScreen(eventId: eventId);
                 },
               ),
             ],

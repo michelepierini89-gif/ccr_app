@@ -1,7 +1,7 @@
 # CCR App — Riepilogo di Progetto
 
 **Coppa Canta Rally** — App Flutter multipiattaforma per la gestione di eventi rally  
-**Data aggiornamento:** 19 agosto 2026 (Step 49 completato)  
+**Data aggiornamento:** 22 agosto 2026 (Step 50 completato)  
 **Branch:** main  
 **Versione:** 1.0.2+3
 
@@ -2530,6 +2530,117 @@ hosting`, `git push origin main`.
 
 ---
 
+### Step 50 — Fix da primo test sul campo dell'allenamento: tempi/classifica, log tecnico, storico tentativi, cache mappe offline (22 agosto 2026) ✅
+
+Primo test reale della modalità allenamento (Step 47-49). La freccia
+pilota (fix Step 11) confermata corretta. Quattro problemi, i primi due
+collegati e indagati su Firestore prima di intervenire, come richiesto.
+
+**Parte 1 — tempi/classifica allenamento vuoti (priorità massima):**
+- Verificato su Firestore PRIMA di toccare codice (evento "Prova
+  allenamento" `wkp0uNtkehQQ4SBayRXW`): 2 tentativi in
+  `tracking/{eventId}/pilots/{userId}/attempts/`, **entrambi
+  `status: completed`**, con 21 e 23 passaggi rispettivamente (inizio/fine
+  di tutte e 3 le PS, una zona velocità, chunk di traccia completa).
+  `tracking/{eventId}/passages` (percorso di GARA) vuoto, correttamente —
+  ma è lì che "I miei tempi"/"Classifica" leggevano sempre. **CASO B**: i
+  dati sono salvi, il problema era solo in lettura.
+- `TrainingClassificaEngine` (Step 47) non era mai collegato a
+  `classificaProvider`/`TimingScreen`/`ClassificaScreen` — solo alla card
+  riepilogo nella pagina evento (Step 48). Nuovo `trainingClassificaProvider`
+  (`classifica_provider.dart`): calcola la classifica allenamento (tutte le
+  squadre, non solo la propria come `myTrainingTeamBestProvider`) e la
+  converte in `ClassificaEntry` — stesso modello della gara, zero
+  duplicazione UI. `classificaProvider` delega a questo provider quando
+  `event.isAllenamento`, prima di toccare le stream di gara (mai popolate
+  per un allenamento).
+- `TimingScreen`: nascosto "Vedi traccia" (pilota, punta a
+  `RaceResultScreen`, race-only) e "Tempi ufficiali"/dispute CP (admin,
+  race-only) per gli eventi di allenamento — restava raggiungibile un
+  pulsante rotto.
+- Chiusura tentativi verificata: `TrainingClassificaEngine` considera solo
+  `AttemptStatus.completed` (via `getCompletedAttemptsForEvent`) — un
+  tentativo mai chiuso non entra in classifica, comportamento già corretto
+  dallo Step 47.
+
+**Parte 2 — log diagnostico non esportabile in allenamento:**
+- Verificato: il logger è già attivo durante un tentativo
+  (`GpsService.startRecording` chiama `DiagnosticLogger.startSession`
+  incondizionatamente, indipendente dal tipo evento) — mancava solo un modo
+  per raggiungere i file scritti, non la registrazione.
+- Nuovo `DiagnosticLogFilesService` (`lib/core/services/`): elenca i log
+  locali (`ccr_diagnostic_{sessionId}.csv`) e risale a quello di un
+  tentativo dalla finestra oraria (nessun collegamento file↔tentativo mai
+  scritto, un tentativo genera comunque una nuova sessione diagnostica
+  praticamente nello stesso istante).
+- `GpsRecordingScreen`: pulsante di export nella barra superiore (pre-avvio,
+  durante il tentativo, ed evento archiviato), visibile per l'allenamento.
+- `EventDetailScreen`: nuovo pulsante "LOG TECNICI" (allenamento, tutti i
+  log locali) sempre raggiungibile dalla pagina evento, non solo a
+  tentativo appena concluso.
+
+**Parte 3 — storico tentativi lato pilota:**
+- Nuovo `myAttemptsHistoryProvider`
+  (`training_attempts_history_provider.dart`): per ogni tentativo del
+  pilota, tempo di ogni PS (via `ClassificaEngine.computeSpeciali`, riusata
+  identica), record personale (miglior tempo fra i propri tentativi
+  completati) e "conta per la classifica" (confrontato con
+  `myTrainingTeamBestProvider`, il tentativo che la classifica di squadra
+  userebbe per quella PS).
+- Nuova `TrainingAttemptsHistoryScreen`: elenco tentativi più recente
+  prima, per ciascuno data/ora, durata, stato, tempo/PS con badge RECORD e
+  CLASSIFICA, CP mancati e penalità, pulsanti Traccia e Log.
+- Nuova `TrainingAttemptTrackScreen`: mappa del tentativo (traccia pilota +
+  riferimento + marker PS/CP passati-mancati, stessa logica di
+  `RaceResultScreen` ridotta) con export log integrato — versione
+  allenamento di "vedi traccia".
+- `EventDetailScreen`: pulsante "I MIEI TENTATIVI"; "VEDI RISULTATI" su un
+  allenamento archiviato ora punta allo storico invece di
+  `RaceResultScreen` (che non ha mai dati per un tentativo).
+
+**Parte 4 — mappe offline, zone grigie senza connessione:**
+- **Causa principale**: `OfflineTileService.downloadBoundingBox` scaricava
+  sempre fino a z16, ma il `TileLayer` di navigazione aveva
+  `MapStyle.osm.maxNativeZoom: 19` — qualunque zoom oltre 16 (frequente,
+  default 15 e si sale in curve tecniche) faceva richiedere tile nativi mai
+  scaricati → placeholder, dentro una regione "dichiarata scaricata".
+  Portato entrambi a **17** (download e `maxNativeZoom` di OSM, ora uguale
+  a OpenTopoMap): oltre il 17 è sempre upscale client-side dello stesso
+  tile in cache, mai una nuova richiesta di rete.
+- **Causa secondaria**: tile scaricati prima dello Step 49 vivevano in
+  `osm_tiles/{z}/{x}/{y}.png` (nessuna cartella di stile), invisibili alla
+  cache attuale (`osm_tiles/{styleId}/{z}/{x}/{y}.png`) — occupavano spazio
+  ma non venivano mai serviti. Nuova migrazione automatica in
+  `initCacheDir()` (`offline_tile_service_io.dart`): sposta i tile legacy
+  sotto lo stile `osm` (l'unico esistente prima dello Step 49), una sola
+  volta, idempotente. Il manifest v1 (senza `styleId`) non è recuperabile
+  (chiave SharedPreferences cambiata allo Step 49): i tile tornano
+  utilizzabili in navigazione, ma non compaiono come regione dichiarata in
+  "Mappe offline" finché non ri-scaricati.
+- **Bug minore**: `tileCount` nel manifest contava tutti i tile *tentati*,
+  non quelli *persistiti* — un download con rete instabile a metà
+  dichiarava una copertura mai avvenuta. `downloadTile` ora ritorna `bool`
+  (persistito o no), `downloadBoundingBox` conta solo i successi.
+- **Sfondo neutro (Step 49)**: verificato corretto nel codice, non era
+  "rotto" — attivato semplicemente troppo spesso per la causa principale
+  sopra. Nessuna modifica necessaria.
+- Nuovo avviso pre-partenza in `GpsRecordingScreen`
+  (`_OfflineMapCoverageBanner`): se nessuna regione scaricata copre lo
+  stile mappa attivo per l'evento, avvisa prima di partire invece di
+  lasciarlo scoprire senza connessione a metà percorso.
+- **Non verificabile in questo ambiente** (nessun device fisico collegato,
+  stesso limite già annotato allo Step 49): la cache reale su un telefono
+  non è stata ispezionata — root cause individuata per analisi del codice,
+  non per lettura diretta della cache del device usato nel test.
+
+**Deploy:** `flutter analyze` 0 issues, `flutter test` 131/131 verdi (129
+preesistenti + 2 nuovi in `offline_tile_migration_test.dart`; aggiornato un
+test esistente in `offline_tile_service_test.dart` per il nuovo
+`maxNativeZoom` di OSM). `firebase deploy --only hosting`, `git push origin
+main`.
+
+---
+
 ## Prossimi Step
 
 **Produzione / sicurezza:**
@@ -2537,9 +2648,12 @@ hosting`, `git push origin main`.
 
 **RISOLTO allo Step 49:** OpenTopoMap integrato come stile selezionabile (era "da proporre" allo Step 48); `OfflineTileService` ora collegata al `TileLayer` reale tramite `CcrTileProvider` — la cache offline produce un beneficio reale, verificato con test automatico (rete simulata assente, non un device reale — vedi sotto).
 
-**Mappa — test su device reale (Step 49, non eseguibile in questo ambiente):**
-- Scaricare una regione da "Mappe offline" su un device reale, attivare la modalità aereo, verificare visivamente che la mappa resti navigabile in `gps_recording_screen.dart` ai livelli di zoom scaricati (la verifica automatica dello Step 49 simula "rete assente" con un host che rifiuta la connessione, non un vero stato di rete di sistema).
-- Verificare il consumo di storage reale di una cache multi-stile (OSM + OpenTopoMap) su un evento con area ampia, non solo il conteggio tile teorico.
+**RISOLTO allo Step 50:** primo test sul campo dell'allenamento aveva trovato zone grigie "nonostante il download" — causa individuata (download fermo a z16 contro `maxNativeZoom` OSM a 19) e corretta allineando entrambi a z17, più migrazione dei tile legacy pre-Step-49 e conteggio cache allineato a quanto realmente persistito. Vedi Step 50 per il dettaglio — root cause da analisi del codice, non da ispezione di una cache reale (nessun device disponibile in questo ambiente, stesso limite di sempre).
+
+**Mappa — test su device reale (Step 49/50, non eseguibile in questo ambiente):**
+- Scaricare una regione da "Mappe offline" su un device reale, attivare la modalità aereo, verificare visivamente che la mappa resti navigabile in `gps_recording_screen.dart` a tutti i livelli di zoom usati in navigazione (z10-17 scaricati dallo Step 50, upscale client-side oltre) — non solo "rete assente simulata" come nel test automatico.
+- Verificare il consumo di storage reale di una cache multi-stile (OSM + OpenTopoMap) su un evento con area ampia, non solo il conteggio tile teorico — lo Step 50 ha alzato la profondità di download da z16 a z17, un salto di ~4x in tile per l'ultimo livello.
+- Confermare che la migrazione dei tile legacy (pre-Step-49) funzioni su una cache reale con downloads storici, non solo sul caso sintetico testato.
 
 **Test su device reale (Step 36 — mai testati su hardware):**
 - Verificare `isForegroundServiceActive`/`openManufacturerBatterySettings`/aggiornamento notifica con contatore su almeno un device Xiaomi/Oppo/Samsung reale — i componenti nativi dei produttori sono percorsi non ufficiali, potrebbero non esistere su tutte le ROM

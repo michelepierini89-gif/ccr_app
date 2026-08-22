@@ -47,9 +47,15 @@ void main() {
   });
 
   group('cappedMaxZoomFor (Parte 2d — zoom oltre il nativo)', () {
-    test('OSM Standard (nativo 19) non viene mai limitato entro il range app', () {
+    // Punto 4c del test sul campo 22/08/2026 — OSM è ora limitato a 17
+    // come OpenTopoMap (era 19): con un nativo più alto del massimo
+    // effettivamente scaricato da "Mappe offline", il TileLayer richiedeva
+    // tile nativi mai scaricati, cadendo sul placeholder ("zone grigie")
+    // anche dentro una regione dichiarata "scaricata". Vedi MapStyle.osm.
+    test('OSM Standard è limitato a 17 come OpenTopoMap', () {
+      expect(MapStyle.osm.maxNativeZoom, 17);
       expect(OfflineTileService.cappedMaxZoomFor('osm', 16), 16);
-      expect(OfflineTileService.cappedMaxZoomFor('osm', 19), 19);
+      expect(OfflineTileService.cappedMaxZoomFor('osm', 19), 17);
     });
 
     test(

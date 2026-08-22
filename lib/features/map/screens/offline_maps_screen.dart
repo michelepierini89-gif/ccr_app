@@ -69,7 +69,7 @@ class _OfflineMapsScreenState extends ConsumerState<OfflineMapsScreen> {
       sw: bbox.$1,
       ne: bbox.$2,
       minZoom: 10,
-      maxZoom: 16,
+      maxZoom: 17,
       onProgress: (done, total) {
         if (mounted) setState(() { _done = done; _total = total; });
       },

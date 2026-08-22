@@ -4,12 +4,24 @@
 /// stile, usato sia dal `TileLayer` (rendering) sia da `OfflineTileService`
 /// (download/cache) — evita che i due si disallineino silenziosamente.
 enum MapStyle {
+  // Bug segnalato dopo il primo test sul campo di un allenamento
+  // (22/08/2026, punto 4c): con `maxNativeZoom` a 19 il `TileLayer`
+  // richiedeva tile nativi fino a z19, ma "Mappe offline" scaricava solo
+  // fino a z16/17 — a schermo intero senza rete, ogni zoom oltre il
+  // massimo scaricato cadeva sul placeholder neutro (zone grigie "nonostante
+  // il download": la regione ERA scaricata, solo non per lo zoom usato in
+  // navigazione). Portato a 17 — stesso valore nativo reale di OpenTopoMap
+  // (vedi sotto) e stesso valore ora scaricato da `OfflineTileService.
+  // downloadBoundingBox` — così il `TileLayer` non richiede MAI un tile
+  // nativo oltre quanto la regione può effettivamente coprire: qualunque
+  // zoom fino a 19 (vedi `maxUiZoom`) è un upscale client-side dello stesso
+  // tile z17 già in cache, mai una nuova richiesta di rete.
   osm(
     id: 'osm',
     label: 'OSM Standard',
     urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
     subdomains: [],
-    maxNativeZoom: 19,
+    maxNativeZoom: 17,
     attribution: '© OpenStreetMap contributors',
   ),
   // Verificato empiricamente (Step 49, curl su tile reali): z18 e z19

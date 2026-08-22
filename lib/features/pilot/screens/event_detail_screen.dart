@@ -23,6 +23,7 @@ import '../../map/screens/track_map_screen.dart';
 import '../../timing/screens/timing_screen.dart';
 import '../providers/pilot_provider.dart';
 import '../providers/training_stats_provider.dart';
+import 'diagnostic_logs_screen.dart';
 import 'race_result_screen.dart';
 
 class EventDetailScreen extends ConsumerStatefulWidget {
@@ -792,13 +793,21 @@ class _PilotRegistrationSectionState
                               width: double.infinity,
                               height: 54,
                               child: ElevatedButton.icon(
-                                onPressed: () => Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (_) => RaceResultScreen(
-                                        eventId: widget.eventId),
-                                  ),
-                                ),
+                                // Un allenamento chiuso non ha un "risultato
+                                // di gara" (RaceResultScreen legge
+                                // raceStatus/pilotTrack, mai scritti da un
+                                // tentativo) — porta invece allo storico
+                                // tentativi.
+                                onPressed: () => widget.isTraining
+                                    ? context.push(
+                                        '/pilot/event/${widget.eventId}/attempts')
+                                    : Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (_) => RaceResultScreen(
+                                              eventId: widget.eventId),
+                                        ),
+                                      ),
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: AppColors.accent,
                                   foregroundColor: Colors.white,
@@ -878,6 +887,61 @@ class _PilotRegistrationSectionState
                                       letterSpacing: 0.5)),
                             ),
                           ),
+                          // Storico tentativi + log tecnici (punti 2/3 del
+                          // test sul campo 22/08/2026) — solo allenamento,
+                          // raggiungibile anche a evento chiuso da tempo
+                          // (nessuna condizione su isArchived qui sotto).
+                          if (widget.isTraining) ...[
+                            const SizedBox(height: 10),
+                            SizedBox(
+                              width: double.infinity,
+                              height: 46,
+                              child: OutlinedButton.icon(
+                                onPressed: () => context.push(
+                                    '/pilot/event/${widget.eventId}/attempts'),
+                                style: OutlinedButton.styleFrom(
+                                  side: BorderSide(
+                                      color: AppColors.accent
+                                          .withValues(alpha: 0.6)),
+                                  foregroundColor: AppColors.accent,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                ),
+                                icon: const Icon(Icons.history, size: 18),
+                                label: const Text('I MIEI TENTATIVI',
+                                    style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        letterSpacing: 0.5)),
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            SizedBox(
+                              width: double.infinity,
+                              height: 46,
+                              child: OutlinedButton.icon(
+                                onPressed: () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => const DiagnosticLogsScreen(),
+                                  ),
+                                ),
+                                style: OutlinedButton.styleFrom(
+                                  side: const BorderSide(color: AppColors.border),
+                                  foregroundColor: AppColors.textSecondary,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                ),
+                                icon: const Icon(Icons.bug_report_outlined,
+                                    size: 18),
+                                label: const Text('LOG TECNICI',
+                                    style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        letterSpacing: 0.5)),
+                              ),
+                            ),
+                          ],
                           const SizedBox(height: 10),
                           SizedBox(
                             width: double.infinity,
